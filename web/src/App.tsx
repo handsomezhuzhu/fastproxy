@@ -4,8 +4,10 @@ import {
   Gauge,
   LayoutDashboard,
   Layers,
+  Loader2,
   LogOut,
   Network,
+  RefreshCw,
   ScrollText,
   Settings as SettingsIcon,
   Users,
@@ -13,10 +15,11 @@ import {
 } from "lucide-react";
 import { api, type Data } from "@/api";
 import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Card, CardContent } from "@/components/ui/card";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CopyWizard, type CopyPreset } from "@/components/CopyWizard";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { LoginPage } from "@/pages/Login";
 import { DashboardPage } from "@/pages/Dashboard";
 import { PortsPage } from "@/pages/Ports";
@@ -45,6 +48,7 @@ function readHash(): Page {
 export default function App() {
   const [session, setSession] = React.useState<{ auth: boolean } | null>(null);
   const [data, setData] = React.useState<Data | null>(null);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
   const [page, setPage] = React.useState<Page>(readHash);
   const [copyOpen, setCopyOpen] = React.useState(false);
   const [copyPreset, setCopyPreset] = React.useState<CopyPreset>(null);
@@ -53,22 +57,30 @@ export default function App() {
     try {
       const d = await api.data();
       setData(d);
+      setLoadError(null);
     } catch (e: any) {
       if (e?.status === 401) {
         setSession({ auth: false });
         setData(null);
+      } else {
+        setLoadError(e?.message || "加载配置失败");
       }
     }
   }, []);
 
   React.useEffect(() => {
+    let alive = true;
     api
       .session()
       .then((s) => {
+        if (!alive) return;
         setSession(s);
         if (s.auth) reload();
       })
-      .catch(() => setSession({ auth: false }));
+      .catch(() => alive && setSession({ auth: false }));
+    return () => {
+      alive = false;
+    };
   }, [reload]);
 
   React.useEffect(() => {
@@ -107,14 +119,7 @@ export default function App() {
 
   if (!session) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="w-full max-w-sm space-y-3 p-6" aria-busy="true" aria-label="正在加载">
-          <Skeleton className="mx-auto size-12 rounded-xl" />
-          <Skeleton className="mx-auto h-4 w-32" />
-          <Skeleton className="h-9 w-full" />
-          <Skeleton className="h-9 w-full" />
-        </div>
-      </div>
+      <BootScreen text="正在连接控制台…" />
     );
   }
 
@@ -128,16 +133,30 @@ export default function App() {
   }
 
   if (!data) {
-    return (
-      <div className="flex min-h-screen items-center justify-center px-6" aria-busy="true">
-        <div className="w-full max-w-md space-y-3">
-          <Skeleton className="h-4 w-28" />
-          <Skeleton className="h-9 w-full" />
-          <Skeleton className="h-9 w-full" />
-          <Skeleton className="h-9 w-full" />
+    if (loadError) {
+      return (
+        <div className="flex min-h-screen items-center justify-center p-6">
+          <Card className="w-full max-w-md">
+            <CardContent className="space-y-4 p-6 text-center">
+              <div className="mx-auto flex size-11 items-center justify-center rounded-full bg-destructive/15 text-destructive">
+                <RefreshCw className="size-5" aria-hidden="true" />
+              </div>
+              <div className="space-y-1">
+                <h1 className="text-base font-semibold">加载配置失败</h1>
+                <p className="text-xs text-muted-foreground break-all">{loadError}</p>
+              </div>
+              <div className="flex justify-center gap-2">
+                <Button onClick={() => reload()}>重试</Button>
+                <Button variant="outline" onClick={logout}>
+                  <LogOut className="size-4" aria-hidden="true" /> 重新登录
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
-      </div>
-    );
+      );
+    }
+    return <BootScreen text="正在加载配置…" />;
   }
 
   const title = NAV.find((n) => n.id === page)?.label ?? "";
@@ -214,23 +233,25 @@ export default function App() {
           </header>
 
           <main className="mx-auto w-full max-w-7xl flex-1 space-y-6 px-4 py-6 md:px-6">
-            {page === "dashboard" && (
-              <DashboardPage data={data} onCopy={openCopy} onNavigate={navigate} />
-            )}
-            {page === "ports" && <PortsPage data={data} reload={reload} onCopy={openCopy} />}
-            {page === "accounts" && <AccountsPage data={data} reload={reload} onCopy={openCopy} />}
-            {page === "upstreams" && <UpstreamsPage data={data} reload={reload} />}
-            {page === "logs" && <LogsPage data={data} />}
-            {page === "settings" && (
-              <SettingsPage
-                data={data}
-                reload={reload}
-                onLoggedOut={() => {
-                  setSession({ auth: false });
-                  setData(null);
-                }}
-              />
-            )}
+            <ErrorBoundary key={page}>
+              {page === "dashboard" && (
+                <DashboardPage data={data} onCopy={openCopy} onNavigate={navigate} />
+              )}
+              {page === "ports" && <PortsPage data={data} reload={reload} onCopy={openCopy} />}
+              {page === "accounts" && <AccountsPage data={data} reload={reload} onCopy={openCopy} />}
+              {page === "upstreams" && <UpstreamsPage data={data} reload={reload} />}
+              {page === "logs" && <LogsPage data={data} />}
+              {page === "settings" && (
+                <SettingsPage
+                  data={data}
+                  reload={reload}
+                  onLoggedOut={() => {
+                    setSession({ auth: false });
+                    setData(null);
+                  }}
+                />
+              )}
+            </ErrorBoundary>
           </main>
         </div>
 
@@ -238,5 +259,19 @@ export default function App() {
         <Toaster theme="dark" position="bottom-right" richColors closeButton />
       </div>
     </TooltipProvider>
+  );
+}
+
+function BootScreen({ text }: { text: string }) {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-background">
+      <div className="flex size-10 items-center justify-center rounded-xl bg-primary/15 text-primary">
+        <Zap className="size-5" aria-hidden="true" />
+      </div>
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+        {text}
+      </div>
+    </div>
   );
 }

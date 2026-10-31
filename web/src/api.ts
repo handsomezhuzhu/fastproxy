@@ -117,20 +117,30 @@ export class ApiError extends Error {
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  let body: any = {};
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    body = await r.json();
-  } catch {
-    /* empty body */
+    const r = await fetch(path, {
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      ...init,
+    });
+    let body: any = {};
+    try {
+      body = await r.json();
+    } catch {
+      /* empty body */
+    }
+    if (!r.ok || body?.error) {
+      throw new ApiError(r.status, body?.error || `请求失败 (HTTP ${r.status})`);
+    }
+    return body as T;
+  } catch (e: any) {
+    if (e?.name === "AbortError") throw new ApiError(0, "请求超时（15 秒）");
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  if (!r.ok || body?.error) {
-    throw new ApiError(r.status, body?.error || `请求失败 (HTTP ${r.status})`);
-  }
-  return body as T;
 }
 
 export const api = {

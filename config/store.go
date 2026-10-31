@@ -57,10 +57,33 @@ type Account struct {
 	Remark     string `json:"remark,omitempty"`
 }
 
+// Settings is the global configuration entry exposed in the admin panel.
+type Settings struct {
+	AccessLog           bool   `json:"access_log"`            // 记录每次连接
+	LogLevel            string `json:"log_level"`             // debug|info|warn|error
+	LogBuffer           int    `json:"log_buffer"`            // 内存日志条数
+	AllowDirect         bool   `json:"allow_direct"`          // 允许端口不绑定上游（直连）
+	DialTimeoutSec      int    `json:"dial_timeout_sec"`      // 连接目标/上游超时
+	HandshakeTimeoutSec int    `json:"handshake_timeout_sec"` // 客户端握手超时
+}
+
+// DefaultSettings returns the built-in defaults.
+func DefaultSettings() Settings {
+	return Settings{
+		AccessLog:           true,
+		LogLevel:            "info",
+		LogBuffer:           1000,
+		AllowDirect:         true,
+		DialTimeoutSec:      15,
+		HandshakeTimeoutSec: 60,
+	}
+}
+
 // Config is the on-disk document.
 type Config struct {
 	AdminPasswordHash string      `json:"admin_password_hash,omitempty"`
 	SessionSecret     string      `json:"session_secret,omitempty"`
+	Settings          *Settings   `json:"settings,omitempty"`
 	Upstreams         []*Upstream `json:"upstreams"`
 	Ports             []*Port     `json:"ports"`
 	Accounts          []*Account  `json:"accounts"`
@@ -80,7 +103,8 @@ func Open(path string, adminPort int) (*Store, error) {
 	data, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		s.cfg = Config{SessionSecret: randomHex(32)}
+		d := DefaultSettings()
+		s.cfg = Config{SessionSecret: randomHex(32), Settings: &d, Upstreams: []*Upstream{}, Ports: []*Port{}, Accounts: []*Account{}}
 		if err := s.saveLocked(); err != nil {
 			return nil, err
 		}
@@ -105,6 +129,11 @@ func Open(path string, adminPort int) (*Store, error) {
 		}
 		if s.cfg.Accounts == nil {
 			s.cfg.Accounts = []*Account{}
+			changed = true
+		}
+		if s.cfg.Settings == nil {
+			d := DefaultSettings()
+			s.cfg.Settings = &d
 			changed = true
 		}
 		if changed {
@@ -269,6 +298,9 @@ func (s *Store) UpsertPort(id string, in *Port) (*Port, error) {
 	if in.Port == s.adminPort {
 		return nil, fmt.Errorf("端口 %d 与管理面板端口冲突", s.adminPort)
 	}
+	if in.DefaultUpstream == "" && !s.settingsLocked().AllowDirect {
+		return nil, errors.New("当前设置不允许直连端口，请先绑定默认上游")
+	}
 	if in.DefaultUpstream != "" && s.getUpstreamLocked(in.DefaultUpstream) == nil {
 		return nil, errors.New("默认上游不存在")
 	}
@@ -342,6 +374,44 @@ func (s *Store) DeletePort(id string) error {
 		return err
 	}
 	return nil
+}
+
+// ImportUpstreams appends candidates, skipping exact duplicates
+// (same type+host+user+password). Returns the number added and their names.
+func (s *Store) ImportUpstreams(candidates []*Upstream) (int, []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := func(u *Upstream) string {
+		return u.Type + "|" + u.Host + "|" + u.Username + "|" + u.Password
+	}
+	seen := map[string]bool{}
+	for _, u := range s.cfg.Upstreams {
+		seen[key(u)] = true
+	}
+	old := s.cfg.Upstreams
+	next := append([]*Upstream{}, old...)
+	added := 0
+	var duplicates []string
+	for _, u := range candidates {
+		k := key(u)
+		if seen[k] {
+			duplicates = append(duplicates, u.Name+" ("+u.Host+")")
+			continue
+		}
+		seen[k] = true
+		u.ID = randomHex(4)
+		next = append(next, u)
+		added++
+	}
+	if added == 0 {
+		return 0, duplicates
+	}
+	s.cfg.Upstreams = next
+	if err := s.saveLocked(); err != nil {
+		s.cfg.Upstreams = old
+		return 0, duplicates
+	}
+	return added, duplicates
 }
 
 // SetPortEnabled toggles an inbound port.
@@ -555,6 +625,50 @@ func (s *Store) RotateSessionSecret() error {
 		return err
 	}
 	return nil
+}
+
+// Settings returns the current global settings.
+func (s *Store) Settings() Settings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.settingsLocked()
+}
+
+func (s *Store) settingsLocked() Settings {
+	if s.cfg.Settings == nil {
+		return DefaultSettings()
+	}
+	return *s.cfg.Settings
+}
+
+// UpdateSettings validates and persists the global settings.
+func (s *Store) UpdateSettings(in Settings) (Settings, error) {
+	switch strings.ToLower(strings.TrimSpace(in.LogLevel)) {
+	case "debug", "info", "warn", "error":
+		in.LogLevel = strings.ToLower(strings.TrimSpace(in.LogLevel))
+	case "":
+		in.LogLevel = "info"
+	default:
+		return Settings{}, errors.New("日志级别仅支持 debug/info/warn/error")
+	}
+	if in.LogBuffer < 100 || in.LogBuffer > 10000 {
+		return Settings{}, errors.New("日志缓存条数需在 100-10000 之间")
+	}
+	if in.DialTimeoutSec < 3 || in.DialTimeoutSec > 120 {
+		return Settings{}, errors.New("连接超时需在 3-120 秒之间")
+	}
+	if in.HandshakeTimeoutSec < 10 || in.HandshakeTimeoutSec > 300 {
+		return Settings{}, errors.New("握手超时需在 10-300 秒之间")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old := s.cfg.Settings
+	s.cfg.Settings = &in
+	if err := s.saveLocked(); err != nil {
+		s.cfg.Settings = old
+		return Settings{}, err
+	}
+	return in, nil
 }
 
 // checkSecretRefsLocked verifies that all ${VAR} references in sensitive

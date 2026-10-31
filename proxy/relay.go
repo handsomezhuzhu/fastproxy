@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"net"
+	"sync/atomic"
 	"time"
 )
 
@@ -41,13 +42,15 @@ func (c *bufferedConn) CloseWrite() error {
 	return nil
 }
 
-// countedConn meters client<->server traffic into the port meter and, when
-// the connection belongs to an authenticated account, the account meter too.
+// countedConn meters client<->server traffic into the port meter, the account
+// meter (once authenticated) and the per-connection counters used for the
+// access log.
 // The meter type (byte counters plus connection counters) lives in manager.go.
 type countedConn struct {
 	net.Conn
-	port *meter
-	acc  *meter // optional
+	port      *meter
+	acc       *meter
+	lin, lout *atomic.Int64
 }
 
 func (c *countedConn) Read(p []byte) (int, error) {
@@ -56,6 +59,9 @@ func (c *countedConn) Read(p []byte) (int, error) {
 		c.port.in.Add(int64(n))
 		if c.acc != nil {
 			c.acc.in.Add(int64(n))
+		}
+		if c.lin != nil {
+			c.lin.Add(int64(n))
 		}
 	}
 	return n, err
@@ -67,6 +73,9 @@ func (c *countedConn) Write(p []byte) (int, error) {
 		c.port.out.Add(int64(n))
 		if c.acc != nil {
 			c.acc.out.Add(int64(n))
+		}
+		if c.lout != nil {
+			c.lout.Add(int64(n))
 		}
 	}
 	return n, err

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/handsomezhuzhu/fastproxy/config"
+	"github.com/handsomezhuzhu/fastproxy/logx"
 )
 
 // --- networking helpers ---
@@ -222,7 +223,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := &env{store: store, mgr: NewManager(store)}
+	env := &env{store: store, mgr: NewManager(store, logx.New("", 100, logx.LevelWarn, false))}
 	t.Cleanup(env.mgr.Close)
 	return env
 }
@@ -366,7 +367,7 @@ func TestSocks5InboundViaHTTPUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	if err := Socks5Handshake(conn, "alice", "wonder", tAddr); err != nil {
+	if err := Socks5Handshake(conn, "alice", "wonder", tAddr, 10*time.Second); err != nil {
 		t.Fatalf("socks5 handshake: %v", err)
 	}
 	fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", tAddr)
@@ -536,7 +537,7 @@ func TestSocks5WrongPasswordRejected(t *testing.T) {
 	}
 	defer conn.Close()
 	// Auth fails during the SOCKS5 handshake, before any tunnel is dialed.
-	err = Socks5Handshake(conn, "alice", "nope", "127.0.0.1:9")
+	err = Socks5Handshake(conn, "alice", "nope", "127.0.0.1:9", 10*time.Second)
 	if err == nil || !strings.Contains(err.Error(), "账号或密码错误") {
 		t.Fatalf("expected auth failure, got %v", err)
 	}

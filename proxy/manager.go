@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -13,9 +12,22 @@ import (
 	"time"
 
 	"github.com/handsomezhuzhu/fastproxy/config"
+	"github.com/handsomezhuzhu/fastproxy/logx"
 )
 
-const handshakeTimeout = 60 * time.Second
+// trace collects per-connection facts for the access log.
+type trace struct {
+	proto   string
+	account string
+	target  string
+	status  string // "" (ok) | auth-failed | dial-error | bad-request | error
+	errText string
+}
+
+func (t *trace) fail(status, msg string) {
+	t.status = status
+	t.errText = msg
+}
 
 // meter accumulates connection and traffic counters for a port or account.
 type meter struct {
@@ -53,11 +65,12 @@ type AccountStatus struct {
 // apply instantly on the next connection; only port changes restart listeners.
 type Manager struct {
 	store *config.Store
+	log   *logx.Logger
 
 	mu        sync.Mutex
-	entries   map[string]*entry // port id -> entry
-	listenErr map[string]string // port id -> listen error
-	meters    map[string]*meter // "port:<id>" / "acc:<id>" -> counters
+	entries   map[string]*entry
+	listenErr map[string]string
+	meters    map[string]*meter
 }
 
 type entry struct {
@@ -67,13 +80,14 @@ type entry struct {
 	stats *meter
 
 	trMu sync.Mutex
-	trs  map[string]*http.Transport // transport cache keyed by upstream identity
+	trs  map[string]*http.Transport
 }
 
 // NewManager creates a manager bound to the store. Call Sync to start listeners.
-func NewManager(store *config.Store) *Manager {
+func NewManager(store *config.Store, logger *logx.Logger) *Manager {
 	return &Manager{
 		store:     store,
+		log:       logger,
 		entries:   map[string]*entry{},
 		listenErr: map[string]string{},
 		meters:    map[string]*meter{},
@@ -102,7 +116,7 @@ func (m *Manager) Sync() error {
 		delete(m.entries, id)
 		delete(m.listenErr, id)
 		if want == nil {
-			log.Printf("线路停止: 端口 %d", e.port.Port)
+			m.log.Infof("线路停止: 端口 %d", e.port.Port)
 		}
 	}
 	for id, p := range desired {
@@ -113,13 +127,13 @@ func (m *Manager) Sync() error {
 		if err != nil {
 			errs = append(errs, err)
 			m.listenErr[id] = err.Error()
-			log.Printf("%v", err)
+			m.log.Warnf("%v", err)
 			continue
 		}
 		m.entries[id] = e
 		delete(m.listenErr, id)
 		go e.serve()
-		log.Printf("线路启动: 端口 %d -> %s", p.Port, upstreamDesc(m.defaultUpstream(p)))
+		m.log.Infof("线路启动: 端口 %d -> %s", p.Port, upstreamDesc(m.defaultUpstream(p)))
 	}
 	return errors.Join(errs...)
 }
@@ -200,18 +214,31 @@ func (e *entry) serve() {
 	}
 }
 
+func (e *entry) handshakeTimeout() time.Duration {
+	return time.Duration(e.m.store.Settings().HandshakeTimeoutSec) * time.Second
+}
+
+func (e *entry) dialTimeout() time.Duration {
+	return time.Duration(e.m.store.Settings().DialTimeoutSec) * time.Second
+}
+
 // handle sniffs the first byte: 0x05 means SOCKS5, anything else means HTTP.
+// One access-log entry is emitted per connection when it finishes.
 func (e *entry) handle(raw net.Conn) {
 	st := e.stats
 	st.connsTotal.Add(1)
 	st.connsCur.Add(1)
+	start := time.Now()
+	lin, lout := &atomic.Int64{}, &atomic.Int64{}
+	tr := &trace{}
 	defer func() {
 		st.connsCur.Add(-1)
 		raw.Close()
+		e.m.logConn(e.port.Port, remoteIP(raw.RemoteAddr()), tr, lin.Load(), lout.Load(), start)
 	}()
 
-	raw.SetDeadline(time.Now().Add(handshakeTimeout))
-	ctr := &countedConn{Conn: raw, port: st}
+	raw.SetDeadline(time.Now().Add(e.handshakeTimeout()))
+	ctr := &countedConn{Conn: raw, port: st, lin: lin, lout: lout}
 	br := bufio.NewReaderSize(ctr, 8192)
 	head, err := br.Peek(1)
 	if err != nil {
@@ -219,13 +246,53 @@ func (e *entry) handle(raw net.Conn) {
 	}
 	c := &clientConn{br: br, Conn: ctr}
 	if head[0] == 5 {
-		err = e.serveSocks5(c, ctr)
+		err = e.serveSocks5(c, ctr, tr)
 	} else {
-		err = e.serveHTTP(c, ctr)
+		err = e.serveHTTP(c, ctr, tr)
 	}
+	if err != nil && tr.errText == "" {
+		tr.fail("error", err.Error())
+	}
+}
+
+// logConn writes the per-connection access entry.
+func (m *Manager) logConn(port int, client string, tr *trace, in, out int64, start time.Time) {
+	cfg := m.store.Settings()
+	status := tr.status
+	if status == "" {
+		status = "ok"
+	}
+	if !cfg.AccessLog && tr.status == "" {
+		return // access logging disabled: only failures are recorded
+	}
+	level := "info"
+	if tr.status != "" {
+		level = "warn"
+	}
+	m.log.Emit(logx.Entry{
+		Level:      level,
+		Port:       port,
+		Account:    tr.account,
+		Client:     client,
+		Proto:      tr.proto,
+		Target:     tr.target,
+		Status:     status,
+		BytesIn:    in,
+		BytesOut:   out,
+		DurationMS: time.Since(start).Milliseconds(),
+		Msg:        tr.errText,
+	})
+}
+
+func remoteIP(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr.String())
 	if err != nil {
-		log.Printf("端口 %d: %v", e.port.Port, err)
+		return addr.String()
 	}
+	return host
 }
 
 // --- auth and upstream resolution (live from store, hot-reload friendly) ---
@@ -306,7 +373,7 @@ func (e *entry) transportFor(up *config.Upstream) *http.Transport {
 	if tr, ok := e.trs[key]; ok {
 		return tr
 	}
-	tr := newTransport(up)
+	tr := newTransport(up, e.dialTimeout())
 	e.trs[key] = tr
 	return tr
 }

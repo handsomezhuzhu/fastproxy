@@ -248,6 +248,81 @@ func TestOpenFailsOnMissingSecretRef(t *testing.T) {
 	}
 }
 
+func TestSettingsDefaultsAndUpdate(t *testing.T) {
+	s := tempStore(t, 8080)
+	d := DefaultSettings()
+	if got := s.Settings(); got != d {
+		t.Fatalf("default settings mismatch: %+v", got)
+	}
+
+	// Direct ports are allowed by default; disallowing rejects new direct ports.
+	if _, err := s.UpsertPort("", portFixture(10001, "")); err != nil {
+		t.Fatalf("direct port should be allowed: %v", err)
+	}
+	if _, err := s.SetPortEnabled(s.Ports()[0].ID, false); err != nil {
+		t.Fatal(err)
+	}
+	up, err := s.UpsertUpstream("", upstreamFixture("u"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := d
+	next.AllowDirect = false
+	next.LogLevel = "debug"
+	next.LogBuffer = 500
+	if _, err := s.UpdateSettings(next); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertPort("", portFixture(10002, "")); err == nil {
+		t.Fatal("expected direct port rejection after disabling allow_direct")
+	}
+	if _, err := s.UpsertPort("", portFixture(10002, up.ID)); err != nil {
+		t.Fatalf("bound port should be allowed: %v", err)
+	}
+
+	// Invalid settings are rejected.
+	bad := next
+	bad.LogLevel = "verbose"
+	if _, err := s.UpdateSettings(bad); err == nil {
+		t.Fatal("expected log level validation error")
+	}
+	bad = next
+	bad.LogBuffer = 5
+	if _, err := s.UpdateSettings(bad); err == nil {
+		t.Fatal("expected log buffer validation error")
+	}
+}
+
+func TestImportUpstreamsDedupe(t *testing.T) {
+	s := tempStore(t, 8080)
+	cands := []*Upstream{
+		{Name: "a", Type: "http", Host: "1.1.1.1:8080"},
+		{Name: "b", Type: "socks5", Host: "2.2.2.2:1080", Username: "u", Password: "p"},
+	}
+	added, dups := s.ImportUpstreams(cands)
+	if added != 2 || len(dups) != 0 {
+		t.Fatalf("first import: added=%d dups=%v", added, dups)
+	}
+	if got := len(s.Upstreams()); got != 2 {
+		t.Fatalf("expected 2 upstreams, got %d", got)
+	}
+	// Same content again → all duplicates.
+	added, dups = s.ImportUpstreams([]*Upstream{
+		{Name: "a2", Type: "http", Host: "1.1.1.1:8080"},
+		{Name: "b2", Type: "socks5", Host: "2.2.2.2:1080", Username: "u", Password: "p"},
+	})
+	if added != 0 || len(dups) != 2 {
+		t.Fatalf("second import: added=%d dups=%v", added, dups)
+	}
+	// Different password → new entry.
+	added, _ = s.ImportUpstreams([]*Upstream{
+		{Name: "c", Type: "socks5", Host: "2.2.2.2:1080", Username: "u", Password: "p2"},
+	})
+	if added != 1 {
+		t.Fatalf("expected 1 added for different password, got %d", added)
+	}
+}
+
 func TestParseUpstream(t *testing.T) {
 	cases := []struct {
 		raw     string

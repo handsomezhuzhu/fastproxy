@@ -15,36 +15,34 @@ import (
 	"github.com/handsomezhuzhu/fastproxy/config"
 )
 
-const dialTimeout = 15 * time.Second
-
 // dialTarget opens a connection to addr ("host:port"). When up is nil the
 // connection is made directly (no upstream proxy).
-func dialTarget(up *config.Upstream, addr string) (net.Conn, error) {
+func dialTarget(up *config.Upstream, addr string, timeout time.Duration) (net.Conn, error) {
 	if up == nil {
-		conn, err := net.DialTimeout("tcp", addr, dialTimeout)
+		conn, err := net.DialTimeout("tcp", addr, timeout)
 		if err != nil {
 			return nil, fmt.Errorf("连接目标 %s 失败: %w", addr, err)
 		}
 		return conn, nil
 	}
-	return DialTunnel(*up, addr)
+	return DialTunnel(*up, addr, timeout)
 }
 
 // DialTunnel opens a tunnel to addr ("host:port", usually the origin server)
 // through the upstream proxy, authenticating against it when needed.
-func DialTunnel(up config.Upstream, addr string) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", up.Host, dialTimeout)
+func DialTunnel(up config.Upstream, addr string, timeout time.Duration) (net.Conn, error) {
+	conn, err := net.DialTimeout("tcp", up.Host, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("连接上游代理 %s 失败: %w", up.Host, err)
 	}
 	if up.Type == config.UpstreamSocks5 {
-		if err := Socks5Handshake(conn, up.Username, up.Password, addr); err != nil {
+		if err := Socks5Handshake(conn, up.Username, up.Password, addr, timeout); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("上游 SOCKS5 握手失败: %w", err)
 		}
 		return conn, nil
 	}
-	bc, err := httpConnect(conn, up.Username, up.Password, addr)
+	bc, err := httpConnect(conn, up.Username, up.Password, addr, timeout)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -56,8 +54,8 @@ func DialTunnel(up config.Upstream, addr string) (net.Conn, error) {
 // RFC 7231: a CONNECT reply has no body, so the header block is parsed
 // manually — http.ReadResponse (with a nil request) would wrongly treat a
 // bare 200 as body-until-EOF and block forever while the tunnel stays idle.
-func httpConnect(conn net.Conn, user, pass, addr string) (net.Conn, error) {
-	conn.SetDeadline(time.Now().Add(dialTimeout))
+func httpConnect(conn net.Conn, user, pass, addr string, timeout time.Duration) (net.Conn, error) {
+	conn.SetDeadline(time.Now().Add(timeout))
 
 	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n", addr, addr)
 	if user != "" || pass != "" {
@@ -96,8 +94,8 @@ func httpConnect(conn net.Conn, user, pass, addr string) (net.Conn, error) {
 
 // Socks5Handshake performs a client-side SOCKS5 handshake through conn,
 // tunnelling to addr. It is also used by the test suite.
-func Socks5Handshake(conn net.Conn, user, pass, addr string) error {
-	conn.SetDeadline(time.Now().Add(dialTimeout))
+func Socks5Handshake(conn net.Conn, user, pass, addr string, timeout time.Duration) error {
+	conn.SetDeadline(time.Now().Add(timeout))
 	defer conn.SetDeadline(time.Time{})
 
 	host, portStr, err := net.SplitHostPort(addr)

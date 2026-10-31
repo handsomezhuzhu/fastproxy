@@ -1,21 +1,27 @@
-// Package admin serves the FastProxy management panel and its JSON API.
+// Package admin serves the FastProxy management panel (React SPA) and its
+// JSON API.
 package admin
 
 import (
-	_ "embed"
 	"crypto/hmac"
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
+	"mime"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/handsomezhuzhu/fastproxy/config"
+	"github.com/handsomezhuzhu/fastproxy/importer"
+	"github.com/handsomezhuzhu/fastproxy/logx"
 	"github.com/handsomezhuzhu/fastproxy/proxy"
 )
 
@@ -26,14 +32,16 @@ const (
 	lockDuration = 10 * time.Minute
 )
 
-//go:embed index.html
-var indexHTML []byte
+//go:embed all:dist
+var distFS embed.FS
 
 // Server is the admin panel HTTP server.
 type Server struct {
 	store *config.Store
 	mgr   *proxy.Manager
+	log   *logx.Logger
 	ver   string
+	web   fs.FS
 
 	mu    sync.Mutex
 	fails map[string]*failState
@@ -44,9 +52,14 @@ type failState struct {
 	lockedUntil time.Time
 }
 
-// NewServer wires the panel to the store and proxy manager.
-func NewServer(store *config.Store, mgr *proxy.Manager, version string) *Server {
-	return &Server{store: store, mgr: mgr, ver: version, fails: map[string]*failState{}}
+// NewServer wires the panel to the store, proxy manager and logger.
+func NewServer(store *config.Store, mgr *proxy.Manager, logger *logx.Logger, version string) *Server {
+	sub, err := fs.Sub(distFS, "dist")
+	if err != nil {
+		log.Fatalf("嵌入的前端资源损坏: %v", err)
+	}
+	return &Server{store: store, mgr: mgr, log: logger, ver: version,
+		web: sub, fails: map[string]*failState{}}
 }
 
 // Handler returns the panel's routes.
@@ -57,9 +70,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/data", s.auth(s.handleData))
 	mux.HandleFunc("GET /api/stats", s.auth(s.handleStats))
+	mux.HandleFunc("GET /api/logs", s.auth(s.handleLogs))
+	mux.HandleFunc("GET /api/settings", s.auth(s.handleGetSettings))
+	mux.HandleFunc("PUT /api/settings", s.auth(s.handleUpdateSettings))
 
 	mux.HandleFunc("POST /api/upstreams", s.auth(s.handleCreateUpstream))
+	mux.HandleFunc("POST /api/upstreams/import", s.auth(s.handleImportUpstreams))
 	mux.HandleFunc("PUT /api/upstreams/{id}", s.auth(s.handleUpdateUpstream))
+	mux.HandleFunc("POST /api/upstreams/{id}/test", s.auth(s.handleTestUpstream))
 	mux.HandleFunc("DELETE /api/upstreams/{id}", s.auth(s.handleDeleteUpstream))
 
 	mux.HandleFunc("POST /api/ports", s.auth(s.handleCreatePort))
@@ -73,22 +91,42 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.auth(s.handleDeleteAccount))
 
 	mux.HandleFunc("POST /api/password", s.auth(s.handlePassword))
-	mux.HandleFunc("GET /", s.handleIndex)
+	mux.HandleFunc("GET /", s.handleStatic)
 	return mux
 }
 
-// --- static page ---
+// --- static SPA ---
 
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" && r.URL.Path != "/index.html" {
+func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("X-Frame-Options", "DENY")
+	name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+	if name == "" || name == "." {
+		name = "index.html"
+	}
+	data, err := fs.ReadFile(s.web, name)
+	if err != nil {
+		// SPA fallback for client-side routes.
+		data, err = fs.ReadFile(s.web, "index.html")
+		name = "index.html"
+	}
+	if err != nil {
+		http.Error(w, "前端资源缺失，请先构建 web/", http.StatusInternalServerError)
+		return
+	}
+	if name == "index.html" {
+		w.Header().Set("Cache-Control", "no-store")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	}
+	if ct := mime.TypeByExtension(path.Ext(name)); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Write(indexHTML)
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Write(data)
 }
 
 // --- sessions ---
@@ -190,7 +228,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			fs.count = 0
 		}
 		s.mu.Unlock()
-		log.Printf("管理面板登录失败 ip=%s", ip)
+		s.log.Warnf("管理面板登录失败 ip=%s", ip)
 		writeErr(w, http.StatusUnauthorized, "密码错误")
 		return
 	}
@@ -240,6 +278,7 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, s.newCookie())
+	s.log.Infof("管理密码已修改")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -249,6 +288,7 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	ports, accounts := s.mgr.Status()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":   s.ver,
+		"settings":  s.store.Settings(),
 		"upstreams": s.store.Upstreams(),
 		"ports":     s.store.Ports(),
 		"accounts":  s.store.Accounts(),
@@ -263,12 +303,48 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := logx.Filter{
+		Account: q.Get("account"),
+		Level:   q.Get("level"),
+	}
+	if v := q.Get("limit"); v != "" {
+		f.Limit, _ = strconv.Atoi(v)
+	}
+	if v := q.Get("port"); v != "" {
+		f.Port, _ = strconv.Atoi(v)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entries": s.log.Recent(f)})
+}
+
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"settings": s.store.Settings()})
+}
+
+func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	var in config.Settings
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	saved, err := s.store.UpdateSettings(in)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.log.SetLevel(logx.ParseLevel(saved.LogLevel))
+	s.log.SetBuffer(saved.LogBuffer)
+	s.log.SetAccess(saved.AccessLog)
+	s.log.Infof("系统设置已更新")
+	writeJSON(w, http.StatusOK, map[string]any{"settings": saved})
+}
+
 // --- upstreams ---
 
 type upstreamInput struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
-	Upstream string `json:"upstream"` // raw address, parsed server-side
+	Upstream string `json:"upstream"`
 	Remark   string `json:"remark"`
 }
 
@@ -298,7 +374,7 @@ func (s *Server) handleCreateUpstream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.syncRespond(w, nil, saved)
+	s.syncRespond(w, saved)
 }
 
 func (s *Server) handleUpdateUpstream(w http.ResponseWriter, r *http.Request) {
@@ -317,7 +393,9 @@ func (s *Server) handleUpdateUpstream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.syncRespond(w, nil, saved)
+	// Upstream edits apply per-connection; restart listeners only when port
+	// definitions changed, but run Sync for safety (no-op otherwise).
+	s.syncRespond(w, saved)
 }
 
 func (s *Server) handleDeleteUpstream(w http.ResponseWriter, r *http.Request) {
@@ -325,7 +403,79 @@ func (s *Server) handleDeleteUpstream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.syncRespond(w, nil, nil)
+	s.syncRespond(w, nil)
+}
+
+// handleImportUpstreams accepts {url} or {text} subscription content.
+func (s *Server) handleImportUpstreams(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		URL  string `json:"url"`
+		Text string `json:"text"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	content := in.Text
+	if strings.TrimSpace(in.URL) != "" {
+		var err error
+		content, err = importer.Fetch(in.URL)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if strings.TrimSpace(content) == "" {
+		writeErr(w, http.StatusBadRequest, "请填写订阅链接或节点文本")
+		return
+	}
+	res := importer.Parse(content)
+	candidates := make([]*config.Upstream, 0, len(res.Proxies))
+	for _, p := range res.Proxies {
+		candidates = append(candidates, &config.Upstream{
+			Name: p.Name, Type: p.Type, Host: p.Host,
+			Username: p.User, Password: p.Pass,
+		})
+	}
+	added, duplicates := s.store.ImportUpstreams(candidates)
+	s.log.Infof("上游导入: 识别 %d, 新增 %d, 重复 %d, 跳过 %d",
+		len(res.Proxies), added, len(duplicates), len(res.Problems))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"added":      added,
+		"total":      len(res.Proxies),
+		"duplicates": duplicates,
+		"problems":   res.Problems,
+	})
+}
+
+// handleTestUpstream dials a fixed probe target through the upstream.
+func (s *Server) handleTestUpstream(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var target *config.Upstream
+	for _, u := range s.store.Upstreams() {
+		if u.ID == id {
+			c := *u
+			target = &c
+			break
+		}
+	}
+	if target == nil {
+		writeErr(w, http.StatusNotFound, "上游不存在")
+		return
+	}
+	timeout := time.Duration(s.store.Settings().DialTimeoutSec) * time.Second
+	if timeout > 10*time.Second {
+		timeout = 10 * time.Second
+	}
+	start := time.Now()
+	conn, err := proxy.DialTunnel(*target, "api.ipify.org:443", timeout)
+	if err != nil {
+		s.log.Warnf("上游测速失败 %s (%s): %v", target.Name, target.Host, err)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "latency_ms": 0, "error": err.Error()})
+		return
+	}
+	conn.Close()
+	ms := time.Since(start).Milliseconds()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "latency_ms": ms})
 }
 
 // --- ports ---
@@ -352,21 +502,20 @@ func (s *Server) handleCreatePort(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.syncRespond(w, nil, saved)
+	s.syncRespond(w, saved)
 }
 
 func (s *Server) handleUpdatePort(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
 	var in portInput
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	saved, err := s.store.UpsertPort(id, in.toEntity())
+	saved, err := s.store.UpsertPort(r.PathValue("id"), in.toEntity())
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.syncRespond(w, nil, saved)
+	s.syncRespond(w, saved)
 }
 
 func (s *Server) handlePatchPort(w http.ResponseWriter, r *http.Request) {
@@ -381,7 +530,7 @@ func (s *Server) handlePatchPort(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	s.syncRespond(w, nil, saved)
+	s.syncRespond(w, saved)
 }
 
 func (s *Server) handleDeletePort(w http.ResponseWriter, r *http.Request) {
@@ -389,7 +538,7 @@ func (s *Server) handleDeletePort(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	s.syncRespond(w, nil, nil)
+	s.syncRespond(w, nil)
 }
 
 // --- accounts ---
@@ -419,21 +568,20 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.syncRespond(w, nil, saved)
+	s.syncRespond(w, saved)
 }
 
 func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
 	var in accountInput
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	saved, err := s.store.UpsertAccount(id, in.toEntity())
+	saved, err := s.store.UpsertAccount(r.PathValue("id"), in.toEntity())
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.syncRespond(w, nil, saved)
+	s.syncRespond(w, saved)
 }
 
 func (s *Server) handlePatchAccount(w http.ResponseWriter, r *http.Request) {
@@ -448,7 +596,7 @@ func (s *Server) handlePatchAccount(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	s.syncRespond(w, nil, saved)
+	s.syncRespond(w, saved)
 }
 
 func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
@@ -456,18 +604,14 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	s.syncRespond(w, nil, nil)
+	s.syncRespond(w, nil)
 }
 
 // --- plumbing ---
 
-// syncRespond applies changes to running listeners and answers. Deleted or
-// changed ports restart their listener; accounts/upstreams apply hot.
-func (s *Server) syncRespond(w http.ResponseWriter, err error, saved any) {
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
+// syncRespond applies changes to running listeners and answers. Only port
+// definition changes restart listeners; accounts/upstreams apply hot.
+func (s *Server) syncRespond(w http.ResponseWriter, saved any) {
 	var warning string
 	if serr := s.mgr.Sync(); serr != nil {
 		warning = serr.Error()
@@ -488,7 +632,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 		writeErr(w, http.StatusUnsupportedMediaType, "Content-Type 必须为 application/json")
 		return false
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求体格式错误")
 		return false

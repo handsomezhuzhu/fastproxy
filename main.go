@@ -1,6 +1,6 @@
 // FastProxy — lightweight multi-port HTTP/SOCKS5 proxy forwarder with an
-// admin panel. Each listening port is bound to one upstream proxy; inbound
-// clients must authenticate with the rule's username/password.
+// admin panel. Each listening port is bound to an upstream proxy; inbound
+// clients must authenticate with an account.
 package main
 
 import (
@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/handsomezhuzhu/fastproxy/admin"
 	"github.com/handsomezhuzhu/fastproxy/config"
+	"github.com/handsomezhuzhu/fastproxy/logx"
 	"github.com/handsomezhuzhu/fastproxy/proxy"
 )
 
@@ -51,6 +53,13 @@ func main() {
 		log.Fatalf("读取配置 %s 失败: %v", cfgPath, err)
 	}
 
+	// Structured logger: JSONL next to the config file + in-memory ring for
+	// the panel. File write failures degrade to memory-only.
+	settings := store.Settings()
+	logPath := filepath.Join(filepath.Dir(cfgPath), "access.log")
+	logger := logx.New(logPath, settings.LogBuffer, logx.ParseLevel(settings.LogLevel), settings.AccessLog)
+	defer logger.Close()
+
 	// Admin password: ADMIN_PASSWORD env wins; otherwise generate one on
 	// first boot and print it once.
 	if pw := getenv("ADMIN_PASSWORD", ""); pw != "" {
@@ -78,7 +87,7 @@ func main() {
 	}
 
 	// Start proxy listeners.
-	mgr := proxy.NewManager(store)
+	mgr := proxy.NewManager(store, logger)
 	defer mgr.Close()
 	if err := mgr.Sync(); err != nil {
 		log.Printf("部分端口启动失败: %v", err)
@@ -88,10 +97,10 @@ func main() {
 			log.Printf("线路: 端口 %d -> 上游 %s（备注: %s）", p.Port, orDirect(p.DefaultUpstream), remarkOrDash(p.Remark))
 		}
 	}
-	log.Printf("账户共 %d 个", len(store.Accounts()))
+	log.Printf("账户共 %d 个，上游共 %d 个", len(store.Accounts()), len(store.Upstreams()))
 
-	// Admin panel.
-	adm := admin.NewServer(store, mgr, version)
+	// Admin panel + API.
+	adm := admin.NewServer(store, mgr, logger, version)
 	httpServer := &http.Server{
 		Addr:              adminAddr,
 		Handler:           adm.Handler(),

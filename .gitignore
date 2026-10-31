@@ -1,0 +1,13 @@
+fastproxy.json
+fastproxy
+fastproxy.exe
+fastproxy-e2e-linux
+devserver.log
+devserver.err
+e2e-local.json
+.env
+data/
+dist/
+*.log
+*.exe
+.DS_Store

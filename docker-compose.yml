@@ -1,0 +1,16 @@
+services:
+  fastproxy:
+    image: ghcr.io/handsomezhuzhu/fastproxy:latest
+    build: .
+    container_name: fastproxy
+    restart: unless-stopped
+    environment:
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}        # 管理面板密码（必须）
+      - SESSION_SECRET=${SESSION_SECRET:-}     # 可选：固定会话签名密钥
+      - UPSTREAM_USER_1=${UPSTREAM_USER_1:-}   # 可选：注入上游凭据，配合面板中 ${VAR} 引用
+      - UPSTREAM_PASS_1=${UPSTREAM_PASS_1:-}
+    ports:
+      - "7788:7788"                # 管理面板（默认 7788）
+      - "10001-10500:10001-10500"  # 代理端口范围（默认 10001-10500，按需调整/扩大）
+    volumes:
+      - ./data:/data               # 配置持久化（fastproxy 配置文件）

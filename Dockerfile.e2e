@@ -1,0 +1,8 @@
+# 本地 e2e 用：直接打包宿主机交叉编译好的 linux 二进制，无需拉取任何基础镜像
+# （国内网络拉取 Docker Hub 常超时；正式多阶段构建见 Dockerfile，由 CI 完成）
+FROM scratch
+COPY fastproxy-e2e-linux /fastproxy
+ENV CONFIG=/data/config.json ADMIN_ADDR=":7788"
+VOLUME /data
+EXPOSE 7788
+ENTRYPOINT ["/fastproxy"]

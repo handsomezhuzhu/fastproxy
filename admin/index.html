@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FastProxy 管理面板</title>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--line:#334155;--tx:#e2e8f0;--mut:#94a3b8;--ac:#6366f1;--ac2:#818cf8;--ok:#22c55e;--bad:#ef4444}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:14px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,"Microsoft Yahei",sans-serif;background:var(--bg);color:var(--tx);min-height:100vh}
+.hidden{display:none!important}
+button{font:inherit;cursor:pointer;border:1px solid var(--line);background:#263449;color:var(--tx);border-radius:8px;padding:7px 14px}
+button:hover{border-color:var(--ac)}
+button.primary{background:var(--ac);border-color:var(--ac)}
+button.primary:hover{background:var(--ac2)}
+button.danger{background:transparent;border-color:var(--bad);color:var(--bad)}
+button.danger:hover{background:rgba(239,68,68,.12)}
+input,select{font:inherit;background:#0b1222;border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px 10px;width:100%}
+input:focus,select:focus{outline:none;border-color:var(--ac)}
+code{background:#0b1222;border:1px solid var(--line);padding:1px 6px;border-radius:6px;font-size:12px}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.mut{color:var(--mut)} .err{color:var(--bad);font-size:12px}
+/* login */
+#login{display:flex;align-items:center;justify-content:center;min-height:100vh}
+.login-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:34px 30px;width:340px}
+.login-card h1{font-size:20px;margin-bottom:4px}
+.login-card .sub{color:var(--mut);font-size:13px;margin-bottom:20px}
+.login-card input{margin-bottom:12px}
+.login-card button{width:100%}
+#login-err{color:var(--bad);font-size:13px;min-height:20px;margin-top:8px;text-align:center}
+/* header */
+header{display:flex;align-items:center;gap:14px;padding:12px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(15,23,42,.85);backdrop-filter:blur(6px);z-index:5}
+header h1{font-size:17px}
+header .ver{color:var(--mut);font-size:12px}
+header .sp{flex:1}
+nav{display:flex;gap:6px;padding:14px 22px 0;max-width:1080px;margin:0 auto;width:100%}
+nav button{border-radius:8px 8px 0 0;border-bottom:none;background:transparent;color:var(--mut);padding:8px 18px}
+nav button.active{background:var(--card);color:var(--tx);border-color:var(--line)}
+main{max-width:1080px;margin:0 auto;padding:0 22px 40px;width:100%}
+.page{background:var(--card);border:1px solid var(--line);border-radius:0 12px 12px 12px;padding:18px}
+/* cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
+.card{background:#182338;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.card .k{color:var(--mut);font-size:12px}
+.card .v{font-size:20px;font-weight:600;margin-top:2px}
+.card .s{color:var(--mut);font-size:12px}
+.toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.toolbar .hint{color:var(--mut);font-size:12px}
+/* table */
+.table-wrap{border:1px solid var(--line);border-radius:10px;overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:760px}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px;vertical-align:top}
+th{color:var(--mut);font-weight:500;background:#182338;position:sticky;top:0}
+tr:last-child td{border-bottom:none}
+.badge{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;border:1px solid var(--line)}
+.badge.http{color:#7dd3fc}.badge.socks5{color:#fbbf24}
+.row-actions{display:flex;gap:6px}
+.row-actions button{padding:4px 10px;font-size:12px}
+.up{font-family:ui-monospace,Consolas,monospace;font-size:12px;word-break:break-all}
+.empty{padding:30px;text-align:center;color:var(--mut)}
+/* switch */
+.switch{position:relative;display:inline-block;width:36px;height:20px}
+.switch input{display:none}
+.switch .sl{position:absolute;inset:0;background:#475569;border-radius:99px;transition:.15s;cursor:pointer}
+.switch .sl:before{content:"";position:absolute;width:14px;height:14px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.15s}
+.switch input:checked+.sl{background:var(--ok)}
+.switch input:checked+.sl:before{transform:translateX(16px)}
+/* modal */
+.modal-bg{position:fixed;inset:0;background:rgba(2,6,23,.66);display:flex;align-items:center;justify-content:center;z-index:10;padding:18px}
+.modal{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;width:480px;max-width:100%;max-height:92vh;overflow:auto}
+.modal h2{font-size:16px;margin-bottom:14px}
+.modal label{display:block;color:var(--mut);font-size:12px;margin:10px 0 4px}
+.modal .foot{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.note{background:#0b1222;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--mut);margin-top:10px;word-break:break-all}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="login-card">
+    <h1>FastProxy</h1>
+    <div class="sub">多端口 · 多账户 · 上游绑定 转发中转管理面板</div>
+    <input type="password" id="login-pass" placeholder="管理密码" autocomplete="current-password">
+    <button class="primary" id="login-btn">登 录</button>
+    <div id="login-err"></div>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>FastProxy</h1><span class="ver" id="ver"></span>
+    <div class="sp"></div>
+    <button id="btn-pwd">修改密码</button>
+    <button id="btn-logout">退出</button>
+  </header>
+  <nav>
+    <button data-tab="ports" class="active">端口线路</button>
+    <button data-tab="accounts">账户</button>
+    <button data-tab="upstreams">上游代理</button>
+  </nav>
+  <main>
+    <div class="cards">
+      <div class="card"><div class="k">端口线路</div><div class="v" id="c-ports">-</div><div class="s" id="c-ports-s"></div></div>
+      <div class="card"><div class="k">账户</div><div class="v" id="c-accs">-</div><div class="s" id="c-accs-s"></div></div>
+      <div class="card"><div class="k">活跃连接</div><div class="v" id="c-conns">-</div><div class="s">所有端口当前连接</div></div>
+      <div class="card"><div class="k">累计流量</div><div class="v" id="c-bytes">-</div><div class="s" id="c-bytes-s"></div></div>
+    </div>
+
+    <!-- 端口线路 -->
+    <section id="tab-ports" class="page">
+      <div class="toolbar">
+        <button class="primary" id="btn-add-port">＋ 新增端口线路</button>
+        <span class="hint">客户端代理地址 <code>http://账户:密码@服务器IP:端口</code> · 同端口支持 HTTP 与 SOCKS5 · 全部要求认证</span>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>启用</th><th>端口</th><th>默认上游</th><th>绑定账户</th><th>连接 (当前/累计)</th><th>流量 ↑/↓</th><th>备注</th><th>操作</th></tr></thead>
+        <tbody id="rows-ports"></tbody>
+      </table><div id="empty-ports" class="empty hidden">暂无端口线路</div></div>
+    </section>
+
+    <!-- 账户 -->
+    <section id="tab-accounts" class="page hidden">
+      <div class="toolbar">
+        <button class="primary" id="btn-add-acc">＋ 新增账户</button>
+        <span class="hint">账户可绑定端口（仅该端口可用）或全局可用；上游可覆盖端口默认，实现按用户分流</span>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>启用</th><th>用户名</th><th>密码</th><th>端口</th><th>上游</th><th>连接 (当前/累计)</th><th>备注</th><th>操作</th></tr></thead>
+        <tbody id="rows-accs"></tbody>
+      </table><div id="empty-accs" class="empty hidden">暂无账户</div></div>
+    </section>
+
+    <!-- 上游 -->
+    <section id="tab-upstreams" class="page hidden">
+      <div class="toolbar">
+        <button class="primary" id="btn-add-up">＋ 新增上游代理</button>
+        <span class="hint">被引用的上游不可删除；修改后新连接立即生效</span>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>名称</th><th>类型</th><th>地址</th><th>认证</th><th>引用</th><th>备注</th><th>操作</th></tr></thead>
+        <tbody id="rows-ups"></tbody>
+      </table><div id="empty-ups" class="empty hidden">暂无上游代理（端口可设为直连）</div></div>
+    </section>
+  </main>
+</div>
+
+<!-- 端口弹窗 -->
+<div id="m-port" class="modal-bg hidden"><div class="modal">
+  <h2 id="m-port-title">新增端口线路</h2>
+  <label>监听端口（客户端连接此端口）</label>
+  <input type="number" id="pf-port" min="1" max="65535" placeholder="10001">
+  <label>默认上游代理（留空 = 不走上游、由服务器直连）</label>
+  <select id="pf-up"><option value="">（直连）</option></select>
+  <label>备注</label>
+  <input id="pf-remark" placeholder="业务线A / 客户专属">
+  <div id="m-port-err" class="err" style="margin-top:10px;min-height:18px"></div>
+  <div class="foot"><button id="pf-cancel">取消</button><button class="primary" id="pf-save">保 存</button></div>
+</div></div>
+
+<!-- 账户弹窗 -->
+<div id="m-acc" class="modal-bg hidden"><div class="modal">
+  <h2 id="m-acc-title">新增账户</h2>
+  <label>用户名（全局唯一，客户端代理认证用）</label>
+  <input id="af-user" placeholder="alice">
+  <label>密码</label>
+  <input id="af-pass" placeholder="******">
+  <label>绑定端口（留空 = 所有端口可用）</label>
+  <select id="af-port"><option value="">（所有端口）</option></select>
+  <label>上游绑定（留空 = 跟随端口默认上游）</label>
+  <select id="af-up"><option value="">（跟随端口默认）</option></select>
+  <label>备注</label>
+  <input id="af-remark" placeholder="客户A / 用途说明">
+  <div id="m-acc-err" class="err" style="margin-top:10px;min-height:18px"></div>
+  <div class="foot"><button id="af-cancel">取消</button><button class="primary" id="af-save">保 存</button></div>
+</div></div>
+
+<!-- 上游弹窗 -->
+<div id="m-up" class="modal-bg hidden"><div class="modal">
+  <h2 id="m-up-title">新增上游代理</h2>
+  <label>名称</label>
+  <input id="uf-name" placeholder="美国家宽-1">
+  <label>上游地址（支持账号密码；密码可用 ${VAR} 引用环境变量，明文不落盘）</label>
+  <input id="uf-up" class="mono" placeholder="http://user:${UPSTREAM_PASS_1}@1.2.3.4:8080 或 socks5://1.2.3.4:1080">
+  <label>备注</label>
+  <input id="uf-remark">
+  <div id="m-up-err" class="err" style="margin-top:10px;min-height:18px"></div>
+  <div class="foot"><button id="uf-cancel">取消</button><button class="primary" id="uf-save">保 存</button></div>
+</div></div>
+
+<!-- 改密弹窗 -->
+<div id="m-pwd" class="modal-bg hidden"><div class="modal">
+  <h2>修改管理密码</h2>
+  <label>原密码</label><input type="password" id="pwd-old">
+  <label>新密码（至少 6 位）</label><input type="password" id="pwd-new">
+  <label>确认新密码</label><input type="password" id="pwd-new2">
+  <div id="m-pwd-err" class="err" style="margin-top:10px;min-height:18px"></div>
+  <div class="foot"><button id="pwd-cancel">取消</button><button class="primary" id="pwd-save">确认修改</button></div>
+</div></div>
+
+<script>
+let D = null, editPort = null, editAcc = null, editUp = null;
+const $ = id => document.getElementById(id);
+
+function toast(msg, bad) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#263449;border:1px solid ' + (bad ? '#ef4444' : '#6366f1') + ';padding:9px 18px;border-radius:10px;z-index:50';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2800);
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({headers: {'Content-Type': 'application/json'}}, opts || {}));
+  let body = {};
+  try { body = await r.json(); } catch (e) {}
+  if (r.status === 401) { showLogin(); throw new Error(body.error || '未登录'); }
+  if (!r.ok) throw new Error(body.error || ('HTTP ' + r.status));
+  return body;
+}
+
+function showLogin() { $('login').classList.remove('hidden'); $('app').classList.add('hidden'); }
+function login() {
+  fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({password: $('login-pass').value})})
+    .then(async r => { const b = await r.json().catch(() => ({}));
+      if (r.ok) { $('login-err').textContent = ''; load(); } else $('login-err').textContent = b.error || '登录失败'; });
+}
+function logout() { fetch('/api/logout', {method: 'POST'}).finally(showLogin); }
+
+async function load() {
+  try {
+    D = await api('/api/data');
+    render();
+    $('login').classList.add('hidden');
+    $('app').classList.remove('hidden');
+  } catch (e) {}
+}
+
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  const u = ['KB','MB','GB','TB']; let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length-1);
+  return n.toFixed(n < 10 ? 1 : 0) + ' ' + u[i];
+}
+
+function render() {
+  if (!D) return;
+  $('ver').textContent = 'v' + (D.version || '');
+  const ups = D.upstreams || [], ports = D.ports || [], accs = D.accounts || [];
+  const st = D.status || {};
+  const pSt = {}; (st.ports || []).forEach(x => pSt[x.id] = x);
+  const aSt = {}; (st.accounts || []).forEach(x => aSt[x.id] = x);
+
+  let active = 0, bin = 0, bout = 0, listening = 0;
+  (st.ports || []).forEach(x => { active += x.conns_cur; bin += x.bytes_in; bout += x.bytes_out; if (x.listening) listening++; });
+
+  $('c-ports').textContent = ports.length;
+  $('c-ports-s').textContent = listening + ' 个监听中';
+  $('c-accs').textContent = accs.length;
+  $('c-accs-s').textContent = accs.filter(a => a.enabled).length + ' 个启用';
+  $('c-conns').textContent = active;
+  $('c-bytes').textContent = fmtBytes(bin + bout);
+  $('c-bytes-s').textContent = '↑ ' + fmtBytes(bout) + ' / ↓ ' + fmtBytes(bin);
+
+  const upName = id => { const u = ups.find(x => x.id === id); return u ? u.name : (id || ''); };
+
+  // 下拉框
+  fillSelect($('pf-up'), ups, '（直连）', 'name');
+  fillSelect($('af-port'), ports, '（所有端口）', 'port');
+  fillSelect($('af-up'), ups, '（跟随端口默认）', 'name');
+
+  // 端口表
+  const tb1 = $('rows-ports'); tb1.innerHTML = '';
+  $('empty-ports').classList.toggle('hidden', ports.length > 0);
+  ports.forEach(p => {
+    const s = pSt[p.id] || {};
+    const bound = accs.filter(a => a.port_id === p.id).length;
+    const tr = el('tr');
+    const tdEn = el('td'); tdEn.appendChild(switchEl(p.enabled, async v => {
+      try { await api('/api/ports/' + p.id, {method: 'PATCH', body: JSON.stringify({enabled: v})}); toast(v ? '已启用' : '已停用'); load(); }
+      catch (e) { toast(e.message, true); }
+    })); tr.appendChild(tdEn);
+    const tdP = el('td'); tdP.innerHTML = '<b>' + p.port + '</b><div class="mono mut">' + location.hostname + ':' + p.port + '</div>'; tr.appendChild(tdP);
+    const tdU = el('td'); tdU.textContent = p.default_upstream ? upName(p.default_upstream) : '直连'; tr.appendChild(tdU);
+    const tdB = el('td'); tdB.textContent = bound + ' 个'; tr.appendChild(tdB);
+    const tdC = el('td'); tdC.textContent = (s.conns_cur || 0) + ' / ' + (s.conns_total || 0);
+    if (s.error) { const e2 = el('div', 'err'); e2.textContent = s.error; tdC.appendChild(e2); }
+    tr.appendChild(tdC);
+    const tdT = el('td', 'mono'); tdT.textContent = '↑ ' + fmtBytes(s.bytes_out) + ' ↓ ' + fmtBytes(s.bytes_in); tr.appendChild(tdT);
+    const tdR = el('td'); tdR.textContent = p.remark || '-'; tr.appendChild(tdR);
+    tr.appendChild(actionsTd([
+      ['编辑', () => openPort(p)],
+      ['用法', () => showPortUsage(p)],
+      ['删除', () => { if (confirm('确认删除端口 ' + p.port + '？绑定账户将变为全局。')) del('/api/ports/' + p.id); }, true],
+    ]));
+    tb1.appendChild(tr);
+  });
+
+  // 账户表
+  const tb2 = $('rows-accs'); tb2.innerHTML = '';
+  $('empty-accs').classList.toggle('hidden', accs.length > 0);
+  accs.forEach(a => {
+    const s = aSt[a.id] || {};
+    const tr = el('tr');
+    const tdEn = el('td'); tdEn.appendChild(switchEl(a.enabled, async v => {
+      try { await api('/api/accounts/' + a.id, {method: 'PATCH', body: JSON.stringify({enabled: v})}); toast(v ? '已启用' : '已停用'); load(); }
+      catch (e) { toast(e.message, true); }
+    })); tr.appendChild(tdEn);
+    const tdU = el('td'); tdU.innerHTML = '<b>' + esc(a.username) + '</b>'; tr.appendChild(tdU);
+    const tdP = el('td', 'mono'); tdP.textContent = '••••••'; tdP.title = '点击编辑可查看'; tr.appendChild(tdP);
+    const tdPo = el('td'); tdPo.textContent = a.port_id ? upName(a.port_id) : '全部端口';
+    if (a.port_id) { const p2 = ports.find(x => x.id === a.port_id); if (p2) tdPo.textContent = '端口 ' + p2.port; }
+    tr.appendChild(tdPo);
+    const tdUp = el('td'); tdUp.textContent = a.upstream_id ? upName(a.upstream_id) : '跟随端口'; tr.appendChild(tdUp);
+    const tdC = el('td'); tdC.textContent = (s.conns_cur || 0) + ' / ' + (s.conns_total || 0); tr.appendChild(tdC);
+    const tdR = el('td'); tdR.textContent = a.remark || '-'; tr.appendChild(tdR);
+    tr.appendChild(actionsTd([
+      ['编辑', () => openAcc(a)],
+      ['删除', () => { if (confirm('确认删除账户 ' + a.username + '？')) del('/api/accounts/' + a.id); }, true],
+    ]));
+    tb2.appendChild(tr);
+  });
+
+  // 上游表
+  const tb3 = $('rows-ups'); tb3.innerHTML = '';
+  $('empty-ups').classList.toggle('hidden', ups.length > 0);
+  ups.forEach(u => {
+    const refs = ports.filter(p => p.default_upstream === u.id).length +
+                 accs.filter(a => a.upstream_id === u.id).length;
+    const tr = el('tr');
+    const tdN = el('td'); tdN.innerHTML = '<b>' + esc(u.name) + '</b>'; tr.appendChild(tdN);
+    const tdT = el('td'); const b3 = el('span', 'badge ' + u.type); b3.textContent = u.type; tdT.appendChild(b3); tr.appendChild(tdT);
+    const tdH = el('td'); const h3 = el('div', 'up'); h3.textContent = u.host; tdH.appendChild(h3); tr.appendChild(tdH);
+    const tdA = el('td', 'mono'); tdA.textContent = u.username || '-'; tr.appendChild(tdA);
+    const tdRef = el('td'); tdRef.textContent = refs + ' 处'; tr.appendChild(tdRef);
+    const tdR = el('td'); tdR.textContent = u.remark || '-'; tr.appendChild(tdR);
+    tr.appendChild(actionsTd([
+      ['编辑', () => openUp(u)],
+      ['删除', () => { if (confirm('确认删除上游「' + u.name + '」？')) del('/api/upstreams/' + u.id); }, true],
+    ]));
+    tb3.appendChild(tr);
+  });
+}
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function el(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
+function fillSelect(sel, list, label, key) {
+  sel.innerHTML = '<option value="">' + label + '</option>';
+  list.forEach(x => {
+    const o = document.createElement('option');
+    o.value = x.id;
+    o.textContent = key === 'name' ? x.name : ('端口 ' + x.port + (x.remark ? ' (' + x.remark + ')' : ''));
+    sel.appendChild(o);
+  });
+}
+function switchEl(checked, onchange) {
+  const l = el('label', 'switch');
+  const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = !!checked;
+  inp.onchange = () => onchange(inp.checked);
+  const sl = el('span', 'sl');
+  l.appendChild(inp); l.appendChild(sl);
+  return l;
+}
+function actionsTd(items) {
+  const td = el('td'); const d = el('div', 'row-actions');
+  items.forEach(([label, fn, danger]) => {
+    const b = document.createElement('button');
+    b.textContent = label; if (danger) b.className = 'danger';
+    b.onclick = fn; d.appendChild(b);
+  });
+  td.appendChild(d); return td;
+}
+
+function showPortUsage(p) {
+  const acc = (D.accounts || []).find(a => a.port_id === p.id && a.enabled) || (D.accounts || []).find(a => !a.port_id && a.enabled);
+  const cred = acc ? esc(acc.username) + ':****@' : '';
+  alert('客户端代理地址：\n\nHTTP 代理： http://' + cred + location.hostname + ':' + p.port + '\nSOCKS5 代理：同地址，协议选 SOCKS5\n\n认证账号见「账户」页（可绑定到该端口）');
+}
+
+function del(path) {
+  api(path, {method: 'DELETE'}).then(() => { toast('已删除'); load(); }).catch(e => toast(e.message, true));
+}
+
+// --- 端口弹窗 ---
+function openPort(p) {
+  editPort = p || null;
+  $('m-port-title').textContent = p ? '编辑端口线路 (端口 ' + p.port + ')' : '新增端口线路';
+  $('pf-port').value = p ? p.port : '';
+  $('pf-up').value = p ? (p.default_upstream || '') : '';
+  $('pf-remark').value = p ? (p.remark || '') : '';
+  $('m-port-err').textContent = '';
+  $('m-port').classList.remove('hidden');
+}
+async function savePort() {
+  const body = {port: parseInt($('pf-port').value, 10), default_upstream: $('pf-up').value, remark: $('pf-remark').value};
+  try {
+    const res = await api(editPort ? '/api/ports/' + editPort.id : '/api/ports',
+      {method: editPort ? 'PUT' : 'POST', body: JSON.stringify(body)});
+    if (res.warning) toast('已保存，但端口监听失败：' + res.warning, true);
+    else toast('已保存');
+    $('m-port').classList.add('hidden'); load();
+  } catch (e) { $('m-port-err').textContent = e.message; }
+}
+
+// --- 账户弹窗 ---
+function openAcc(a) {
+  editAcc = a || null;
+  $('m-acc-title').textContent = a ? '编辑账户 ' + a.username : '新增账户';
+  $('af-user').value = a ? a.username : '';
+  $('af-pass').value = a ? a.password : '';
+  $('af-port').value = a ? (a.port_id || '') : '';
+  $('af-up').value = a ? (a.upstream_id || '') : '';
+  $('af-remark').value = a ? (a.remark || '') : '';
+  $('m-acc-err').textContent = '';
+  $('m-acc').classList.remove('hidden');
+}
+async function saveAcc() {
+  const body = {username: $('af-user').value.trim(), password: $('af-pass').value,
+    port_id: $('af-port').value, upstream_id: $('af-up').value, remark: $('af-remark').value};
+  try {
+    await api(editAcc ? '/api/accounts/' + editAcc.id : '/api/accounts',
+      {method: editAcc ? 'PUT' : 'POST', body: JSON.stringify(body)});
+    toast('已保存'); $('m-acc').classList.add('hidden'); load();
+  } catch (e) { $('m-acc-err').textContent = e.message; }
+}
+
+// --- 上游弹窗 ---
+function openUp(u) {
+  editUp = u || null;
+  $('m-up-title').textContent = u ? '编辑上游「' + u.name + '」' : '新增上游代理';
+  $('uf-name').value = u ? u.name : '';
+  const scheme = u && u.type === 'socks5' ? 'socks5://' : 'http://';
+  const creds = u && (u.username || u.password) ? u.username + ':' + u.password + '@' : '';
+  $('uf-up').value = scheme + creds + (u ? u.host : '');
+  $('uf-remark').value = u ? (u.remark || '') : '';
+  $('m-up-err').textContent = '';
+  $('m-up').classList.remove('hidden');
+}
+async function saveUp() {
+  const body = {name: $('uf-name').value, upstream: $('uf-up').value, remark: $('uf-remark').value};
+  try {
+    await api(editUp ? '/api/upstreams/' + editUp.id : '/api/upstreams',
+      {method: editUp ? 'PUT' : 'POST', body: JSON.stringify(body)});
+    toast('已保存'); $('m-up').classList.add('hidden'); load();
+  } catch (e) { $('m-up-err').textContent = e.message; }
+}
+
+// --- 事件绑定 ---
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('active', x === b));
+  ['ports', 'accounts', 'upstreams'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== b.dataset.tab));
+});
+$('login-btn').onclick = login;
+$('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+$('btn-logout').onclick = logout;
+$('btn-add-port').onclick = () => openPort(null);
+$('btn-add-acc').onclick = () => openAcc(null);
+$('btn-add-up').onclick = () => openUp(null);
+$('pf-cancel').onclick = () => $('m-port').classList.add('hidden');
+$('pf-save').onclick = savePort;
+$('af-cancel').onclick = () => $('m-acc').classList.add('hidden');
+$('af-save').onclick = saveAcc;
+$('uf-cancel').onclick = () => $('m-up').classList.add('hidden');
+$('uf-save').onclick = saveUp;
+$('btn-pwd').onclick = () => { $('pwd-old').value = ''; $('pwd-new').value = ''; $('pwd-new2').value = ''; $('m-pwd-err').textContent = ''; $('m-pwd').classList.remove('hidden'); };
+$('pwd-cancel').onclick = () => $('m-pwd').classList.add('hidden');
+$('pwd-save').onclick = async () => {
+  if ($('pwd-new').value !== $('pwd-new2').value) { $('m-pwd-err').textContent = '两次输入的新密码不一致'; return; }
+  try {
+    await api('/api/password', {method: 'POST', body: JSON.stringify({old: $('pwd-old').value, new: $('pwd-new').value})});
+    $('m-pwd').classList.add('hidden'); toast('密码已修改');
+  } catch (e) { $('m-pwd-err').textContent = e.message; }
+};
+
+setInterval(async () => {
+  if (D && !$('app').classList.contains('hidden')) {
+    try { D.status = (await api('/api/stats')).status; render(); } catch (e) {}
+  }
+}, 5000);
+
+load();
+</script>
+</body>
+</html>

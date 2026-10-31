@@ -1,0 +1,7 @@
+.git
+.github
+data
+dist
+*.exe
+fastproxy.json
+README.md

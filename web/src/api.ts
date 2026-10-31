@@ -6,6 +6,18 @@ export type Upstream = {
   username?: string;
   password?: string;
   remark?: string;
+  health?: "ok" | "fail" | "unknown";
+  latency_ms?: number;
+  exit_ip?: string;
+  last_check_at?: number;
+  last_error?: string;
+};
+
+export type ProbeResult = {
+  ok: boolean;
+  latency_ms: number;
+  exit_ip?: string;
+  error?: string;
 };
 
 export type Port = {
@@ -34,6 +46,10 @@ export type Settings = {
   allow_direct: boolean;
   dial_timeout_sec: number;
   handshake_timeout_sec: number;
+  probe_enabled: boolean;
+  probe_interval_sec: number;
+  probe_timeout_sec: number;
+  probe_target: string;
 };
 
 export type PortStatus = {
@@ -82,6 +98,7 @@ export type Data = {
   accounts: Account[];
   status: { ports: PortStatus[]; accounts: AccountStatus[] };
   settings: Settings;
+  probe?: { server_ip: string; last_check_at: number };
 };
 
 export type ImportResult = {
@@ -147,10 +164,13 @@ export const api = {
   updateUpstream: (id: string, body: { name: string; upstream: string; remark?: string }) =>
     req<{ saved?: Upstream; warning?: string }>(`/api/upstreams/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteUpstream: (id: string) => req<{ ok: true }>(`/api/upstreams/${id}`, { method: "DELETE" }),
-  testUpstream: (id: string) =>
-    req<{ ok: boolean; latency_ms: number; error?: string }>(`/api/upstreams/${id}/test`, {
-      method: "POST",
-    }),
+  checkUpstream: (id: string) =>
+    req<ProbeResult>(`/api/upstreams/${id}/check`, { method: "POST" }),
+  checkAllUpstreams: () =>
+    req<{ ok: number; failed: number; checked: number; server_ip: string }>(
+      "/api/upstreams/check-all",
+      { method: "POST" }
+    ),
   importUpstreams: (body: { text?: string; url?: string }) =>
     req<ImportResult>("/api/upstreams/import", { method: "POST", body: JSON.stringify(body) }),
 

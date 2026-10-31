@@ -38,6 +38,8 @@ export function SettingsPage({
         log_retention_days: Number(form.log_retention_days),
         dial_timeout_sec: Number(form.dial_timeout_sec),
         handshake_timeout_sec: Number(form.handshake_timeout_sec),
+        probe_interval_sec: Number(form.probe_interval_sec),
+        probe_timeout_sec: Number(form.probe_timeout_sec),
       });
       toast.success("系统设置已保存");
       await reload();
@@ -154,6 +156,62 @@ export function SettingsPage({
                     onChange={(e) => setForm({ ...form, handshake_timeout_sec: Number(e.target.value) })}
                   />
                 </Field>
+              </div>
+
+              <div className="space-y-4 border-t pt-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">自动探测</p>
+                    <p className="text-xs text-muted-foreground">
+                      定时检测上游健康状态、延迟与出口 IP，并更新本机出口 IP。
+                    </p>
+                  </div>
+                  <Switch
+                    checked={form.probe_enabled}
+                    onCheckedChange={(v: boolean) => setForm({ ...form, probe_enabled: v })}
+                    aria-label="自动探测上游"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="探测间隔（秒）" htmlFor="set-probe-interval">
+                    <Input
+                      id="set-probe-interval"
+                      type="number"
+                      inputMode="numeric"
+                      min={30}
+                      max={3600}
+                      value={form.probe_interval_sec}
+                      onChange={(e) => setForm({ ...form, probe_interval_sec: Number(e.target.value) })}
+                    />
+                  </Field>
+                  <Field label="探测超时（秒）" htmlFor="set-probe-timeout">
+                    <Input
+                      id="set-probe-timeout"
+                      type="number"
+                      inputMode="numeric"
+                      min={3}
+                      max={30}
+                      value={form.probe_timeout_sec}
+                      onChange={(e) => setForm({ ...form, probe_timeout_sec: Number(e.target.value) })}
+                    />
+                  </Field>
+                  <div className="col-span-2">
+                    <Field
+                      label="探测目标（域名）"
+                      htmlFor="set-probe-target"
+                      hint="通过上游请求该域名获取出口 IP，依次尝试 HTTP 80 / HTTPS 443。"
+                    >
+                      <Input
+                        id="set-probe-target"
+                        className="font-mono"
+                        value={form.probe_target}
+                        onChange={(e) => setForm({ ...form, probe_target: e.target.value })}
+                        placeholder="api.ipify.org"
+                        spellCheck={false}
+                      />
+                    </Field>
+                  </div>
+                </div>
               </div>
 
               <Button type="submit" className="w-full" disabled={saving}>

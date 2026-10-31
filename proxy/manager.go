@@ -71,6 +71,9 @@ type Manager struct {
 	entries   map[string]*entry
 	listenErr map[string]string
 	meters    map[string]*meter
+
+	failMu   sync.Mutex
+	lastFail map[string]time.Time
 }
 
 type entry struct {
@@ -91,6 +94,7 @@ func NewManager(store *config.Store, logger *logx.Logger) *Manager {
 		entries:   map[string]*entry{},
 		listenErr: map[string]string{},
 		meters:    map[string]*meter{},
+		lastFail:  map[string]time.Time{},
 	}
 }
 
@@ -379,6 +383,24 @@ func (e *entry) transportFor(up *config.Upstream) *http.Transport {
 }
 
 // --- helpers ---
+
+// markUpstreamFail records a passive failure for an upstream (throttled to
+// one database write per 30s per upstream, keeping the relay path hot).
+func (m *Manager) markUpstreamFail(id, errText string) {
+	if id == "" {
+		return
+	}
+	m.failMu.Lock()
+	if t, ok := m.lastFail[id]; ok && time.Since(t) < 30*time.Second {
+		m.failMu.Unlock()
+		return
+	}
+	m.lastFail[id] = time.Now()
+	m.failMu.Unlock()
+	if err := m.store.RecordUpstreamCheck(id, "fail", 0, "", errText); err != nil && m.log != nil {
+		m.log.Warnf("记录上游失败状态失败: %v", err)
+	}
+}
 
 func (m *Manager) meterFor(key string) *meter {
 	if mt, ok := m.meters[key]; ok {

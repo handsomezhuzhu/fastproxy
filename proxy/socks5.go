@@ -136,6 +136,9 @@ func (e *entry) serveSocks5(cc *clientConn, ctr *countedConn, tr *trace) error {
 
 	up, err := dialTarget(e.upstreamFor(acc), addr, e.dialTimeout())
 	if err != nil {
+		if realUp := e.upstreamFor(acc); realUp != nil {
+			e.m.markUpstreamFail(realUp.ID, err.Error())
+		}
 		conn.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0}) // general failure
 		tr.fail("dial-error", err.Error())
 		return err

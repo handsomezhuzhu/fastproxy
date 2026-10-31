@@ -49,6 +49,13 @@ type Upstream struct {
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
 	Remark   string `json:"remark,omitempty"`
+
+	// Probe state (maintained by the prober and passive failure tracking).
+	Health      string `json:"health"` // ok | fail | unknown
+	LatencyMS   int64  `json:"latency_ms"`
+	ExitIP      string `json:"exit_ip"`
+	LastCheckAt int64  `json:"last_check_at"` // unix seconds, 0 = never
+	LastError   string `json:"last_error,omitempty"`
 }
 
 // Port is one inbound listening port bound to a default upstream.
@@ -82,6 +89,11 @@ type Settings struct {
 	AllowDirect         bool   `json:"allow_direct"`
 	DialTimeoutSec      int    `json:"dial_timeout_sec"`
 	HandshakeTimeoutSec int    `json:"handshake_timeout_sec"`
+
+	ProbeEnabled     bool   `json:"probe_enabled"`
+	ProbeIntervalSec int    `json:"probe_interval_sec"`
+	ProbeTimeoutSec  int    `json:"probe_timeout_sec"`
+	ProbeTarget      string `json:"probe_target"`
 }
 
 // DefaultSettings returns the built-in defaults.
@@ -94,6 +106,10 @@ func DefaultSettings() Settings {
 		AllowDirect:         true,
 		DialTimeoutSec:      15,
 		HandshakeTimeoutSec: 60,
+		ProbeEnabled:        true,
+		ProbeIntervalSec:    300,
+		ProbeTimeoutSec:     8,
+		ProbeTarget:         "api.ipify.org",
 	}
 }
 
@@ -209,7 +225,48 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("初始化数据库失败: %w", err)
 		}
 	}
+	// Probe columns were added in v0.4; ALTER existing databases in place.
+	cols := map[string]string{
+		"health":        "TEXT NOT NULL DEFAULT 'unknown'",
+		"latency_ms":    "INTEGER NOT NULL DEFAULT 0",
+		"exit_ip":       "TEXT NOT NULL DEFAULT ''",
+		"last_check_at": "INTEGER NOT NULL DEFAULT 0",
+		"last_error":    "TEXT NOT NULL DEFAULT ''",
+	}
+	for name, def := range cols {
+		exists, err := s.columnExists("upstreams", name)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE upstreams ADD COLUMN %s %s`, name, def)); err != nil {
+				return fmt.Errorf("升级 upstreams.%s 失败: %w", name, err)
+			}
+		}
+	}
 	return nil
+}
+
+// columnExists reports whether a table already has a column.
+func (s *Store) columnExists(table, column string) (bool, error) {
+	rows, err := s.db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // importLegacyLocked imports a fastproxy JSON config stored next to the
@@ -328,6 +385,19 @@ func (s *Store) loadSettingsLocked() error {
 	if st.LogRetentionDays <= 0 {
 		st.LogRetentionDays = DefaultSettings().LogRetentionDays
 	}
+	// Probe settings arrived in v0.4; backfill defaults for older rows.
+	if st.ProbeIntervalSec <= 0 {
+		st.ProbeEnabled = true
+		st.ProbeIntervalSec = DefaultSettings().ProbeIntervalSec
+		st.ProbeTimeoutSec = DefaultSettings().ProbeTimeoutSec
+		st.ProbeTarget = DefaultSettings().ProbeTarget
+	}
+	if st.ProbeTimeoutSec <= 0 {
+		st.ProbeTimeoutSec = DefaultSettings().ProbeTimeoutSec
+	}
+	if strings.TrimSpace(st.ProbeTarget) == "" {
+		st.ProbeTarget = DefaultSettings().ProbeTarget
+	}
 	s.settings = st
 	return nil
 }
@@ -361,6 +431,16 @@ func (s *Store) UpdateSettings(in Settings) (Settings, error) {
 	if in.HandshakeTimeoutSec < 10 || in.HandshakeTimeoutSec > 300 {
 		return Settings{}, errors.New("握手超时需在 10-300 秒之间")
 	}
+	in.ProbeTarget = strings.TrimSpace(in.ProbeTarget)
+	if in.ProbeIntervalSec < 30 || in.ProbeIntervalSec > 3600 {
+		return Settings{}, errors.New("探测间隔需在 30-3600 秒之间")
+	}
+	if in.ProbeTimeoutSec < 3 || in.ProbeTimeoutSec > 30 {
+		return Settings{}, errors.New("探测超时需在 3-30 秒之间")
+	}
+	if in.ProbeTarget == "" || strings.ContainsAny(in.ProbeTarget, "/: ") {
+		return Settings{}, errors.New("探测目标应为纯域名，如 api.ipify.org")
+	}
 	b, err := json.Marshal(in)
 	if err != nil {
 		return Settings{}, err
@@ -379,7 +459,8 @@ func (s *Store) UpdateSettings(in Settings) (Settings, error) {
 func (s *Store) Upstreams() []*Upstream {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	rows, err := s.db.Query(`SELECT id, name, type, host, username, password, remark FROM upstreams ORDER BY created_at`)
+	rows, err := s.db.Query(`SELECT id, name, type, host, username, password, remark,
+		health, latency_ms, exit_ip, last_check_at, last_error FROM upstreams ORDER BY created_at`)
 	if err != nil {
 		return nil
 	}
@@ -387,7 +468,8 @@ func (s *Store) Upstreams() []*Upstream {
 	var out []*Upstream
 	for rows.Next() {
 		var u Upstream
-		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.Host, &u.Username, &u.Password, &u.Remark); err != nil {
+		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.Host, &u.Username, &u.Password, &u.Remark,
+			&u.Health, &u.LatencyMS, &u.ExitIP, &u.LastCheckAt, &u.LastError); err != nil {
 			continue
 		}
 		c := resolveUpstream(u)
@@ -398,8 +480,10 @@ func (s *Store) Upstreams() []*Upstream {
 
 func (s *Store) getUpstreamLocked(id string) *Upstream {
 	var u Upstream
-	err := s.db.QueryRow(`SELECT id, name, type, host, username, password, remark FROM upstreams WHERE id=?`, id).
-		Scan(&u.ID, &u.Name, &u.Type, &u.Host, &u.Username, &u.Password, &u.Remark)
+	err := s.db.QueryRow(`SELECT id, name, type, host, username, password, remark,
+		health, latency_ms, exit_ip, last_check_at, last_error FROM upstreams WHERE id=?`, id).
+		Scan(&u.ID, &u.Name, &u.Type, &u.Host, &u.Username, &u.Password, &u.Remark,
+			&u.Health, &u.LatencyMS, &u.ExitIP, &u.LastCheckAt, &u.LastError)
 	if err != nil {
 		return nil
 	}
@@ -442,24 +526,66 @@ func (s *Store) UpsertUpstream(id string, in *Upstream) (*Upstream, error) {
 	if id == "" {
 		in.ID = randomHex(4)
 		_, err := s.db.Exec(`INSERT INTO upstreams
-			(id, name, type, host, username, password, remark, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?)`,
+			(id, name, type, host, username, password, remark, health, created_at, updated_at)
+			VALUES(?,?,?,?,?,?,?,'unknown',?,?)`,
 			in.ID, in.Name, in.Type, in.Host, in.Username, in.Password, in.Remark, now, now)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		res, err := s.db.Exec(`UPDATE upstreams SET name=?, type=?, host=?, username=?, password=?, remark=?, updated_at=? WHERE id=?`,
-			in.Name, in.Type, in.Host, in.Username, in.Password, in.Remark, now, id)
+		// Reset probe state when the endpoint identity changes.
+		reset := false
+		var oldType, oldHost, oldUser, oldPass string
+		err := s.db.QueryRow(`SELECT type, host, username, password FROM upstreams WHERE id=?`, id).
+			Scan(&oldType, &oldHost, &oldUser, &oldPass)
 		if err != nil {
-			return nil, err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
 			return nil, ErrNotFound
+		}
+		if oldType != in.Type || oldHost != in.Host || oldUser != in.Username || oldPass != in.Password {
+			reset = true
+		}
+		if reset {
+			res, err := s.db.Exec(`UPDATE upstreams SET name=?, type=?, host=?, username=?, password=?, remark=?,
+				health='unknown', latency_ms=0, exit_ip='', last_check_at=0, last_error='', updated_at=? WHERE id=?`,
+				in.Name, in.Type, in.Host, in.Username, in.Password, in.Remark, now, id)
+			if err != nil {
+				return nil, err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return nil, ErrNotFound
+			}
+		} else {
+			res, err := s.db.Exec(`UPDATE upstreams SET name=?, type=?, host=?, username=?, password=?, remark=?, updated_at=? WHERE id=?`,
+				in.Name, in.Type, in.Host, in.Username, in.Password, in.Remark, now, id)
+			if err != nil {
+				return nil, err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return nil, ErrNotFound
+			}
 		}
 		in.ID = id
 	}
 	return s.getUpstreamLocked(in.ID), nil
+}
+
+// RecordUpstreamCheck stores the latest probe result for an upstream.
+// exitIP is only overwritten when non-empty (a failed probe keeps the last
+// known exit IP).
+func (s *Store) RecordUpstreamCheck(id, health string, latencyMS int64, exitIP, errText string) error {
+	if id == "" {
+		return nil
+	}
+	if health == "" {
+		health = "unknown"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE upstreams SET health=?, latency_ms=?,
+		exit_ip=CASE WHEN ? <> '' THEN ? ELSE exit_ip END,
+		last_check_at=?, last_error=? WHERE id=?`,
+		health, latencyMS, exitIP, exitIP, time.Now().Unix(), errText, id)
+	return err
 }
 
 // DeleteUpstream removes an upstream unless it is still referenced.

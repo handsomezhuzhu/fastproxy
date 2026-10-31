@@ -63,8 +63,12 @@ func (e *entry) handleConnect(cc *clientConn, req *http.Request, acc *config.Acc
 		addr = net.JoinHostPort(addr, "443")
 	}
 	tr.target = addr
-	up, err := dialTarget(e.upstreamFor(acc), addr, e.dialTimeout())
+	realUp := e.upstreamFor(acc)
+	up, err := dialTarget(realUp, addr, e.dialTimeout())
 	if err != nil {
+		if realUp != nil {
+			e.m.markUpstreamFail(realUp.ID, err.Error())
+		}
 		tr.fail("dial-error", err.Error())
 		writePlainResponse(conn, http.StatusBadGateway)
 		return err
@@ -106,6 +110,9 @@ func (e *entry) handlePlainHTTP(cc *clientConn, req *http.Request, acc *config.A
 	tr2 := e.transportFor(up) // nil upstream = direct
 	resp, err := tr2.RoundTrip(out)
 	if err != nil {
+		if up != nil {
+			e.m.markUpstreamFail(up.ID, err.Error())
+		}
 		tr.fail("dial-error", err.Error())
 		writePlainResponse(conn, http.StatusBadGateway)
 		return fmt.Errorf("转发失败: %w", err)
@@ -125,6 +132,9 @@ func (e *entry) plainViaSocks5(cc *clientConn, out *http.Request, up *config.Ups
 	}
 	tunnel, err := dialTarget(up, addr, e.dialTimeout())
 	if err != nil {
+		if up != nil {
+			e.m.markUpstreamFail(up.ID, err.Error())
+		}
 		tr.fail("dial-error", err.Error())
 		writePlainResponse(conn, http.StatusBadGateway)
 		return err

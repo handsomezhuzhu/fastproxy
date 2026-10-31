@@ -6,6 +6,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  RefreshCw,
   Trash2,
   Zap,
 } from "lucide-react";
@@ -50,6 +51,37 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState, Field, PageHeader } from "@/components/page";
+import { timeAgo } from "@/lib/utils";
+
+function HealthCell({ u }: { u: Upstream }) {
+  if (!u.last_check_at) {
+    return <Badge variant="outline">未检测</Badge>;
+  }
+  const checkedAt = new Date(u.last_check_at * 1000).toISOString();
+  if (u.health === "ok") {
+    return (
+      <div className="space-y-0.5">
+        <div className="flex items-center gap-1.5">
+          <Badge className="bg-emerald-500/15 text-emerald-400" variant="secondary">
+            正常
+          </Badge>
+          <span className="text-xs tabular-nums text-muted-foreground">{u.latency_ms ?? 0} ms</span>
+        </div>
+        <p className="text-xs text-muted-foreground">{timeAgo(checkedAt)}检测</p>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-0.5">
+      <Badge variant="destructive" title={u.last_error || "探测失败"}>
+        失败
+      </Badge>
+      <p className="max-w-[180px] truncate text-xs text-muted-foreground" title={u.last_error}>
+        {u.last_error || "探测失败"} · {timeAgo(checkedAt)}
+      </p>
+    </div>
+  );
+}
 
 export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Promise<void> }) {
   const [open, setOpen] = React.useState(false);
@@ -58,7 +90,8 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [deleting, setDeleting] = React.useState<Upstream | null>(null);
-  const [testing, setTesting] = React.useState<Record<string, string>>({});
+  const [checking, setChecking] = React.useState<Record<string, boolean>>({});
+  const [checkingAll, setCheckingAll] = React.useState(false);
 
   const [importOpen, setImportOpen] = React.useState(false);
   const [importText, setImportText] = React.useState("");
@@ -113,13 +146,37 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     }
   }
 
-  async function test(u: Upstream) {
-    setTesting((t) => ({ ...t, [u.id]: "测试中…" }));
+  async function checkOne(u: Upstream) {
+    setChecking((c) => ({ ...c, [u.id]: true }));
     try {
-      const r = await api.testUpstream(u.id);
-      setTesting((t) => ({ ...t, [u.id]: r.ok ? `延迟 ${r.latency_ms} ms` : (r.error ?? "失败") }));
+      const r = await api.checkUpstream(u.id);
+      if (r.ok) {
+        toast.success(`${u.name}：正常 · ${r.latency_ms} ms · 出口 ${r.exit_ip || "未知"}`);
+      } else {
+        toast.error(`${u.name}：${r.error || "探测失败"}`);
+      }
+      await reload();
     } catch (err: any) {
-      setTesting((t) => ({ ...t, [u.id]: err?.message || "失败" }));
+      toast.error(err?.message || "探测失败");
+    } finally {
+      setChecking((c) => ({ ...c, [u.id]: false }));
+    }
+  }
+
+  async function checkAll() {
+    setCheckingAll(true);
+    try {
+      const r = await api.checkAllUpstreams();
+      if (r.failed > 0) {
+        toast.warning(`检测完成：正常 ${r.ok}，失败 ${r.failed}${r.server_ip ? ` · 本机出口 ${r.server_ip}` : ""}`);
+      } else {
+        toast.success(`检测完成：${r.checked} 个上游全部正常${r.server_ip ? ` · 本机出口 ${r.server_ip}` : ""}`);
+      }
+      await reload();
+    } catch (err: any) {
+      toast.error(err?.message || "检测失败");
+    } finally {
+      setCheckingAll(false);
     }
   }
 
@@ -150,9 +207,17 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     <div className="space-y-5">
       <PageHeader
         title="上游代理"
-        description="支持 http / socks5；密码可用 ${VAR} 引用环境变量，明文不落盘。被引用的上游不可删除。"
+        description="支持 http / socks5；密码可用 ${VAR} 引用环境变量。健康检查与出口 IP 由定时探测维护，可在系统设置调整间隔。"
         actions={
           <>
+            <Button variant="outline" onClick={checkAll} disabled={checkingAll}>
+              {checkingAll ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <RefreshCw className="size-4" aria-hidden="true" />
+              )}
+              {checkingAll ? "检测中…" : "检测全部"}
+            </Button>
             <Button
               variant="outline"
               onClick={() => {
@@ -187,10 +252,9 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
               <TableHead>名称</TableHead>
               <TableHead>类型</TableHead>
               <TableHead>地址</TableHead>
-              <TableHead>认证</TableHead>
+              <TableHead>健康</TableHead>
+              <TableHead>出口 IP</TableHead>
               <TableHead className="text-right">引用</TableHead>
-              <TableHead>备注</TableHead>
-              <TableHead>连通性</TableHead>
               <TableHead className="w-12">
                 <span className="sr-only">操作</span>
               </TableHead>
@@ -199,34 +263,50 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
           <TableBody>
             {data.upstreams.map((u) => (
               <TableRow key={u.id}>
-                <TableCell className="font-medium">{u.name}</TableCell>
+                <TableCell>
+                  <div className="font-medium">{u.name}</div>
+                  {u.remark ? (
+                    <div className="max-w-[160px] truncate text-xs text-muted-foreground">{u.remark}</div>
+                  ) : null}
+                </TableCell>
                 <TableCell>
                   <Badge variant="outline">{u.type}</Badge>
                 </TableCell>
-                <TableCell className="font-mono text-xs">{u.host}</TableCell>
-                <TableCell className="font-mono text-xs text-muted-foreground">{u.username || "–"}</TableCell>
-                <TableCell className="text-right text-xs tabular-nums">{refs(u.id)}</TableCell>
-                <TableCell className="max-w-[140px] truncate text-xs text-muted-foreground">{u.remark || "–"}</TableCell>
-                <TableCell className="text-xs">
-                  {testing[u.id] ? (
-                    <span className={testing[u.id].startsWith("延迟") ? "text-emerald-400" : "text-muted-foreground"}>
-                      {testing[u.id]}
-                    </span>
+                <TableCell>
+                  <div className="font-mono text-xs">{u.host}</div>
+                  {u.username ? (
+                    <div className="max-w-[180px] truncate font-mono text-xs text-muted-foreground">
+                      账号 {u.username}
+                    </div>
+                  ) : null}
+                </TableCell>
+                <TableCell>
+                  <HealthCell u={u} />
+                </TableCell>
+                <TableCell>
+                  {u.exit_ip ? (
+                    <span className="font-mono text-xs tabular-nums">{u.exit_ip}</span>
                   ) : (
-                    <Button variant="ghost" size="xs" onClick={() => test(u)}>
-                      <Zap className="size-3.5" aria-hidden="true" /> 测试
-                    </Button>
+                    <span className="text-xs text-muted-foreground">–</span>
                   )}
                 </TableCell>
+                <TableCell className="text-right text-xs tabular-nums">{refs(u.id)}</TableCell>
                 <TableCell>
                   <DropdownMenu>
                     <DropdownMenuTrigger
                       className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                       aria-label={`上游 ${u.name} 操作菜单`}
                     >
-                      <Ellipsis className="size-4" aria-hidden="true" />
+                      {checking[u.id] ? (
+                        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <Ellipsis className="size-4" aria-hidden="true" />
+                      )}
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-40">
+                      <DropdownMenuItem onClick={() => checkOne(u)} disabled={checking[u.id]}>
+                        <Zap className="size-4" aria-hidden="true" /> 立即检测
+                      </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => openEdit(u)}>
                         <Pencil className="size-4" aria-hidden="true" /> 编辑
                       </DropdownMenuItem>

@@ -18,6 +18,7 @@ import (
 	"github.com/handsomezhuzhu/fastproxy/admin"
 	"github.com/handsomezhuzhu/fastproxy/config"
 	"github.com/handsomezhuzhu/fastproxy/logx"
+	"github.com/handsomezhuzhu/fastproxy/probe"
 	"github.com/handsomezhuzhu/fastproxy/proxy"
 )
 
@@ -60,6 +61,10 @@ func main() {
 	logger.SetPersist(store)
 	defer logger.Close()
 
+	// Signal context for the whole process (prober + server).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// Prune expired access logs at startup and hourly (reads live settings).
 	prune := func() {
 		days := store.Settings().LogRetentionDays
@@ -71,10 +76,19 @@ func main() {
 		prune()
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
-		for range t.C {
-			prune()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				prune()
+			}
 		}
 	}()
+
+	// Active probing: upstream health, latency and exit IP (periodic).
+	prober := probe.NewRunner(store, logger)
+	go prober.Start(ctx)
 
 	// Admin password: ADMIN_PASSWORD env wins; otherwise generate one on
 	// first boot and print it once.
@@ -116,7 +130,7 @@ func main() {
 	log.Printf("账户共 %d 个，上游共 %d 个", len(store.Accounts()), len(store.Upstreams()))
 
 	// Admin panel + API.
-	adm := admin.NewServer(store, mgr, logger, version)
+	adm := admin.NewServer(store, mgr, logger, prober, version)
 	httpServer := &http.Server{
 		Addr:              adminAddr,
 		Handler:           adm.Handler(),
@@ -128,8 +142,6 @@ func main() {
 	}
 	log.Printf("管理面板: http://%s", ln.Addr())
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	go func() {
 		<-ctx.Done()
 		timeout, cancel := context.WithTimeout(context.Background(), 5*time.Second)

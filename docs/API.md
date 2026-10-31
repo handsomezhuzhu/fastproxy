@@ -22,7 +22,8 @@
 | PUT | `/api/settings` | 保存全局设置 |
 
 设置字段：`access_log, log_level(debug|info|warn|error), log_buffer(100-10000),
-log_retention_days(1-90), allow_direct, dial_timeout_sec(3-120), handshake_timeout_sec(10-300)`。
+log_retention_days(1-90), allow_direct, dial_timeout_sec(3-120), handshake_timeout_sec(10-300),
+probe_enabled, probe_interval_sec(30-3600), probe_timeout_sec(3-30), probe_target(域名)`。
 
 ## 上游代理
 
@@ -31,8 +32,13 @@ log_retention_days(1-90), allow_direct, dial_timeout_sec(3-120), handshake_timeo
 | POST | `/api/upstreams` | `{name, upstream:"http://user:pass@host:port"}` |
 | PUT | `/api/upstreams/{id}` | 同上 |
 | DELETE | `/api/upstreams/{id}` | 被引用时返回错误 |
-| POST | `/api/upstreams/{id}/test` | 通过该上游 CONNECT 到 api.ipify.org:443，返回 `{ok, latency_ms, error?}` |
+| POST | `/api/upstreams/{id}/test` | 立即探测该上游（健康 + 延迟 + 出口 IP），返回 `{ok, latency_ms, exit_ip, error?}` |
+| POST | `/api/upstreams/{id}/check` | 同上（`/test` 为兼容别名） |
+| POST | `/api/upstreams/check-all` | 检测全部上游与本机出口，返回 `{ok, failed, checked, server_ip}` |
 | POST | `/api/upstreams/import` | `{url}` 或 `{text}` → `{added,total,duplicates[],problems[]}` |
+
+`/api/data` 的 `upstreams[]` 含探测字段：`health(ok|fail|unknown), latency_ms, exit_ip,
+last_check_at(秒), last_error`；另有 `probe:{server_ip,last_check_at}`。
 
 ## 端口线路
 

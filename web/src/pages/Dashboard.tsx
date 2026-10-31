@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Activity, ArrowRight, ChevronRight, Layers, Network, Users } from "lucide-react";
+import { Activity, ArrowRight, ChevronRight, Globe, Layers, Network, Users } from "lucide-react";
 import { api, type Data, type LogEntry } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PageHeader, StatCard, EmptyState } from "@/components/page";
-import { cn, clock, bytes } from "@/lib/utils";
+import { cn, clock, bytes, timeAgo } from "@/lib/utils";
 import type { Page } from "@/App";
 import type { CopyPreset } from "@/components/CopyWizard";
 
@@ -82,7 +82,7 @@ export function DashboardPage({
         }
       />
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard
           label="端口线路"
           value={
@@ -106,6 +106,18 @@ export function DashboardPage({
           icon={<Users className="size-4" />}
         />
         <StatCard label="上游代理" value={data.upstreams.length} hint="已配置" icon={<Layers className="size-4" />} />
+        <StatCard
+          label="本机出口 IP"
+          value={
+            <span className="font-mono text-lg tabular-nums">{data.probe?.server_ip || "–"}</span>
+          }
+          hint={
+            data.probe?.last_check_at
+              ? `检测于 ${timeAgo(new Date(data.probe.last_check_at * 1000).toISOString())}`
+              : "尚未检测"
+          }
+          icon={<Globe className="size-4" />}
+        />
         <StatCard label="活跃连接" value={active} hint="当前" icon={<Activity className="size-4" />} />
         <StatCard
           label="累计流量"

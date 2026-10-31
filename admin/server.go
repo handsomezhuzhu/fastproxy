@@ -22,6 +22,7 @@ import (
 	"github.com/handsomezhuzhu/fastproxy/config"
 	"github.com/handsomezhuzhu/fastproxy/importer"
 	"github.com/handsomezhuzhu/fastproxy/logx"
+	"github.com/handsomezhuzhu/fastproxy/probe"
 	"github.com/handsomezhuzhu/fastproxy/proxy"
 )
 
@@ -40,6 +41,7 @@ type Server struct {
 	store *config.Store
 	mgr   *proxy.Manager
 	log   *logx.Logger
+	probe *probe.Runner
 	ver   string
 	web   fs.FS
 
@@ -52,13 +54,13 @@ type failState struct {
 	lockedUntil time.Time
 }
 
-// NewServer wires the panel to the store, proxy manager and logger.
-func NewServer(store *config.Store, mgr *proxy.Manager, logger *logx.Logger, version string) *Server {
+// NewServer wires the panel to the store, proxy manager, logger and prober.
+func NewServer(store *config.Store, mgr *proxy.Manager, logger *logx.Logger, prober *probe.Runner, version string) *Server {
 	sub, err := fs.Sub(distFS, "dist")
 	if err != nil {
 		log.Fatalf("嵌入的前端资源损坏: %v", err)
 	}
-	return &Server{store: store, mgr: mgr, log: logger, ver: version,
+	return &Server{store: store, mgr: mgr, log: logger, probe: prober, ver: version,
 		web: sub, fails: map[string]*failState{}}
 }
 
@@ -76,8 +78,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /api/upstreams", s.auth(s.handleCreateUpstream))
 	mux.HandleFunc("POST /api/upstreams/import", s.auth(s.handleImportUpstreams))
+	mux.HandleFunc("POST /api/upstreams/check-all", s.auth(s.handleCheckAllUpstreams))
 	mux.HandleFunc("PUT /api/upstreams/{id}", s.auth(s.handleUpdateUpstream))
-	mux.HandleFunc("POST /api/upstreams/{id}/test", s.auth(s.handleTestUpstream))
+	mux.HandleFunc("POST /api/upstreams/{id}/check", s.auth(s.handleCheckUpstream))
+	mux.HandleFunc("POST /api/upstreams/{id}/test", s.auth(s.handleCheckUpstream)) // 兼容旧前端
 	mux.HandleFunc("DELETE /api/upstreams/{id}", s.auth(s.handleDeleteUpstream))
 
 	mux.HandleFunc("POST /api/ports", s.auth(s.handleCreatePort))
@@ -286,6 +290,11 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	ports, accounts := s.mgr.Status()
+	serverIP, checkedAt := s.probe.ServerIP()
+	var checkedUnix int64
+	if !checkedAt.IsZero() {
+		checkedUnix = checkedAt.Unix()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":   s.ver,
 		"settings":  s.store.Settings(),
@@ -293,6 +302,7 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 		"ports":     s.store.Ports(),
 		"accounts":  s.store.Accounts(),
 		"status":    map[string]any{"ports": ports, "accounts": accounts},
+		"probe":     map[string]any{"server_ip": serverIP, "last_check_at": checkedUnix},
 	})
 }
 
@@ -447,35 +457,32 @@ func (s *Server) handleImportUpstreams(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleTestUpstream dials a fixed probe target through the upstream.
-func (s *Server) handleTestUpstream(w http.ResponseWriter, r *http.Request) {
+// handleCheckUpstream probes one upstream now (health + latency + exit IP).
+func (s *Server) handleCheckUpstream(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var target *config.Upstream
-	for _, u := range s.store.Upstreams() {
-		if u.ID == id {
-			c := *u
-			target = &c
-			break
-		}
-	}
-	if target == nil {
+	res, ok := s.probe.CheckOne(id)
+	if !ok {
 		writeErr(w, http.StatusNotFound, "上游不存在")
 		return
 	}
-	timeout := time.Duration(s.store.Settings().DialTimeoutSec) * time.Second
-	if timeout > 10*time.Second {
-		timeout = 10 * time.Second
+	if res.OK {
+		s.log.Infof("上游探测 %s: 正常, 延迟 %dms, 出口 IP %s", id, res.LatencyMS, res.ExitIP)
+	} else {
+		s.log.Warnf("上游探测 %s: 失败 %s", id, res.Error)
 	}
-	start := time.Now()
-	conn, err := proxy.DialTunnel(*target, "api.ipify.org:443", timeout)
-	if err != nil {
-		s.log.Warnf("上游测速失败 %s (%s): %v", target.Name, target.Host, err)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "latency_ms": 0, "error": err.Error()})
-		return
-	}
-	conn.Close()
-	ms := time.Since(start).Milliseconds()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "latency_ms": ms})
+	writeJSON(w, http.StatusOK, res)
+}
+
+// handleCheckAllUpstreams probes every upstream and refreshes the direct IP.
+func (s *Server) handleCheckAllUpstreams(w http.ResponseWriter, r *http.Request) {
+	ok, failed := s.probe.CheckAll()
+	serverIP, _ := s.probe.ServerIP()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        ok,
+		"failed":    failed,
+		"checked":   ok + failed,
+		"server_ip": serverIP,
+	})
 }
 
 // --- ports ---

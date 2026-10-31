@@ -446,6 +446,40 @@ func TestOpenFailsOnMissingSecretRef(t *testing.T) {
 	}
 }
 
+func TestUpstreamProbeState(t *testing.T) {
+	s := tempStore(t, 7788)
+	u, err := s.UpsertUpstream("", upstreamFixture("probe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Upstreams()[0]; got.Health != "unknown" {
+		t.Fatalf("expected unknown health, got %q", got.Health)
+	}
+	if err := s.RecordUpstreamCheck(u.ID, "ok", 123, "203.0.113.7", ""); err != nil {
+		t.Fatal(err)
+	}
+	got := s.getUpstreamLocked(u.ID)
+	if got.Health != "ok" || got.LatencyMS != 123 || got.ExitIP != "203.0.113.7" || got.LastCheckAt == 0 {
+		t.Fatalf("probe state not persisted: %+v", got)
+	}
+	// A failed probe keeps the last known exit IP.
+	if err := s.RecordUpstreamCheck(u.ID, "fail", 0, "", "dial timeout"); err != nil {
+		t.Fatal(err)
+	}
+	got = s.getUpstreamLocked(u.ID)
+	if got.Health != "fail" || got.LastError != "dial timeout" || got.ExitIP != "203.0.113.7" {
+		t.Fatalf("failure state mismatch: %+v", got)
+	}
+	// Changing the endpoint identity resets probe state.
+	updated, err := s.UpsertUpstream(u.ID, &Upstream{Name: "probe", Type: "socks5", Host: "2.2.2.2:1080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Health != "unknown" || updated.ExitIP != "" || updated.LatencyMS != 0 {
+		t.Fatalf("probe state should reset on endpoint change: %+v", updated)
+	}
+}
+
 func TestMissingEntity(t *testing.T) {
 	s := tempStore(t, 7788)
 	if _, err := s.UpsertPort("nosuch", portFixture(10201, "")); !errors.Is(err, ErrNotFound) {

@@ -66,7 +66,6 @@ Port（接入端口）               Account（账户）
 ## 上游导入
 
 `POST /api/upstreams/import`，输入 `{url}` 或 `{text}`，解析：
-
 | 格式 | 示例 |
 |---|---|
 | URI 行 | `http://user:pass@1.2.3.4:8080#名称`、`socks5://...` |
@@ -78,6 +77,17 @@ Port（接入端口）               Account（账户）
 - 仅导入 http/socks5 节点，其余类型计入"跳过"
 - 去重键：`type|host|username|password`，与现有上游比较后追加
 - 返回 `{added, total, duplicates[], problems[]}`，面板展示明细
+
+## 探测与出口 IP
+
+- **主动探测**：默认每 300 秒（可在系统设置调整 30-3600 秒）并发（≤4）检测全部上游：
+  通过上游隧道请求探测目标（默认 `api.ipify.org`，先 :80 再 :443/TLS），
+  记录健康状态（ok/fail）、握手延迟、响应中的**出口 IP**、失败原因与检测时间。
+- **本机出口 IP**：同一轮探测中直连探测一次，控制台仪表盘展示。
+- **被动标记**：真实转发发生 `dial-error`/`upstream-error` 时，按上游 30 秒节流写入失败状态，
+  与主动探测共同维护健康视图。
+- 凭证/地址变更会自动重置该上游的探测状态；探测结果存于 `upstreams` 表相关列，
+  接口见 `docs/API.md`。
 
 ## 管理面
 

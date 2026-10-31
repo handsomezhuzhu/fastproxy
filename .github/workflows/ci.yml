@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: instabox-medium
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -83,4 +83,4 @@ jobs:
             --title "FastProxy $GITHUB_REF_NAME" \
             --notes "FastProxy $GITHUB_REF_NAME — 多端口·多账户·上游绑定的轻量 HTTP/SOCKS5 转发中转。
 
-Docker: docker pull ghcr.io/${{ github.repository }}:$GITHUB_REF_NAME"
+            Docker: docker pull ghcr.io/${{ github.repository }}:$GITHUB_REF_NAME"

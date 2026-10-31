@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -477,6 +478,24 @@ func TestUpstreamProbeState(t *testing.T) {
 	}
 	if updated.Health != "unknown" || updated.ExitIP != "" || updated.LatencyMS != 0 {
 		t.Fatalf("probe state should reset on endpoint change: %+v", updated)
+	}
+}
+
+func TestEmptyCollectionsEncodeAsArrays(t *testing.T) {
+	s := tempStore(t, 7788)
+	if s.Upstreams() == nil || s.Ports() == nil || s.Accounts() == nil {
+		t.Fatal("empty collections must be non-nil slices so the API returns [] instead of null")
+	}
+	b, err := json.Marshal(map[string]any{
+		"upstreams": s.Upstreams(),
+		"ports":     s.Ports(),
+		"accounts":  s.Accounts(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "null") {
+		t.Fatalf("collections serialized as null: %s", b)
 	}
 }
 

@@ -21,6 +21,9 @@ jobs:
       - name: Build web (shadcn UI)
         run: cd web && npm ci --no-audit --no-fund && npm run build
 
+      - name: DOM smoke test (black-screen guard)
+        run: cd web && node scripts/smoke-dom.mjs
+
       - name: Vet
         run: go vet ./...
 

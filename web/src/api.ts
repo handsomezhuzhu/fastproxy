@@ -143,12 +143,43 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   }
 }
 
+export const defaultSettings: Settings = {
+  access_log: true,
+  log_level: "info",
+  log_buffer: 1000,
+  log_retention_days: 7,
+  allow_direct: true,
+  dial_timeout_sec: 15,
+  handshake_timeout_sec: 60,
+  probe_enabled: true,
+  probe_interval_sec: 300,
+  probe_timeout_sec: 8,
+  probe_target: "api.ipify.org",
+};
+
+/** The API returns null for empty slices; normalize every collection. */
+function normalizeData(d: Data): Data {
+  return {
+    ...d,
+    version: d.version || "dev",
+    upstreams: d.upstreams ?? [],
+    ports: d.ports ?? [],
+    accounts: d.accounts ?? [],
+    settings: { ...defaultSettings, ...(d.settings ?? {}) },
+    status: {
+      ports: d.status?.ports ?? [],
+      accounts: d.status?.accounts ?? [],
+    },
+    probe: d.probe ?? { server_ip: "", last_check_at: 0 },
+  };
+}
+
 export const api = {
   session: () => req<{ auth: boolean; version: string }>("/api/session"),
   login: (password: string) =>
     req<{ ok: true }>("/api/login", { method: "POST", body: JSON.stringify({ password }) }),
   logout: () => req<{ ok: true }>("/api/logout", { method: "POST" }),
-  data: () => req<Data>("/api/data"),
+  data: async () => normalizeData(await req<Data>("/api/data")),
 
   saveSettings: (s: Settings) =>
     req<{ settings: Settings }>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),
@@ -181,8 +212,13 @@ export const api = {
       "/api/upstreams/check-all",
       { method: "POST" }
     ),
-  importUpstreams: (body: { text?: string; url?: string }) =>
-    req<ImportResult>("/api/upstreams/import", { method: "POST", body: JSON.stringify(body) }),
+  importUpstreams: async (body: { text?: string; url?: string }) => {
+    const r = await req<ImportResult>("/api/upstreams/import", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return { ...r, duplicates: r.duplicates ?? [], problems: r.problems ?? [] };
+  },
 
   logs: (params: { limit?: number; port?: number; account?: string; level?: string }) => {
     const q = new URLSearchParams();
@@ -190,11 +226,13 @@ export const api = {
     if (params.port) q.set("port", String(params.port));
     if (params.account) q.set("account", params.account);
     if (params.level) q.set("level", params.level);
-    return req<{ entries: LogEntry[] }>(`/api/logs?${q.toString()}`);
+    return req<{ entries: LogEntry[] }>(`/api/logs?${q.toString()}`).then((r) => ({ entries: r.entries ?? [] }));
   },
 
-  stats: () =>
-    req<{ status: { ports: PortStatus[]; accounts: AccountStatus[] } }>("/api/stats"),
+  stats: async () => {
+    const r = await req<{ status: { ports: PortStatus[]; accounts: AccountStatus[] } }>("/api/stats");
+    return { status: { ports: r.status?.ports ?? [], accounts: r.status?.accounts ?? [] } };
+  },
 
   changePassword: (oldpwd: string, newpwd: string) =>
     req<{ ok: true }>("/api/password", {

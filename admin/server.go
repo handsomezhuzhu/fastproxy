@@ -447,13 +447,20 @@ func (s *Server) handleImportUpstreams(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	added, duplicates := s.store.ImportUpstreams(candidates)
+	if duplicates == nil {
+		duplicates = []string{}
+	}
+	problems := res.Problems
+	if problems == nil {
+		problems = []string{}
+	}
 	s.log.Infof("上游导入: 识别 %d, 新增 %d, 重复 %d, 跳过 %d",
-		len(res.Proxies), added, len(duplicates), len(res.Problems))
+		len(res.Proxies), added, len(duplicates), len(problems))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"added":      added,
 		"total":      len(res.Proxies),
 		"duplicates": duplicates,
-		"problems":   res.Problems,
+		"problems":   problems,
 	})
 }
 

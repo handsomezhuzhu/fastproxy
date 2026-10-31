@@ -67,8 +67,16 @@ const settings = {
   probe_target: "api.ipify.org",
 };
 
+let data, logEntries;
+const fixturePath = path.resolve("scripts/fixture.json");
+if (fs.existsSync(fixturePath)) {
+  const fx = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+  data = fx.data;
+  logEntries = fx.logs?.entries ?? [];
+  console.log("using live fixture: upstreams =", data?.upstreams, "ports =", data?.ports?.length);
+}
 const now = Math.floor(Date.now() / 1000);
-const data = {
+const sampleData = {
   version: "v0.4.0",
   settings,
   upstreams: [
@@ -127,7 +135,7 @@ const data = {
   probe: { server_ip: "198.200.49.224", last_check_at: now },
 };
 
-const logEntries = [
+const sampleLogEntries = [
   {
     time: new Date().toISOString(),
     level: "info",
@@ -143,6 +151,11 @@ const logEntries = [
     msg: "",
   },
 ];
+
+if (!data) {
+  data = sampleData;
+  logEntries = sampleLogEntries;
+}
 
 function jsonBody(obj) {
   return Promise.resolve({

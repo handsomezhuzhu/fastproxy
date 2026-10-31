@@ -459,13 +459,13 @@ func (s *Store) UpdateSettings(in Settings) (Settings, error) {
 func (s *Store) Upstreams() []*Upstream {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]*Upstream, 0, 4)
 	rows, err := s.db.Query(`SELECT id, name, type, host, username, password, remark,
 		health, latency_ms, exit_ip, last_check_at, last_error FROM upstreams ORDER BY created_at`)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
-	var out []*Upstream
 	for rows.Next() {
 		var u Upstream
 		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.Host, &u.Username, &u.Password, &u.Remark,
@@ -665,12 +665,12 @@ func (s *Store) ImportUpstreams(candidates []*Upstream) (int, []string) {
 func (s *Store) Ports() []*Port {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]*Port, 0, 4)
 	rows, err := s.db.Query(`SELECT id, port, default_upstream, enabled, remark FROM ports ORDER BY port`)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
-	var out []*Port
 	for rows.Next() {
 		var p Port
 		var enabled int
@@ -784,12 +784,12 @@ func (s *Store) SetPortEnabled(id string, enabled bool) (*Port, error) {
 func (s *Store) Accounts() []*Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]*Account, 0, 4)
 	rows, err := s.db.Query(`SELECT id, username, password, port_id, upstream_id, enabled, remark FROM accounts ORDER BY created_at`)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
-	var out []*Account
 	for rows.Next() {
 		var a Account
 		var enabled int

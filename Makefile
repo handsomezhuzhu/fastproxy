@@ -20,6 +20,9 @@ build:
 test:
 	go test ./... -count=1
 
+smoke:
+	cd web && npm run build && node scripts/smoke-dom.mjs
+
 vet:
 	go vet ./...
 

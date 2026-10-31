@@ -219,12 +219,15 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	store, err := config.Open(filepath.Join(t.TempDir(), "fastproxy.json"), freePort(t))
+	store, err := config.Open(filepath.Join(t.TempDir(), "fastproxy.db"), freePort(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := &env{store: store, mgr: NewManager(store, logx.New("", 100, logx.LevelWarn, false))}
-	t.Cleanup(env.mgr.Close)
+	t.Cleanup(func() {
+		env.mgr.Close()
+		env.store.Close()
+	})
 	return env
 }
 

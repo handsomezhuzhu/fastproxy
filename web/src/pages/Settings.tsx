@@ -1,19 +1,18 @@
 import * as React from "react";
-import { api, type Data, type Settings } from "../api";
+import { toast } from "sonner";
+import { api, type Data, type Settings } from "@/api";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
-  Badge,
-  Button,
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-  Input,
-  Label,
-  Select,
-  Switch,
-} from "../components/ui";
-import { toast } from "../components/Toast";
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { Field, FormSelect, PageHeader } from "@/components/page";
 
 export function SettingsPage({
   data,
@@ -29,125 +28,138 @@ export function SettingsPage({
 
   React.useEffect(() => setForm(data.settings), [data.settings]);
 
-  async function saveSettings() {
+  async function saveSettings(e: React.FormEvent) {
+    e.preventDefault();
     setSaving(true);
     try {
       await api.saveSettings({
         ...form,
         log_buffer: Number(form.log_buffer),
+        log_retention_days: Number(form.log_retention_days),
         dial_timeout_sec: Number(form.dial_timeout_sec),
         handshake_timeout_sec: Number(form.handshake_timeout_sec),
       });
-      toast("系统设置已保存");
+      toast.success("系统设置已保存");
       await reload();
-    } catch (e: any) {
-      toast(e?.message || "保存失败", "error");
+    } catch (err: any) {
+      toast.error(err?.message || "保存失败");
     } finally {
       setSaving(false);
     }
   }
 
-  const [oldPwd, setOldPwd] = React.useState("");
-  const [newPwd, setNewPwd] = React.useState("");
-  const [newPwd2, setNewPwd2] = React.useState("");
+  const [oldPassword, setOldPassword] = React.useState("");
+  const [newPassword, setNewPassword] = React.useState("");
+  const [confirmPassword, setConfirmPassword] = React.useState("");
   const [pwdBusy, setPwdBusy] = React.useState(false);
 
   async function changePassword(e: React.FormEvent) {
     e.preventDefault();
-    if (newPwd !== newPwd2) {
-      toast("两次输入的新密码不一致", "error");
+    if (newPassword !== confirmPassword) {
+      toast.error("两次输入的新密码不一致");
       return;
     }
     setPwdBusy(true);
     try {
-      await api.changePassword(oldPwd, newPwd);
-      toast("密码已修改，请重新登录");
+      await api.changePassword(oldPassword, newPassword);
+      toast.success("密码已修改，请重新登录");
       onLoggedOut();
     } catch (err: any) {
-      toast(err?.message || "修改失败", "error");
+      toast.error(err?.message || "修改失败");
     } finally {
       setPwdBusy(false);
     }
   }
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-lg font-semibold">系统设置</h1>
-        <p className="text-xs text-muted-foreground">全局配置入口：日志、超时、直连策略与管理密码</p>
-      </div>
+    <div className="space-y-5">
+      <PageHeader title="系统设置" description="全局配置：日志、超时、直连策略与管理密码。" />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>转发与日志</CardTitle>
-            <CardDescription>修改后新连接立即生效，无需重启</CardDescription>
+            <CardDescription>保存后新连接立即生效，无需重启服务。</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <Label className="text-foreground">记录连接日志</Label>
-                <p className="text-[11px] text-muted-foreground">关闭后仅记录失败连接</p>
-              </div>
-              <Switch checked={form.access_log} onCheckedChange={(v) => setForm({ ...form, access_log: v })} />
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div>
-                <Label className="text-foreground">允许直连端口</Label>
-                <p className="text-[11px] text-muted-foreground">端口未绑定上游时直接从本机出口</p>
-              </div>
-              <Switch
-                checked={form.allow_direct}
-                onCheckedChange={(v) => setForm({ ...form, allow_direct: v })}
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>日志级别</Label>
-                <Select value={form.log_level} onChange={(e) => setForm({ ...form, log_level: e.target.value })}>
-                  <option value="debug">debug</option>
-                  <option value="info">info</option>
-                  <option value="warn">warn</option>
-                  <option value="error">error</option>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <Label>内存日志条数</Label>
-                <Input
-                  type="number"
-                  min={100}
-                  max={10000}
-                  value={form.log_buffer}
-                  onChange={(e) => setForm({ ...form, log_buffer: Number(e.target.value) })}
+          <CardContent>
+            <form onSubmit={saveSettings} className="space-y-5">
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">记录连接日志</p>
+                  <p className="text-xs text-muted-foreground">关闭后仅记录失败连接。</p>
+                </div>
+                <Switch
+                  checked={form.access_log}
+                  onCheckedChange={(v: boolean) => setForm({ ...form, access_log: v })}
+                  aria-label="记录连接日志"
                 />
               </div>
-              <div className="space-y-1.5">
-                <Label>连接超时（秒）</Label>
-                <Input
-                  type="number"
-                  min={3}
-                  max={120}
-                  value={form.dial_timeout_sec}
-                  onChange={(e) => setForm({ ...form, dial_timeout_sec: Number(e.target.value) })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>握手超时（秒）</Label>
-                <Input
-                  type="number"
-                  min={10}
-                  max={300}
-                  value={form.handshake_timeout_sec}
-                  onChange={(e) => setForm({ ...form, handshake_timeout_sec: Number(e.target.value) })}
-                />
-              </div>
-            </div>
 
-            <Button onClick={saveSettings} disabled={saving} className="w-full">
-              {saving ? "保存中…" : "保存系统设置"}
-            </Button>
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">允许直连端口</p>
+                  <p className="text-xs text-muted-foreground">端口未绑定上游时从本机直接出口。</p>
+                </div>
+                <Switch
+                  checked={form.allow_direct}
+                  onCheckedChange={(v: boolean) => setForm({ ...form, allow_direct: v })}
+                  aria-label="允许直连端口"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="日志级别" htmlFor="set-level">
+                  <FormSelect
+                    id="set-level"
+                    value={form.log_level}
+                    onValueChange={(v) => setForm({ ...form, log_level: v })}
+                    items={[
+                      { value: "debug", label: "debug" },
+                      { value: "info", label: "info" },
+                      { value: "warn", label: "warn" },
+                      { value: "error", label: "error" },
+                    ]}
+                  />
+                </Field>
+                <Field label="日志保留（天）" htmlFor="set-retention">
+                  <Input
+                    id="set-retention"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={90}
+                    value={form.log_retention_days}
+                    onChange={(e) => setForm({ ...form, log_retention_days: Number(e.target.value) })}
+                  />
+                </Field>
+                <Field label="连接超时（秒）" htmlFor="set-dial">
+                  <Input
+                    id="set-dial"
+                    type="number"
+                    inputMode="numeric"
+                    min={3}
+                    max={120}
+                    value={form.dial_timeout_sec}
+                    onChange={(e) => setForm({ ...form, dial_timeout_sec: Number(e.target.value) })}
+                  />
+                </Field>
+                <Field label="握手超时（秒）" htmlFor="set-handshake">
+                  <Input
+                    id="set-handshake"
+                    type="number"
+                    inputMode="numeric"
+                    min={10}
+                    max={300}
+                    value={form.handshake_timeout_sec}
+                    onChange={(e) => setForm({ ...form, handshake_timeout_sec: Number(e.target.value) })}
+                  />
+                </Field>
+              </div>
+
+              <Button type="submit" className="w-full" disabled={saving}>
+                {saving ? "保存中…" : "保存系统设置"}
+              </Button>
+            </form>
           </CardContent>
         </Card>
 
@@ -155,23 +167,38 @@ export function SettingsPage({
           <Card>
             <CardHeader>
               <CardTitle>修改管理密码</CardTitle>
-              <CardDescription>修改后所有会话失效，需要重新登录</CardDescription>
+              <CardDescription>修改后所有会话失效，需要重新登录。</CardDescription>
             </CardHeader>
             <CardContent>
               <form onSubmit={changePassword} className="space-y-3">
-                <div className="space-y-1.5">
-                  <Label>原密码</Label>
-                  <Input type="password" value={oldPwd} onChange={(e) => setOldPwd(e.target.value)} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>新密码（至少 6 位）</Label>
-                  <Input type="password" value={newPwd} onChange={(e) => setNewPwd(e.target.value)} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>确认新密码</Label>
-                  <Input type="password" value={newPwd2} onChange={(e) => setNewPwd2(e.target.value)} />
-                </div>
-                <Button type="submit" variant="secondary" className="w-full" disabled={pwdBusy || !newPwd}>
+                <Field label="原密码" htmlFor="pwd-old">
+                  <Input
+                    id="pwd-old"
+                    type="password"
+                    autoComplete="current-password"
+                    value={oldPassword}
+                    onChange={(e) => setOldPassword(e.target.value)}
+                  />
+                </Field>
+                <Field label="新密码（至少 6 位）" htmlFor="pwd-new">
+                  <Input
+                    id="pwd-new"
+                    type="password"
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                  />
+                </Field>
+                <Field label="确认新密码" htmlFor="pwd-confirm">
+                  <Input
+                    id="pwd-confirm"
+                    type="password"
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                  />
+                </Field>
+                <Button type="submit" variant="secondary" className="w-full" disabled={pwdBusy || !newPassword}>
                   {pwdBusy ? "处理中…" : "修改密码"}
                 </Button>
               </form>
@@ -186,19 +213,19 @@ export function SettingsPage({
             <CardContent className="space-y-2 text-xs text-muted-foreground">
               <div className="flex items-center justify-between">
                 <span>版本</span>
-                <Badge variant="outline">v{data.version}</Badge>
+                <Badge variant="outline" translate="no">v{data.version}</Badge>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span>面板地址</span>
+                <span className="truncate font-mono">{window.location.host}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span>面板地址</span>
-                <span className="font-mono">{window.location.host}</span>
+                <span>数据存储</span>
+                <span className="font-mono">SQLite (WAL)</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>入站协议</span>
                 <span>HTTP / SOCKS5（同端口自动识别）</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>配置文件</span>
-                <span className="font-mono">/data/fastproxy.json</span>
               </div>
             </CardContent>
           </Card>

@@ -30,6 +30,7 @@ export type Settings = {
   access_log: boolean;
   log_level: string;
   log_buffer: number;
+  log_retention_days: number;
   allow_direct: boolean;
   dial_timeout_sec: number;
   handshake_timeout_sec: number;
@@ -126,25 +127,25 @@ export const api = {
     req<{ settings: Settings }>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),
 
   createPort: (body: Partial<Port>) =>
-    req<{ saved?: Port }>("/api/ports", { method: "POST", body: JSON.stringify(body) }),
+    req<{ saved?: Port; warning?: string }>("/api/ports", { method: "POST", body: JSON.stringify(body) }),
   updatePort: (id: string, body: Partial<Port>) =>
-    req<{ saved?: Port }>(`/api/ports/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+    req<{ saved?: Port; warning?: string }>(`/api/ports/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   togglePort: (id: string, enabled: boolean) =>
-    req<{ saved?: Port }>(`/api/ports/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
+    req<{ saved?: Port; warning?: string }>(`/api/ports/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
   deletePort: (id: string) => req<{ ok: true }>(`/api/ports/${id}`, { method: "DELETE" }),
 
   createAccount: (body: Partial<Account>) =>
-    req<{ saved?: Account }>("/api/accounts", { method: "POST", body: JSON.stringify(body) }),
+    req<{ saved?: Account; warning?: string }>("/api/accounts", { method: "POST", body: JSON.stringify(body) }),
   updateAccount: (id: string, body: Partial<Account>) =>
-    req<{ saved?: Account }>(`/api/accounts/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+    req<{ saved?: Account; warning?: string }>(`/api/accounts/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   toggleAccount: (id: string, enabled: boolean) =>
-    req<{ saved?: Account }>(`/api/accounts/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
+    req<{ saved?: Account; warning?: string }>(`/api/accounts/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
   deleteAccount: (id: string) => req<{ ok: true }>(`/api/accounts/${id}`, { method: "DELETE" }),
 
   createUpstream: (body: { name: string; upstream: string; remark?: string }) =>
-    req<{ saved?: Upstream }>("/api/upstreams", { method: "POST", body: JSON.stringify(body) }),
+    req<{ saved?: Upstream; warning?: string }>("/api/upstreams", { method: "POST", body: JSON.stringify(body) }),
   updateUpstream: (id: string, body: { name: string; upstream: string; remark?: string }) =>
-    req<{ saved?: Upstream }>(`/api/upstreams/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+    req<{ saved?: Upstream; warning?: string }>(`/api/upstreams/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteUpstream: (id: string) => req<{ ok: true }>(`/api/upstreams/${id}`, { method: "DELETE" }),
   testUpstream: (id: string) =>
     req<{ ok: boolean; latency_ms: number; error?: string }>(`/api/upstreams/${id}/test`, {

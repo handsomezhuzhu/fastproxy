@@ -13,4 +13,4 @@ services:
       - "7788:7788"                # 管理面板（默认 7788）
       - "10001-10500:10001-10500"  # 代理端口范围（默认 10001-10500，按需调整/扩大）
     volumes:
-      - ./data:/data               # 配置持久化（fastproxy 配置文件）
+      - ./data:/data               # 数据持久化（SQLite: /data/fastproxy.db）

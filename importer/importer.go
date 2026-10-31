@@ -1,5 +1,5 @@
-// Package importer parses Resin-style upstream subscription content into
-// FastProxy upstream entries. Supported inputs:
+// Package importer parses upstream subscription content into FastProxy
+// upstream entries. Supported inputs:
 //
 //   - URI lines:      http(s)://[user:pass@]host:port[#name], socks5(h)://...
 //   - Plain lines:    host:port, host:port:user:pass

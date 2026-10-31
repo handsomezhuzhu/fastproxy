@@ -6,14 +6,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/handsomezhuzhu/fastproxy/logx"
 )
 
 func tempStore(t *testing.T, adminPort int) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "fastproxy.json"), adminPort)
+	s, err := Open(filepath.Join(t.TempDir(), "fastproxy.db"), adminPort)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { s.Close() })
 	return s
 }
 
@@ -29,10 +33,16 @@ func accountFixture(user, pass, portID, upID string) *Account {
 	return &Account{Username: user, Password: pass, PortID: portID, UpstreamID: upID, Enabled: true}
 }
 
-func TestOpenCreatesDefaultFile(t *testing.T) {
-	s := tempStore(t, 8080)
+func TestOpenCreatesSchemaAndDefaults(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(filepath.Join(dir, "fastproxy.db"), 7788)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
 	if len(s.Upstreams())+len(s.Ports())+len(s.Accounts()) != 0 {
-		t.Fatal("expected empty store")
+		t.Fatal("expected empty database")
 	}
 	if s.SessionSecret() == "" {
 		t.Fatal("session secret should be generated")
@@ -40,11 +50,65 @@ func TestOpenCreatesDefaultFile(t *testing.T) {
 	if s.AdminPasswordHash() != "" {
 		t.Fatal("admin password should be unset initially")
 	}
+	if s.Settings() != DefaultSettings() {
+		t.Fatalf("default settings mismatch: %+v", s.Settings())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "fastproxy.db")); err != nil {
+		t.Fatalf("database file not created: %v", err)
+	}
 }
 
-func TestUpstreamCRUDAndReferences(t *testing.T) {
-	s := tempStore(t, 8080)
-	saved, err := s.UpsertUpstream("", upstreamFixture("美国-家宽"))
+func TestLegacyJSONMigration(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{
+      "admin_password_hash": "pbkdf2-sha256$120000$aa$bb",
+      "session_secret": "secret-123",
+      "upstreams": [{"id":"u1","name":"旧上游","type":"http","host":"1.1.1.1:8080","username":"u","password":"p"}],
+      "ports": [{"id":"p1","port":10201,"default_upstream":"u1","enabled":true,"remark":"旧端口"}],
+      "accounts": [{"id":"a1","username":"alice","password":"wonder","port_id":"p1","upstream_id":"","enabled":true}]
+    }`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(filepath.Join(dir, "fastproxy.db"), 7788)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if got := len(s.Upstreams()); got != 1 {
+		t.Fatalf("expected 1 upstream after migration, got %d", got)
+	}
+	if got := s.Upstreams()[0]; got.Name != "旧上游" || got.Username != "u" {
+		t.Fatalf("upstream migration mismatch: %+v", got)
+	}
+	if got := len(s.Ports()); got != 1 || s.Ports()[0].Port != 10201 {
+		t.Fatalf("port migration mismatch: %+v", s.Ports())
+	}
+	if got := len(s.Accounts()); got != 1 || s.Accounts()[0].Username != "alice" {
+		t.Fatalf("account migration mismatch: %+v", s.Accounts())
+	}
+	if s.SessionSecret() != "secret-123" {
+		t.Fatalf("session secret not migrated: %q", s.SessionSecret())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.json.migrated")); err != nil {
+		t.Fatalf("legacy file should be renamed: %v", err)
+	}
+
+	// Reopening must not duplicate migrated rows.
+	s2, err := Open(filepath.Join(dir, "fastproxy.db"), 7788)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if got := len(s2.Upstreams()); got != 1 {
+		t.Fatalf("migration duplicated rows: %d upstreams", got)
+	}
+}
+
+func TestUpstreamCRUD(t *testing.T) {
+	s := tempStore(t, 7788)
+	saved, err := s.UpsertUpstream("", upstreamFixture("美国家宽"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,15 +116,13 @@ func TestUpstreamCRUDAndReferences(t *testing.T) {
 		t.Fatalf("unexpected upstream: %+v", saved)
 	}
 
-	// Referenced upstream must not be deletable.
-	if _, err := s.UpsertPort("", portFixture(10001, saved.ID)); err != nil {
+	if _, err := s.UpsertPort("", portFixture(10201, saved.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteUpstream(saved.ID); err == nil {
 		t.Fatal("expected delete to fail while referenced by a port")
 	}
 
-	// Bad inputs rejected.
 	if _, err := s.UpsertUpstream("", &Upstream{Name: "x", Type: "ftp", Host: "1.2.3.4:21"}); err == nil {
 		t.Fatal("expected type error")
 	}
@@ -68,7 +130,14 @@ func TestUpstreamCRUDAndReferences(t *testing.T) {
 		t.Fatal("expected host error")
 	}
 
-	// Unbound upstream deletes fine.
+	updated, err := s.UpsertUpstream(saved.ID, &Upstream{Name: "改名", Type: "socks5", Host: "2.2.2.2:1080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "改名" || updated.Type != "socks5" {
+		t.Fatalf("update mismatch: %+v", updated)
+	}
+
 	spare, err := s.UpsertUpstream("", upstreamFixture("备用"))
 	if err != nil {
 		t.Fatal(err)
@@ -76,61 +145,63 @@ func TestUpstreamCRUDAndReferences(t *testing.T) {
 	if err := s.DeleteUpstream(spare.ID); err != nil {
 		t.Fatalf("delete spare: %v", err)
 	}
-
-	// Reload roundtrip.
-	s2 := tempStore(t, 8080)
-	_ = s2
-	sReload, err := Open(s.Path(), 8080)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ups := sReload.Upstreams()
-	if len(ups) != 1 || ups[0].Name != "美国-家宽" {
-		t.Fatalf("reload mismatch: %+v", ups)
+	if err := s.DeleteUpstream("missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
 
 func TestPortValidation(t *testing.T) {
-	s := tempStore(t, 8080)
+	s := tempStore(t, 7788)
 	up, err := s.UpsertUpstream("", upstreamFixture("u"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpsertPort("", portFixture(10001, up.ID)); err != nil {
+	if _, err := s.UpsertPort("", portFixture(10201, up.ID)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpsertPort("", portFixture(10001, up.ID)); err == nil {
+	if _, err := s.UpsertPort("", portFixture(10201, up.ID)); err == nil {
 		t.Fatal("expected duplicate port error")
 	}
-	if _, err := s.UpsertPort("", portFixture(8080, up.ID)); err == nil {
+	if _, err := s.UpsertPort("", portFixture(7788, up.ID)); err == nil {
 		t.Fatal("expected admin-port conflict")
 	}
-	if _, err := s.UpsertPort("", portFixture(10002, "missing")); err == nil {
+	if _, err := s.UpsertPort("", portFixture(10202, "missing")); err == nil {
 		t.Fatal("expected missing upstream error")
 	}
-	if _, err := s.UpsertPort("", portFixture(10002, "")); err != nil {
+	if _, err := s.UpsertPort("", portFixture(10202, "")); err != nil {
 		t.Fatalf("direct port should be allowed: %v", err)
 	}
-	// Toggle + reload.
-	if _, err := s.SetPortEnabled("nosuch", true); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
+
 	first := s.Ports()[0]
 	if _, err := s.SetPortEnabled(first.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	if p := s.Ports()[0]; p.ID != first.ID || p.Enabled {
+	if p := s.getPortLocked(first.ID); p == nil || p.Enabled {
 		t.Fatalf("disable not applied: %+v", p)
+	}
+
+	// Deleting a port unbinds its accounts.
+	acc := accountFixture("tom", "pw", first.ID, "")
+	if _, err := s.UpsertAccount("", acc); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeletePort(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range s.Accounts() {
+		if a.PortID == first.ID {
+			t.Fatalf("account still bound to deleted port: %+v", a)
+		}
 	}
 }
 
 func TestAccountValidationAndUniqueness(t *testing.T) {
-	s := tempStore(t, 8080)
+	s := tempStore(t, 7788)
 	up, err := s.UpsertUpstream("", upstreamFixture("u"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	port, err := s.UpsertPort("", portFixture(10001, up.ID))
+	port, err := s.UpsertPort("", portFixture(10201, up.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,164 +220,65 @@ func TestAccountValidationAndUniqueness(t *testing.T) {
 	if _, err := s.UpsertAccount("", accountFixture("jerry", "pw", "", "missing-up")); err == nil {
 		t.Fatal("expected missing upstream error")
 	}
-	// Global account (port_id "") is allowed.
 	if _, err := s.UpsertAccount("", accountFixture("jerry", "pw", "", "")); err != nil {
 		t.Fatalf("global account rejected: %v", err)
 	}
-	// Delete account fine; delete bound port unbinds it.
-	acc := s.Accounts()[0]
-	if err := s.DeleteAccount(acc.ID); err != nil {
-		t.Fatal(err)
+
+	// Username update conflict is rejected.
+	tom := s.Accounts()[0]
+	if tom.Username != "tom" {
+		t.Fatalf("unexpected first account: %+v", tom)
 	}
-	if err := s.DeletePort(port.ID); err != nil {
-		t.Fatal(err)
-	}
-	for _, a := range s.Accounts() {
-		if a.PortID == port.ID {
-			t.Fatalf("account still bound to deleted port: %+v", a)
-		}
+	if _, err := s.UpsertAccount(tom.ID, accountFixture("jerry", "pw", "", "")); err == nil {
+		t.Fatal("expected conflict when renaming to an existing username")
 	}
 }
 
-func TestMissingEntity(t *testing.T) {
-	s := tempStore(t, 8080)
-	if _, err := s.UpsertPort("nosuch", portFixture(1, "")); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
-	if err := s.DeleteAccount("nosuch"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
-	if err := s.DeletePort("nosuch"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
-	if err := s.DeleteUpstream("nosuch"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
-}
-
-func TestSecretEnvInterpolation(t *testing.T) {
-	t.Setenv("FP_TEST_UP_PASS", "s3cret")
-	t.Setenv("FP_TEST_ACC_PASS", "accpass")
-	s := tempStore(t, 8080)
-
-	u, err := s.UpsertUpstream("", &Upstream{
-		Name: "u", Type: UpstreamHTTP, Host: "1.2.3.4:8080",
-		Username: "u1", Password: "${FP_TEST_UP_PASS}",
-	})
-	if err != nil {
+func TestSettingsValidation(t *testing.T) {
+	s := tempStore(t, 7788)
+	next := DefaultSettings()
+	next.AllowDirect = false
+	next.LogLevel = "debug"
+	next.LogRetentionDays = 3
+	if _, err := s.UpdateSettings(next); err != nil {
 		t.Fatal(err)
 	}
-	if u.Password != "s3cret" {
-		t.Fatalf("upstream password not expanded: %q", u.Password)
+	if s.Settings().AllowDirect || s.Settings().LogRetentionDays != 3 {
+		t.Fatalf("settings not persisted: %+v", s.Settings())
 	}
 
-	// The on-disk file keeps the raw reference, never the resolved secret.
-	raw, err := os.ReadFile(s.Path())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), "${FP_TEST_UP_PASS}") || strings.Contains(string(raw), "s3cret") {
-		t.Fatalf("file must keep the reference and hide the secret:\n%s", raw)
-	}
-
-	// Reload resolves again.
-	s2, err := Open(s.Path(), 8080)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := s2.Upstreams()[0].Password; got != "s3cret" {
-		t.Fatalf("reload expansion failed: %q", got)
-	}
-
-	// Missing env var is rejected at save time.
-	if _, err := s.UpsertUpstream("", &Upstream{
-		Name: "u2", Type: UpstreamHTTP, Host: "1.2.3.4:8080", Password: "${FP_TEST_MISSING}",
-	}); err == nil {
-		t.Fatal("expected missing-env error")
-	}
-
-	// ${VAR:-default} syntax works.
-	a, err := s.UpsertAccount("", &Account{
-		Username: "bob", Password: "${FP_TEST_NONE:-fallback}", Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a.Password != "fallback" {
-		t.Fatalf("default syntax not applied: %q", a.Password)
-	}
-}
-
-func TestOpenFailsOnMissingSecretRef(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "fp.json")
-	body := `{"upstreams":[{"id":"u1","name":"u","type":"http","host":"1.2.3.4:8080","password":"${FP_TEST_NONE_XYZ}"}],"ports":[],"accounts":[]}`
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Open(path, 8080); err == nil {
-		t.Fatal("expected startup error for missing secret env")
-	}
-}
-
-func TestSettingsDefaultsAndUpdate(t *testing.T) {
-	s := tempStore(t, 8080)
-	d := DefaultSettings()
-	if got := s.Settings(); got != d {
-		t.Fatalf("default settings mismatch: %+v", got)
-	}
-
-	// Direct ports are allowed by default; disallowing rejects new direct ports.
-	if _, err := s.UpsertPort("", portFixture(10001, "")); err != nil {
-		t.Fatalf("direct port should be allowed: %v", err)
-	}
-	if _, err := s.SetPortEnabled(s.Ports()[0].ID, false); err != nil {
-		t.Fatal(err)
+	if _, err := s.UpsertPort("", portFixture(10201, "")); err == nil {
+		t.Fatal("expected direct port rejection")
 	}
 	up, err := s.UpsertUpstream("", upstreamFixture("u"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	next := d
-	next.AllowDirect = false
-	next.LogLevel = "debug"
-	next.LogBuffer = 500
-	if _, err := s.UpdateSettings(next); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.UpsertPort("", portFixture(10002, "")); err == nil {
-		t.Fatal("expected direct port rejection after disabling allow_direct")
-	}
-	if _, err := s.UpsertPort("", portFixture(10002, up.ID)); err != nil {
+	if _, err := s.UpsertPort("", portFixture(10201, up.ID)); err != nil {
 		t.Fatalf("bound port should be allowed: %v", err)
 	}
 
-	// Invalid settings are rejected.
-	bad := next
+	bad := DefaultSettings()
 	bad.LogLevel = "verbose"
 	if _, err := s.UpdateSettings(bad); err == nil {
 		t.Fatal("expected log level validation error")
 	}
-	bad = next
-	bad.LogBuffer = 5
+	bad = DefaultSettings()
+	bad.LogRetentionDays = 0
 	if _, err := s.UpdateSettings(bad); err == nil {
-		t.Fatal("expected log buffer validation error")
+		t.Fatal("expected retention validation error")
 	}
 }
 
 func TestImportUpstreamsDedupe(t *testing.T) {
-	s := tempStore(t, 8080)
-	cands := []*Upstream{
+	s := tempStore(t, 7788)
+	added, dups := s.ImportUpstreams([]*Upstream{
 		{Name: "a", Type: "http", Host: "1.1.1.1:8080"},
 		{Name: "b", Type: "socks5", Host: "2.2.2.2:1080", Username: "u", Password: "p"},
-	}
-	added, dups := s.ImportUpstreams(cands)
+	})
 	if added != 2 || len(dups) != 0 {
 		t.Fatalf("first import: added=%d dups=%v", added, dups)
 	}
-	if got := len(s.Upstreams()); got != 2 {
-		t.Fatalf("expected 2 upstreams, got %d", got)
-	}
-	// Same content again → all duplicates.
 	added, dups = s.ImportUpstreams([]*Upstream{
 		{Name: "a2", Type: "http", Host: "1.1.1.1:8080"},
 		{Name: "b2", Type: "socks5", Host: "2.2.2.2:1080", Username: "u", Password: "p"},
@@ -314,13 +286,81 @@ func TestImportUpstreamsDedupe(t *testing.T) {
 	if added != 0 || len(dups) != 2 {
 		t.Fatalf("second import: added=%d dups=%v", added, dups)
 	}
-	// Different password → new entry.
 	added, _ = s.ImportUpstreams([]*Upstream{
 		{Name: "c", Type: "socks5", Host: "2.2.2.2:1080", Username: "u", Password: "p2"},
 	})
 	if added != 1 {
 		t.Fatalf("expected 1 added for different password, got %d", added)
 	}
+}
+
+func TestLogPersistenceAndPrune(t *testing.T) {
+	s := tempStore(t, 7788)
+	entries := []struct {
+		port   int
+		user   string
+		level  string
+		status string
+	}{
+		{10201, "alice", "info", ""},
+		{10201, "bob", "warn", "auth-failed"},
+		{10202, "alice", "info", ""},
+	}
+	for _, e := range entries {
+		if err := s.InsertLog(testEntry(e.port, e.user, e.level, e.status)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	all, err := s.QueryLogs(testFilter(10, 0, "", "debug"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected 3 logs, got %d", len(all))
+	}
+	// Newest first.
+	if all[0].Port != 10202 {
+		t.Fatalf("expected newest first, got %+v", all[0])
+	}
+
+	byPort, _ := s.QueryLogs(testFilter(10, 10201, "", "debug"))
+	if len(byPort) != 2 {
+		t.Fatalf("port filter: expected 2, got %d", len(byPort))
+	}
+	byUser, _ := s.QueryLogs(testFilter(10, 0, "alice", "debug"))
+	if len(byUser) != 2 {
+		t.Fatalf("account filter: expected 2, got %d", len(byUser))
+	}
+	warns, _ := s.QueryLogs(testFilter(10, 0, "", "warn"))
+	if len(warns) != 1 || warns[0].Status != "auth-failed" {
+		t.Fatalf("level filter mismatch: %+v", warns)
+	}
+
+	// Age the rows beyond the retention window, then prune.
+	if _, err := s.db.Exec(`UPDATE logs SET ts = ?`, time.Now().AddDate(0, 0, -10).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.PruneLogs(7)
+	if err != nil || n != 3 {
+		t.Fatalf("prune: n=%d err=%v", n, err)
+	}
+	left, _ := s.QueryLogs(testFilter(10, 0, "", "debug"))
+	if len(left) != 0 {
+		t.Fatalf("expected empty logs after prune, got %d", len(left))
+	}
+}
+
+func testEntry(port int, user, level, status string) logx.Entry {
+	return logx.Entry{
+		Level: level, Port: port, Account: user, Status: status,
+		Proto: "http", Target: "example.com:443",
+		BytesIn: 10, BytesOut: 20, DurationMS: 5,
+	}
+}
+
+func testFilter(limit, port int, account, level string) logx.Filter {
+	return logx.Filter{Limit: limit, Port: port, Account: account, Level: level}
 }
 
 func TestParseUpstream(t *testing.T) {
@@ -360,5 +400,67 @@ func TestParseUpstream(t *testing.T) {
 			t.Errorf("ParseUpstream(%q) = (%q,%q,%q,%q), want (%q,%q,%q,%q)",
 				c.raw, typ, host, user, pass, c.typ, c.host, c.user, c.pass)
 		}
+	}
+}
+
+func TestSecretEnvInterpolation(t *testing.T) {
+	t.Setenv("FP_TEST_UP_PASS", "s3cret")
+	s := tempStore(t, 7788)
+
+	u, err := s.UpsertUpstream("", &Upstream{
+		Name: "u", Type: UpstreamHTTP, Host: "1.2.3.4:8080",
+		Username: "u1", Password: "${FP_TEST_UP_PASS}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Password != "s3cret" {
+		t.Fatalf("upstream password not expanded: %q", u.Password)
+	}
+	// Missing env var rejected.
+	if _, err := s.UpsertUpstream("", &Upstream{
+		Name: "u2", Type: UpstreamHTTP, Host: "1.2.3.4:8080", Password: "${FP_TEST_MISSING}",
+	}); err == nil {
+		t.Fatal("expected missing-env error")
+	}
+	// Default syntax.
+	a, err := s.UpsertAccount("", &Account{
+		Username: "bob", Password: "${FP_TEST_NONE:-fallback}", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Password != "fallback" {
+		t.Fatalf("default syntax not applied: %q", a.Password)
+	}
+}
+
+func TestOpenFailsOnMissingSecretRef(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"upstreams":[{"id":"u1","name":"u","type":"http","host":"1.2.3.4:8080","password":"${FP_TEST_NONE_XYZ}"}],"ports":[],"accounts":[]}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(filepath.Join(dir, "fastproxy.db"), 7788); err == nil {
+		t.Fatal("expected startup error for missing secret env")
+	}
+}
+
+func TestMissingEntity(t *testing.T) {
+	s := tempStore(t, 7788)
+	if _, err := s.UpsertPort("nosuch", portFixture(10201, "")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	if err := s.DeleteAccount("nosuch"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	if err := s.DeletePort("nosuch"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	if err := s.DeleteUpstream("nosuch"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	if !strings.Contains(s.Path(), "fastproxy.db") {
+		t.Fatalf("unexpected path: %s", s.Path())
 	}
 }

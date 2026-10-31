@@ -1,32 +1,62 @@
 import * as React from "react";
-import { Gauge, Import, Pencil, Plus, Trash2, Zap } from "lucide-react";
-import { api, type Data, type ImportResult, type Upstream } from "../api";
 import {
-  Badge,
-  Button,
-  ConfirmDialog,
+  Ellipsis,
+  Import,
+  Layers,
+  Loader2,
+  Pencil,
+  Plus,
+  Trash2,
+  Zap,
+} from "lucide-react";
+import { toast } from "sonner";
+import { api, type Data, type ImportResult, type Upstream } from "@/api";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
-  EmptyRow,
-  Input,
-  Label,
-  TBody,
-  TD,
-  TH,
-  THead,
-  TR,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Table,
-  Textarea,
-} from "../components/ui";
-import { toast } from "../components/Toast";
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { EmptyState, Field, PageHeader } from "@/components/page";
 
 export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Promise<void> }) {
   const [open, setOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<Upstream | null>(null);
   const [form, setForm] = React.useState({ name: "", upstream: "", remark: "" });
   const [error, setError] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
   const [deleting, setDeleting] = React.useState<Upstream | null>(null);
   const [testing, setTesting] = React.useState<Record<string, string>>({});
 
@@ -42,7 +72,6 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     setError("");
     setOpen(true);
   }
-
   function openEdit(u: Upstream) {
     setEditing(u);
     const creds = u.username || u.password ? `${u.username}:${u.password}@` : "";
@@ -55,16 +84,20 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     setOpen(true);
   }
 
-  async function save() {
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
     setError("");
     try {
       if (editing) await api.updateUpstream(editing.id, form);
       else await api.createUpstream(form);
+      toast.success("上游已保存");
       setOpen(false);
-      toast("上游已保存");
       await reload();
-    } catch (e: any) {
-      setError(e?.message || "保存失败");
+    } catch (err: any) {
+      setError(err?.message || "保存失败");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -72,11 +105,11 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     if (!deleting) return;
     try {
       await api.deleteUpstream(deleting.id);
-      toast("已删除");
+      toast.success(`上游「${deleting.name}」已删除`);
       setDeleting(null);
       await reload();
-    } catch (e: any) {
-      toast(e?.message || "删除失败", "error");
+    } catch (err: any) {
+      toast.error(err?.message || "删除失败");
     }
   }
 
@@ -84,9 +117,9 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     setTesting((t) => ({ ...t, [u.id]: "测试中…" }));
     try {
       const r = await api.testUpstream(u.id);
-      setTesting((t) => ({ ...t, [u.id]: `延迟 ${r.latency_ms}ms` }));
-    } catch (e: any) {
-      setTesting((t) => ({ ...t, [u.id]: e?.message || "失败" }));
+      setTesting((t) => ({ ...t, [u.id]: r.ok ? `延迟 ${r.latency_ms} ms` : (r.error ?? "失败") }));
+    } catch (err: any) {
+      setTesting((t) => ({ ...t, [u.id]: err?.message || "失败" }));
     }
   }
 
@@ -97,13 +130,13 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       const r = await api.importUpstreams(useURL ? { url: importURL } : { text: importText });
       setResult(r);
       if (r.added > 0) {
-        toast(`成功导入 ${r.added} 个上游`);
+        toast.success(`成功导入 ${r.added} 个上游`);
         await reload();
       } else {
-        toast("没有新增上游（可能全部重复或无法识别）", "error");
+        toast.warning("没有新增上游：可能全部重复或格式无法识别");
       }
-    } catch (e: any) {
-      toast(e?.message || "导入失败", "error");
+    } catch (err: any) {
+      toast.error(err?.message || "导入失败");
     } finally {
       setImporting(false);
     }
@@ -114,187 +147,259 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     data.accounts.filter((a) => a.upstream_id === id).length;
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-end justify-between">
-        <div>
-          <h1 className="text-lg font-semibold">上游代理</h1>
-          <p className="text-xs text-muted-foreground">
-            支持 http / socks5；密码可用 ${"{VAR}"} 引用环境变量；被引用的上游不可删除
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => { setImportOpen(true); setResult(null); }}>
-            <Import className="h-4 w-4" /> 批量导入
-          </Button>
-          <Button onClick={openCreate}>
-            <Plus className="h-4 w-4" /> 添加上游
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-5">
+      <PageHeader
+        title="上游代理"
+        description="支持 http / socks5；密码可用 ${VAR} 引用环境变量，明文不落盘。被引用的上游不可删除。"
+        actions={
+          <>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setImportOpen(true);
+                setResult(null);
+              }}
+            >
+              <Import className="size-4" aria-hidden="true" /> 批量导入
+            </Button>
+            <Button onClick={openCreate}>
+              <Plus className="size-4" aria-hidden="true" /> 添加上游
+            </Button>
+          </>
+        }
+      />
 
-      <Table>
-        <THead>
-          <TR>
-            <TH>名称</TH>
-            <TH>类型</TH>
-            <TH>地址</TH>
-            <TH>认证</TH>
-            <TH>引用</TH>
-            <TH>备注</TH>
-            <TH>连通性</TH>
-            <TH className="text-right">操作</TH>
-          </TR>
-        </THead>
-        <TBody>
-          {data.upstreams.length === 0 ? (
-            <EmptyRow colSpan={8} text="暂无上游代理，可批量导入或手动添加" />
-          ) : (
-            data.upstreams.map((u) => (
-              <TR key={u.id}>
-                <TD className="font-medium">{u.name}</TD>
-                <TD>
-                  <Badge variant={u.type === "socks5" ? "warning" : "default"}>{u.type}</Badge>
-                </TD>
-                <TD className="font-mono text-xs">{u.host}</TD>
-                <TD className="font-mono text-xs text-muted-foreground">{u.username || "-"}</TD>
-                <TD className="text-xs">{refs(u.id)} 处</TD>
-                <TD className="max-w-[140px] truncate text-xs text-muted-foreground">{u.remark || "-"}</TD>
-                <TD className="text-xs">
+      {data.upstreams.length === 0 ? (
+        <EmptyState
+          icon={<Layers className="size-5" aria-hidden="true" />}
+          title="还没有上游代理"
+          description="可粘贴节点文本或订阅链接批量导入，也支持手动添加。"
+          action={
+            <Button variant="outline" onClick={() => setImportOpen(true)}>
+              <Import className="size-4" aria-hidden="true" /> 批量导入
+            </Button>
+          }
+        />
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>名称</TableHead>
+              <TableHead>类型</TableHead>
+              <TableHead>地址</TableHead>
+              <TableHead>认证</TableHead>
+              <TableHead className="text-right">引用</TableHead>
+              <TableHead>备注</TableHead>
+              <TableHead>连通性</TableHead>
+              <TableHead className="w-12">
+                <span className="sr-only">操作</span>
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.upstreams.map((u) => (
+              <TableRow key={u.id}>
+                <TableCell className="font-medium">{u.name}</TableCell>
+                <TableCell>
+                  <Badge variant="outline">{u.type}</Badge>
+                </TableCell>
+                <TableCell className="font-mono text-xs">{u.host}</TableCell>
+                <TableCell className="font-mono text-xs text-muted-foreground">{u.username || "–"}</TableCell>
+                <TableCell className="text-right text-xs tabular-nums">{refs(u.id)}</TableCell>
+                <TableCell className="max-w-[140px] truncate text-xs text-muted-foreground">{u.remark || "–"}</TableCell>
+                <TableCell className="text-xs">
                   {testing[u.id] ? (
                     <span className={testing[u.id].startsWith("延迟") ? "text-emerald-400" : "text-muted-foreground"}>
                       {testing[u.id]}
                     </span>
                   ) : (
-                    <Button variant="ghost" size="sm" onClick={() => test(u)}>
-                      <Zap className="h-3.5 w-3.5" /> 测试
+                    <Button variant="ghost" size="xs" onClick={() => test(u)}>
+                      <Zap className="size-3.5" aria-hidden="true" /> 测试
                     </Button>
                   )}
-                </TD>
-                <TD>
-                  <div className="flex justify-end gap-1">
-                    <Button variant="ghost" size="sm" onClick={() => openEdit(u)}>
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setDeleting(u)}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </TD>
-              </TR>
-            ))
-          )}
-        </TBody>
-      </Table>
+                </TableCell>
+                <TableCell>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                      aria-label={`上游 ${u.name} 操作菜单`}
+                    >
+                      <Ellipsis className="size-4" aria-hidden="true" />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-40">
+                      <DropdownMenuItem onClick={() => openEdit(u)}>
+                        <Pencil className="size-4" aria-hidden="true" /> 编辑
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem variant="destructive" onClick={() => setDeleting(u)}>
+                        <Trash2 className="size-4" aria-hidden="true" /> 删除
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
 
-      {/* 编辑/新增 */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
-          <DialogHeader title={editing ? `编辑上游「${editing.name}」` : "添加上游代理"} />
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label>名称</Label>
-              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="美国-家宽-1" />
-            </div>
-            <div className="space-y-1.5">
-              <Label>地址</Label>
+          <DialogHeader>
+            <DialogTitle>{editing ? `编辑上游 ${editing.name}` : "添加上游代理"}</DialogTitle>
+            <DialogDescription>自动识别 http / socks5 协议与账号密码。</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={save} className="space-y-4">
+            <Field label="名称" htmlFor="up-name">
               <Input
+                id="up-name"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="美国-家宽-1"
+              />
+            </Field>
+            <Field
+              label="地址"
+              htmlFor="up-address"
+              hint="支持 ${VAR} 或 ${VAR:-默认值} 环境变量引用，密码不落盘。"
+            >
+              <Input
+                id="up-address"
                 className="font-mono"
                 value={form.upstream}
                 onChange={(e) => setForm({ ...form, upstream: e.target.value })}
-                placeholder="http://user:${UPSTREAM_PASS}@1.2.3.4:8080 或 socks5://1.2.3.4:1080"
+                placeholder="http://user:pass@1.2.3.4:8080 或 socks5://1.2.3.4:1080"
+                spellCheck={false}
               />
-              <p className="text-[11px] text-muted-foreground">
-                自动识别协议；支持 ${"{VAR}"} 或 ${"{VAR:-默认值}"} 环境变量引用，密码不落盘
-              </p>
+            </Field>
+            <Field label="备注" htmlFor="up-remark">
+              <Input
+                id="up-remark"
+                value={form.remark}
+                onChange={(e) => setForm({ ...form, remark: e.target.value })}
+              />
+            </Field>
+            {error ? <p className="text-xs text-destructive" role="alert">{error}</p> : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                取消
+              </Button>
+              <Button type="submit" disabled={busy}>
+                {busy ? "保存中…" : "保存"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>批量导入上游</DialogTitle>
+            <DialogDescription>
+              支持 URI 行、IP:PORT、IP:PORT:USER:PASS、base64 订阅、sing-box JSON、Clash 节点列表；自动去重。
+            </DialogDescription>
+          </DialogHeader>
+
+          <Tabs defaultValue="text">
+            <TabsList>
+              <TabsTrigger value="text">粘贴文本</TabsTrigger>
+              <TabsTrigger value="url">订阅链接</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="text" className="space-y-2 pt-2">
+              <Textarea
+                aria-label="节点文本"
+                className="min-h-[160px] font-mono text-xs"
+                value={importText}
+                onChange={(e) => setImportText(e.target.value)}
+                placeholder={"http://user:pass@1.2.3.4:8080#US-01\nsocks5://1.2.3.4:1080\n1.2.3.4:8080\n1.2.3.4:8080:user:pass"}
+              />
+              <Button
+                className="w-full"
+                disabled={importing || !importText.trim()}
+                onClick={() => runImport(false)}
+              >
+                {importing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {importing ? "导入中…" : "导入文本"}
+              </Button>
+            </TabsContent>
+
+            <TabsContent value="url" className="space-y-2 pt-2">
+              <Input
+                aria-label="订阅链接"
+                className="font-mono text-xs"
+                value={importURL}
+                onChange={(e) => setImportURL(e.target.value)}
+                placeholder="https://example.com/sub?token=…"
+                spellCheck={false}
+              />
+              <Button
+                className="w-full"
+                disabled={importing || !importURL.trim()}
+                onClick={() => runImport(true)}
+              >
+                {importing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {importing ? "拉取中…" : "拉取并导入"}
+              </Button>
+            </TabsContent>
+          </Tabs>
+
+          {result ? (
+            <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-xs" aria-live="polite">
+              <div className="flex flex-wrap gap-2">
+                <Badge className="bg-emerald-500/15 text-emerald-400" variant="secondary">
+                  新增 {result.added}
+                </Badge>
+                <Badge className="bg-amber-500/15 text-amber-400" variant="secondary">
+                  重复 {result.duplicates.length}
+                </Badge>
+                <Badge variant="destructive">跳过 {result.problems.length}</Badge>
+                <Badge variant="outline">识别 {result.total}</Badge>
+              </div>
+              {result.duplicates.length > 0 ? (
+                <details>
+                  <summary className="cursor-pointer text-muted-foreground">重复项</summary>
+                  <ul className="mt-1 max-h-24 overflow-y-auto font-mono">
+                    {result.duplicates.map((d, i) => (
+                      <li key={i}>{d}</li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
+              {result.problems.length > 0 ? (
+                <details>
+                  <summary className="cursor-pointer text-muted-foreground">跳过明细</summary>
+                  <ul className="mt-1 max-h-24 overflow-y-auto font-mono">
+                    {result.problems.map((d, i) => (
+                      <li key={i}>{d}</li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
             </div>
-            <div className="space-y-1.5">
-              <Label>备注</Label>
-              <Input value={form.remark} onChange={(e) => setForm({ ...form, remark: e.target.value })} />
-            </div>
-            {error ? <p className="text-xs text-destructive">{error}</p> : null}
-          </div>
+          ) : null}
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>取消</Button>
-            <Button onClick={save}>保存</Button>
+            <Button variant="outline" onClick={() => setImportOpen(false)}>
+              关闭
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* 批量导入 */}
-      <Dialog open={importOpen} onOpenChange={setImportOpen}>
-        <DialogContent wide>
-          <DialogHeader
-            title="批量导入上游（Resin 风格）"
-            description="支持订阅链接 / URI 行 / IP:PORT / IP:PORT:USER:PASS / base64 订阅 / sing-box JSON / Clash 节点列表，自动去重"
-          />
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <Label>订阅链接（http/https）</Label>
-              <div className="flex gap-2">
-                <Input
-                  className="font-mono text-xs"
-                  value={importURL}
-                  onChange={(e) => setImportURL(e.target.value)}
-                  placeholder="https://example.com/sub?token=..."
-                />
-                <Button variant="secondary" disabled={importing || !importURL} onClick={() => runImport(true)}>
-                  <Gauge className="h-4 w-4" /> 拉取导入
-                </Button>
-              </div>
-            </div>
-            <div className="text-center text-[11px] text-muted-foreground">或直接粘贴文本</div>
-            <div className="space-y-1.5">
-              <Label>节点文本</Label>
-              <Textarea
-                className="min-h-[160px] font-mono text-xs"
-                value={importText}
-                onChange={(e) => setImportText(e.target.value)}
-                placeholder={`http://user:pass@1.2.3.4:8080#US-01\nsocks5://1.2.3.4:1080\n1.2.3.4:8080\n1.2.3.4:8080:user:pass`}
-              />
-            </div>
-            {result ? (
-              <div className="space-y-2 rounded-md border bg-background/40 p-3 text-xs">
-                <div className="flex gap-3">
-                  <Badge variant="success">新增 {result.added}</Badge>
-                  <Badge variant="warning">重复 {result.duplicates.length}</Badge>
-                  <Badge variant="destructive">跳过 {result.problems.length}</Badge>
-                  <Badge variant="outline">共识别 {result.total}</Badge>
-                </div>
-                {result.duplicates.length > 0 && (
-                  <details>
-                    <summary className="cursor-pointer text-muted-foreground">重复项</summary>
-                    <ul className="mt-1 max-h-24 overflow-y-auto font-mono text-[11px] text-muted-foreground">
-                      {result.duplicates.map((d, i) => <li key={i}>{d}</li>)}
-                    </ul>
-                  </details>
-                )}
-                {result.problems.length > 0 && (
-                  <details>
-                    <summary className="cursor-pointer text-muted-foreground">跳过的行 / 节点</summary>
-                    <ul className="mt-1 max-h-24 overflow-y-auto font-mono text-[11px] text-muted-foreground">
-                      {result.problems.map((d, i) => <li key={i}>{d}</li>)}
-                    </ul>
-                  </details>
-                )}
-              </div>
-            ) : null}
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setImportOpen(false)}>关闭</Button>
-              <Button disabled={importing || !importText} onClick={() => runImport(false)}>
-                {importing ? "导入中…" : "导入文本"}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <ConfirmDialog
-        open={!!deleting}
-        title={`删除上游「${deleting?.name}」？`}
-        description="仍被端口或账户引用时无法删除。"
-        onConfirm={remove}
-        onClose={() => setDeleting(null)}
-      />
+      <AlertDialog open={!!deleting} onOpenChange={(v) => !v && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除上游「{deleting?.name}」？</AlertDialogTitle>
+            <AlertDialogDescription>仍被端口或账户引用时无法删除。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={remove}>删除</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

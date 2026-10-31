@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -36,7 +35,7 @@ func main() {
 	log.SetFlags(log.LstdFlags)
 	log.Printf("FastProxy %s 启动中...", version)
 
-	cfgPath := getenv("CONFIG", "fastproxy.json")
+	cfgPath := getenv("CONFIG", "fastproxy.db")
 	adminAddr := getenv("ADMIN_ADDR", ":7788")
 
 	_, portStr, err := net.SplitHostPort(adminAddr)
@@ -52,13 +51,30 @@ func main() {
 	if err != nil {
 		log.Fatalf("读取配置 %s 失败: %v", cfgPath, err)
 	}
+	defer store.Close()
 
-	// Structured logger: JSONL next to the config file + in-memory ring for
-	// the panel. File write failures degrade to memory-only.
+	// Structured logger: SQLite is authoritative (queryable history, retention
+	// pruning); the in-memory ring covers the interval before batch flush.
 	settings := store.Settings()
-	logPath := filepath.Join(filepath.Dir(cfgPath), "access.log")
-	logger := logx.New(logPath, settings.LogBuffer, logx.ParseLevel(settings.LogLevel), settings.AccessLog)
+	logger := logx.New("", settings.LogBuffer, logx.ParseLevel(settings.LogLevel), settings.AccessLog)
+	logger.SetPersist(store)
 	defer logger.Close()
+
+	// Prune expired access logs at startup and hourly (reads live settings).
+	prune := func() {
+		days := store.Settings().LogRetentionDays
+		if n, err := store.PruneLogs(days); err == nil && n > 0 {
+			logger.Infof("清理过期日志 %d 条（保留 %d 天）", n, days)
+		}
+	}
+	go func() {
+		prune()
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for range t.C {
+			prune()
+		}
+	}()
 
 	// Admin password: ADMIN_PASSWORD env wins; otherwise generate one on
 	// first boot and print it once.

@@ -17,12 +17,12 @@
 |---|---|---|
 | GET | `/api/data` | `{version, settings, upstreams, ports, accounts, status:{ports,accounts}}` |
 | GET | `/api/stats` | 仅统计 `{status}` |
-| GET | `/api/logs?limit=&level=&port=&account=` | 连接日志，`level` 为最低级别 |
+| GET | `/api/logs?limit=&level=&port=&account=` | 连接日志（SQLite 查询），`level` 为最低级别 |
 | GET | `/api/settings` | 全局设置 |
 | PUT | `/api/settings` | 保存全局设置 |
 
 设置字段：`access_log, log_level(debug|info|warn|error), log_buffer(100-10000),
-allow_direct, dial_timeout_sec(3-120), handshake_timeout_sec(10-300)`。
+log_retention_days(1-90), allow_direct, dial_timeout_sec(3-120), handshake_timeout_sec(10-300)`。
 
 ## 上游代理
 

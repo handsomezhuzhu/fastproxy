@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -79,6 +81,12 @@ func (in *Upstream) validateVless() error {
 		if in.PBK == "" {
 			return errors.New("REALITY 上游必须填写公钥 pbk")
 		}
+		if !validRealityPublicKey(in.PBK) {
+			return errors.New("REALITY 公钥 pbk 格式无效（应为 32 字节 X25519 公钥的 base64url）")
+		}
+		if in.SID != "" && !validRealityShortID(in.SID) {
+			return errors.New("REALITY short id 格式无效（应为不超过 16 位的十六进制）")
+		}
 	}
 	if in.Transport == "grpc" && in.ServiceName == "" {
 		in.ServiceName = ""
@@ -119,3 +127,29 @@ func init() {
 // validateProtocolUpstream is set in init to avoid a forward reference inside
 // NormalizeUpstream's switch.
 var validateProtocolUpstream func(*Upstream) error
+
+// validRealityPublicKey accepts the base64 encodings used by share links
+// (unpadded base64url is the norm; padded/standard forms also decode).
+func validRealityPublicKey(s string) bool {
+	encodings := []*base64.Encoding{
+		base64.RawURLEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.StdEncoding,
+	}
+	for _, enc := range encodings {
+		if raw, err := enc.DecodeString(s); err == nil && len(raw) == 32 {
+			return true
+		}
+	}
+	return false
+}
+
+// validRealityShortID accepts up to 8 bytes of hex (0-16 chars).
+func validRealityShortID(s string) bool {
+	if len(s) == 0 || len(s) > 16 || len(s)%2 != 0 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}

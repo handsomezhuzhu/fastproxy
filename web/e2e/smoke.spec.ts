@@ -21,7 +21,7 @@ const UPSTREAM_2 = "socks5://2.2.2.2:1080#e2e-2";
 // VLESS REALITY + XTLS Vision：需要后端用 sing-box 出站导入（旧后端会拒绝）。
 const UPSTREAM_REALITY =
   "vless://b831381d-6324-4d53-ad4f-8cda48b30811@3.3.3.3:443" +
-  "?security=reality&pbk=x&sid=y&flow=xtls-rprx-vision&type=tcp&sni=www.apple.com#e2e-reality";
+  "?security=reality&pbk=H5M42pBqRHTcRX3_LPHDXTeO0cEz_G_zYud220O96As&sid=0123456789abcdef&flow=xtls-rprx-vision&type=tcp&sni=www.apple.com#e2e-reality";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "";
 
 const NAV: { label: string; title: string }[] = [
@@ -257,16 +257,19 @@ test("上游代理：VLESS REALITY 表单（解析失败优雅提示 + REALITY �
   const form = page.getByRole("dialog", { name: "添加上游代理" });
   await expect(form).toBeVisible();
 
-  // 1) 分享链接解析：后端未合并 /api/upstreams/parse 时是 404/405，
-  //    表单必须给出可读错误而不是崩溃（也不请求超时）。
+  // 1) 分享链接解析：后端已支持 /api/upstreams/parse，点「解析并填入」后
+  //    协议、地址、REALITY 字段、Flow、SNI 都应直接回填。
   await form.getByLabel("名称").fill("e2e-reality");
   await form.getByLabel("协议").click();
   await page.getByRole("option", { name: "VLESS", exact: true }).click();
   await form.getByLabel("粘贴分享链接（可选）").fill(UPSTREAM_REALITY);
   await form.getByRole("button", { name: "解析并填入" }).click();
-  const parseAlert = form.getByRole("alert");
-  await expect(parseAlert).toBeVisible({ timeout: 20_000 });
-  await expect(parseAlert).toContainText(/解析|解析失败|不支持/);
+  await expect(form.getByLabel("服务器地址")).toHaveValue("3.3.3.3:443");
+  await expect(form.getByLabel("安全层")).toContainText("REALITY");
+  await expect(form.getByLabel("公钥 pbk")).toHaveValue("H5M42pBqRHTcRX3_LPHDXTeO0cEz_G_zYud220O96As");
+  await expect(form.getByLabel("Short ID")).toHaveValue("0123456789abcdef");
+  await expect(form.getByLabel("SNI")).toHaveValue("www.apple.com");
+  await expect(form.getByLabel("Flow")).toContainText("xtls-rprx-vision");
   await expectNoCrash(page, failures);
 
   // 2) REALITY 字段：选 REALITY 后 pbk/sid/fingerprint 出现，TLS 开关隐藏；SNI 仍可见（REALITY 自带 TLS）。

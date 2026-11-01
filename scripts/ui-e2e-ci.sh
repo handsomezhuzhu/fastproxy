@@ -32,7 +32,7 @@ log "build web (writes admin/dist for go:embed)"
 (cd web && npm ci --no-audit --no-fund && npm run build)
 
 log "build fastproxy"
-go build -trimpath -o "$E2E_DIR/fastproxy" .
+go build -tags with_utls -trimpath -o "$E2E_DIR/fastproxy" .
 
 log "start fastproxy on $ADMIN_ADDR (db: $E2E_DIR/fastproxy.db)"
 CONFIG="$E2E_DIR/fastproxy.db" ADMIN_ADDR="$ADMIN_ADDR" ADMIN_PASSWORD="$ADMIN_PASSWORD" \

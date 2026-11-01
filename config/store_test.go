@@ -361,14 +361,14 @@ func TestUpstreamRealityFieldsPersist(t *testing.T) {
 	vl, err := s.UpsertUpstream("", &Upstream{
 		Name: "reality", Type: UpstreamVless, Host: "2.2.2.2:443",
 		UUID: "b831381d-6324-4d53-ad4f-8cda48b30811",
-		Security: SecurityReality, PBK: "pub-key", SID: "a1b2", Flow: UpstreamFlowVision,
+		Security: SecurityReality, PBK: "H5M42pBqRHTcRX3_LPHDXTeO0cEz_G_zYud220O96As", SID: "a1b2", Flow: UpstreamFlowVision,
 		Fingerprint: "firefox", Transport: "ws", Path: "/ws", HostHeader: "cdn.example.com",
 		SNI: "www.example.com",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if vl.Security != SecurityReality || vl.PBK != "pub-key" || vl.SID != "a1b2" ||
+	if vl.Security != SecurityReality || vl.PBK != "H5M42pBqRHTcRX3_LPHDXTeO0cEz_G_zYud220O96As" || vl.SID != "a1b2" ||
 		vl.Flow != UpstreamFlowVision || vl.Fingerprint != "firefox" || vl.Transport != "ws" ||
 		vl.Path != "/ws" || vl.HostHeader != "cdn.example.com" {
 		t.Fatalf("reality fields not normalised: %+v", vl)
@@ -395,7 +395,7 @@ func TestUpstreamRealityFieldsPersist(t *testing.T) {
 		t.Fatalf("list: n=%d err=%v", len(items), err)
 	}
 	got := items[0]
-	if got.PBK != "pub-key" || got.SID != "a1b2" || got.Flow != UpstreamFlowVision ||
+	if got.PBK != "H5M42pBqRHTcRX3_LPHDXTeO0cEz_G_zYud220O96As" || got.SID != "a1b2" || got.Flow != UpstreamFlowVision ||
 		got.Fingerprint != "firefox" || got.Path != "/ws" || got.HostHeader != "cdn.example.com" {
 		t.Fatalf("reality fields not persisted: %+v", got)
 	}
@@ -403,7 +403,7 @@ func TestUpstreamRealityFieldsPersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{`"pbk":"pub-key"`, `"sid":"a1b2"`, `"flow":"xtls-rprx-vision"`,
+	for _, key := range []string{`"pbk":"H5M42pBqRHTcRX3_LPHDXTeO0cEz_G_zYud220O96As"`, `"sid":"a1b2"`, `"flow":"xtls-rprx-vision"`,
 		`"fingerprint":"firefox"`, `"transport":"ws"`, `"path":"/ws"`, `"host_header":"cdn.example.com"`,
 		`"security":"reality"`} {
 		if !strings.Contains(string(raw), key) {
@@ -425,7 +425,7 @@ func TestUpstreamRealityFieldsPersist(t *testing.T) {
 			found = u
 		}
 	}
-	if found == nil || found.Transport != "grpc" || found.ServiceName != "rpc" || found.PBK != "pub-key" {
+	if found == nil || found.Transport != "grpc" || found.ServiceName != "rpc" || found.PBK != "H5M42pBqRHTcRX3_LPHDXTeO0cEz_G_zYud220O96As" {
 		t.Fatalf("update lost fields: %+v", found)
 	}
 
@@ -456,8 +456,13 @@ func TestUpstreamRealityFieldsPersist(t *testing.T) {
 	}
 	// An empty short id is legal for REALITY (servers may accept the zero id).
 	if _, err := s.UpsertUpstream("", &Upstream{Name: "no-sid", Type: UpstreamVless, Host: "h:1",
-		UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Security: SecurityReality, PBK: "pk"}); err != nil {
+		UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Security: SecurityReality,
+		PBK: "H5M42pBqRHTcRX3_LPHDXTeO0cEz_G_zYud220O96As"}); err != nil {
 		t.Errorf("REALITY without sid should be accepted, got %v", err)
+	}
+	if _, err := s.UpsertUpstream("", &Upstream{Name: "bad-pbk", Type: UpstreamVless, Host: "h:1",
+		UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Security: SecurityReality, PBK: "pk"}); err == nil {
+		t.Error("REALITY with a non-32-byte public key should be rejected")
 	}
 }
 

@@ -18,6 +18,10 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 const PORT = 10321;
 const UPSTREAM_1 = "http://u:p@1.1.1.1:8080#e2e-1";
 const UPSTREAM_2 = "socks5://2.2.2.2:1080#e2e-2";
+// VLESS REALITY + XTLS Vision：需要后端用 sing-box 出站导入（旧后端会拒绝）。
+const UPSTREAM_REALITY =
+  "vless://b831381d-6324-4d53-ad4f-8cda48b30811@3.3.3.3:443" +
+  "?security=reality&pbk=x&sid=y&flow=xtls-rprx-vision&type=tcp&sni=www.apple.com#e2e-reality";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "";
 
 const NAV: { label: string; title: string }[] = [
@@ -104,6 +108,7 @@ test.afterEach(async ({ page }) => {
       await deleteUpstreamByName(page, "e2e-2");
       await deleteUpstreamByName(page, "e2e-ss");
       await deleteUpstreamByName(page, "e2e-vless");
+      await deleteUpstreamByName(page, "e2e-reality");
       await goTo(page, "ports");
       await deletePortRow(page, PORT);
     }
@@ -238,6 +243,106 @@ test("上游代理：表单可新增 Shadowsocks 与 VLESS（并回填编辑）"
   await deleteUpstreamByName(page, "e2e-ss");
   await deleteUpstreamByName(page, "e2e-vless");
   await expect(page.getByText("e2e-ss", { exact: true })).toHaveCount(0);
+});
+
+test("上游代理：VLESS REALITY 表单（解析失败优雅提示 + REALITY 字段 + WS/gRPC 切换）", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await login(page);
+  await nav(page, "上游代理").click();
+  await expect(page.getByRole("heading", { level: 1, name: "上游代理" })).toBeVisible();
+  // 页面描述必须反映 REALITY 支持（不再有「VMess 仅保存配置」）。
+  await expect(page.getByText(/VLESS（含 REALITY）/)).toBeVisible();
+
+  await page.getByRole("button", { name: "添加上游" }).first().click();
+  const form = page.getByRole("dialog", { name: "添加上游代理" });
+  await expect(form).toBeVisible();
+
+  // 1) 分享链接解析：后端未合并 /api/upstreams/parse 时是 404/405，
+  //    表单必须给出可读错误而不是崩溃（也不请求超时）。
+  await form.getByLabel("名称").fill("e2e-reality");
+  await form.getByLabel("协议").click();
+  await page.getByRole("option", { name: "VLESS", exact: true }).click();
+  await form.getByLabel("粘贴分享链接（可选）").fill(UPSTREAM_REALITY);
+  await form.getByRole("button", { name: "解析并填入" }).click();
+  const parseAlert = form.getByRole("alert");
+  await expect(parseAlert).toBeVisible({ timeout: 20_000 });
+  await expect(parseAlert).toContainText(/解析|解析失败|不支持/);
+  await expectNoCrash(page, failures);
+
+  // 2) REALITY 字段：选 REALITY 后 pbk/sid/fingerprint 出现，TLS 开关隐藏；SNI 仍可见（REALITY 自带 TLS）。
+  await form.getByLabel("服务器地址").fill("3.3.3.3:443");
+  await form.getByLabel("UUID").fill("b831381d-6324-4d53-ad4f-8cda48b30811");
+  await form.getByLabel("安全层").click();
+  await page.getByRole("option", { name: "REALITY", exact: true }).click();
+  await expect(form.getByLabel("公钥 pbk")).toBeVisible();
+  await expect(form.getByLabel("Short ID")).toBeVisible();
+  await expect(form.getByLabel("指纹")).toContainText("chrome");
+  await expect(form.getByRole("switch", { name: "启用 TLS" })).toHaveCount(0);
+  await expect(form.getByLabel("SNI")).toBeVisible();
+  await form.getByLabel("公钥 pbk").fill("x");
+  await form.getByLabel("Short ID").fill("y");
+  await form.getByLabel("SNI").fill("www.apple.com");
+
+  // Flow = XTLS Vision
+  await form.getByLabel("Flow").click();
+  await page.getByRole("option", { name: "xtls-rprx-vision" }).click();
+
+  // 3) 传输方式：WS 显示 path/host 头，gRPC 显示 service name，TCP 两者都隐藏。
+  await form.getByLabel("传输方式").click();
+  await page.getByRole("option", { name: "WebSocket" }).click();
+  await expect(form.getByLabel("WS Path")).toBeVisible();
+  await expect(form.getByLabel("WS Host 头")).toBeVisible();
+  await form.getByLabel("WS Path").fill("/e2e");
+  await form.getByLabel("传输方式").click();
+  await page.getByRole("option", { name: "gRPC" }).click();
+  await expect(form.getByLabel("WS Path")).toHaveCount(0);
+  await expect(form.getByLabel("gRPC Service Name")).toBeVisible();
+  await form.getByLabel("gRPC Service Name").fill("e2e-grpc");
+  await expectNoCrash(page, failures);
+
+  // 4) VMess：不再有「暂未支持」提示，同样是 sing-box 出站。
+  await form.getByLabel("协议").click();
+  await page.getByRole("option", { name: "VMess", exact: true }).click();
+  await expect(form.getByText(/暂未支持/)).toHaveCount(0);
+  await expect(form.getByLabel("gRPC Service Name")).toBeVisible();
+  await form.getByRole("button", { name: "取消" }).click();
+  await expect(form).toBeHidden();
+  await expectNoCrash(page, failures);
+});
+
+test("上游代理：批量导入 REALITY/Vision 节点后列表显示 e2e-reality", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await login(page);
+  await nav(page, "上游代理").click();
+  await expect(page.getByRole("heading", { level: 1, name: "上游代理" })).toBeVisible();
+
+  await page.getByRole("button", { name: "批量导入" }).click();
+  const dialog = page.getByRole("dialog", { name: "批量导入上游" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("节点文本").fill(UPSTREAM_REALITY);
+  await dialog.getByRole("button", { name: "导入文本" }).click();
+
+  // 后端合并 sing-box 之前，旧导入器会拒绝 REALITY：此时用例跳过（保留断言供联调后启用）。
+  const added = dialog.getByText("新增 1", { exact: true });
+  const skipped = await dialog
+    .getByText(/跳过 1/)
+    .isVisible({ timeout: 20_000 })
+    .catch(() => false);
+  test.skip(skipped, "当前后端仍拒绝 REALITY 导入（等 sing-box 后端合并后启用）");
+  await expect(added).toBeVisible();
+
+  await dialog.getByRole("button", { name: "关闭" }).click();
+  await expect(dialog).toBeHidden();
+
+  const row = page.locator("tbody tr").filter({ hasText: "e2e-reality" });
+  await expect(row).toHaveCount(1);
+  await expect(row.getByText("VLESS", { exact: true })).toBeVisible();
+  await expect(row.getByText("REALITY", { exact: true })).toBeVisible();
+  await expect(row.getByText("Vision", { exact: true })).toBeVisible();
+  await expectNoCrash(page, failures);
+
+  await deleteUpstreamByName(page, "e2e-reality");
+  await expect(page.getByText("e2e-reality", { exact: true })).toHaveCount(0);
 });
 
 test("端口线路：新增/删除 10321 与每页下拉宽度", async ({ page }) => {

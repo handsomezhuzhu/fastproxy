@@ -1,3 +1,22 @@
+/** VLESS/VMess 安全层：none（无加密）/ tls / reality（VLESS 专用）。 */
+export type Security = "" | "none" | "tls" | "reality";
+/** 传输层：tcp / ws / grpc。 */
+export type Transport = "" | "tcp" | "ws" | "grpc";
+
+/** sing-box 出站字段（VLESS REALITY / XTLS Vision / WS / gRPC、VMess），后端 JSON 用小写。 */
+export type SingBoxFields = {
+  security?: Security;
+  pbk?: string; // REALITY public key
+  sid?: string; // REALITY short id
+  flow?: string; // "xtls-rprx-vision" 或空
+  fingerprint?: string; // 默认 "chrome"
+  transport?: Transport;
+  path?: string; // ws path
+  host_header?: string; // ws Host
+  service_name?: string; // grpc service name
+  vmess_security?: string; // 默认 "auto"
+};
+
 export type Upstream = {
   id: string;
   name: string;
@@ -15,7 +34,7 @@ export type Upstream = {
   exit_ip?: string;
   last_check_at?: number;
   last_error?: string;
-};
+} & SingBoxFields;
 
 // UpstreamInput: http/socks5 走 upstream 地址；shadowsocks/vless/vmess 走字段。
 export type UpstreamInput = {
@@ -30,6 +49,11 @@ export type UpstreamInput = {
   tls?: boolean;
   sni?: string;
   remark?: string;
+} & SingBoxFields;
+
+/** POST /api/upstreams/parse response: the parsed share link, in UpstreamInput shape. */
+export type ParseUpstreamResult = {
+  proxy: UpstreamInput;
 };
 
 export type ProbeResult = {
@@ -266,6 +290,19 @@ export const api = {
     });
     return { ...r, duplicates: r.duplicates ?? [], problems: r.problems ?? [] };
   },
+
+  /**
+   * Parse one share link (vless://, vmess://, ss://, …) into form fields.
+   *
+   * Backend: POST /api/upstreams/parse `{text}` → `{proxy}`; failures answer
+   * 400 `{error}` (surfaced as ApiError.message). Older backends without the
+   * endpoint answer 404/405, which callers show as a plain form error.
+   */
+  parseUpstream: (text: string) =>
+    req<ParseUpstreamResult>("/api/upstreams/parse", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }).then((r) => ({ proxy: r.proxy ?? ({} as UpstreamInput) })),
 
   /**
    * Server-paged upstream list; q fuzzy-matches name/host.

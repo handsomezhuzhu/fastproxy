@@ -60,6 +60,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import {
   DotBadge,
   EmptyState,
@@ -119,7 +120,7 @@ const TYPE_OPTIONS = [
   { value: "socks5", label: "SOCKS5" },
   { value: "shadowsocks", label: "Shadowsocks" },
   { value: "vless", label: "VLESS" },
-  { value: "vmess", label: "VMess（暂未支持）" },
+  { value: "vmess", label: "VMess" },
 ];
 
 const TYPE_LABEL: Record<string, string> = {
@@ -148,6 +149,17 @@ type UpstreamForm = {
   tls: boolean;
   sni: string;
   remark: string;
+  // sing-box 出站字段（VLESS / VMess）
+  security: "none" | "tls" | "reality";
+  pbk: string;
+  sid: string;
+  flow: string;
+  fingerprint: string;
+  transport: "tcp" | "ws" | "grpc";
+  path: string;
+  hostHeader: string;
+  serviceName: string;
+  vmessSecurity: string;
 };
 
 const EMPTY_FORM: UpstreamForm = {
@@ -162,9 +174,82 @@ const EMPTY_FORM: UpstreamForm = {
   tls: true,
   sni: "",
   remark: "",
+  security: "tls",
+  pbk: "",
+  sid: "",
+  flow: "",
+  fingerprint: "chrome",
+  transport: "tcp",
+  path: "",
+  hostHeader: "",
+  serviceName: "",
+  vmessSecurity: "auto",
 };
 
 const isTunnelForm = (t: UpstreamFormType) => t === "shadowsocks" || t === "vless" || t === "vmess";
+
+const SECURITY_OPTIONS = [
+  { value: "none", label: "无加密" },
+  { value: "tls", label: "TLS" },
+  { value: "reality", label: "REALITY" },
+];
+
+const FINGERPRINT_OPTIONS = [
+  { value: "chrome", label: "chrome" },
+  { value: "firefox", label: "firefox" },
+  { value: "safari", label: "safari" },
+  { value: "ios", label: "ios" },
+  { value: "android", label: "android" },
+];
+
+const FLOW_OPTIONS = [
+  { value: "", label: "空（无 Vision）" },
+  { value: "xtls-rprx-vision", label: "xtls-rprx-vision" },
+];
+
+const TRANSPORT_OPTIONS = [
+  { value: "tcp", label: "TCP" },
+  { value: "ws", label: "WebSocket" },
+  { value: "grpc", label: "gRPC" },
+];
+
+const VMESS_SECURITY_OPTIONS = [
+  { value: "auto", label: "auto" },
+  { value: "none", label: "none" },
+  { value: "zero", label: "zero" },
+  { value: "aes-128-gcm", label: "aes-128-gcm" },
+  { value: "chacha20-poly1305", label: "chacha20-poly1305" },
+];
+
+const asSecurity = (v: unknown): UpstreamForm["security"] =>
+  v === "none" || v === "tls" || v === "reality" ? v : "tls";
+
+const asTransport = (v: unknown): UpstreamForm["transport"] =>
+  v === "tcp" || v === "ws" || v === "grpc" ? v : "tcp";
+
+const str = (v: unknown) => (typeof v === "string" ? v : "");
+
+/** List badges for a VLESS/VMess row: REALITY / Vision / WS / gRPC (monochrome outline). */
+function RouteBadges({ u }: { u: Upstream }) {
+  if (u.type !== "vless" && u.type !== "vmess") return null;
+  const marks: string[] = [];
+  if (u.type === "vless") {
+    if (u.security === "reality" || u.pbk) marks.push("REALITY");
+    if (u.flow) marks.push("Vision");
+  }
+  if (u.transport === "ws") marks.push("WS");
+  if (u.transport === "grpc") marks.push("gRPC");
+  if (marks.length === 0) return null;
+  return (
+    <>
+      {marks.map((m) => (
+        <Badge key={m} variant="outline" className="text-muted-foreground">
+          {m}
+        </Badge>
+      ))}
+    </>
+  );
+}
 
 export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Promise<void> }) {
   // Server-side pagination state
@@ -181,6 +266,9 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
   const [form, setForm] = React.useState<UpstreamForm>(EMPTY_FORM);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [shareLink, setShareLink] = React.useState("");
+  const [parsing, setParsing] = React.useState(false);
+  const [parseError, setParseError] = React.useState("");
   const [deleting, setDeleting] = React.useState<Upstream | null>(null);
   const [checking, setChecking] = React.useState<Record<string, boolean>>({});
   const [checkingAll, setCheckingAll] = React.useState(false);
@@ -241,6 +329,8 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     setEditing(null);
     setForm(EMPTY_FORM);
     setError("");
+    setParseError("");
+    setShareLink("");
     setOpen(true);
   }
   function openEdit(u: Upstream) {
@@ -265,9 +355,94 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       tls: Boolean(u.tls),
       sni: u.sni || "",
       remark: u.remark || "",
+      // 按类型回填 sing-box 字段（旧记录没有这些键时回落到默认值）
+      security: asSecurity(u.security),
+      pbk: u.pbk || "",
+      sid: u.sid || "",
+      flow: u.flow || "",
+      fingerprint: u.fingerprint || "chrome",
+      transport: asTransport(u.transport),
+      path: u.path || "",
+      hostHeader: u.host_header || "",
+      serviceName: u.service_name || "",
+      vmessSecurity: u.vmess_security || "auto",
     });
+    setParseError("");
+    setShareLink("");
     setError("");
     setOpen(true);
+  }
+
+  /**
+   * 把 /api/upstreams/parse 返回的 proxy（UpstreamInput 形状）填进表单。
+   * 分享链接里没有的字段保留当前值；type 按协议自动切换。
+   */
+  function applyParsed(p: UpstreamInput) {
+    const rawType = str(p.type).toLowerCase();
+    const type: UpstreamFormType | null = (
+      ["http", "socks5", "shadowsocks", "vless", "vmess"] as const
+    ).includes(rawType as UpstreamFormType)
+      ? (rawType as UpstreamFormType)
+      : null;
+    const addrs = type === "http" || type === "socks5";
+    const transport = p.transport ? asTransport(p.transport) : null;
+    const security = p.security ? asSecurity(p.security) : null;
+    setForm((f) => ({
+      ...f,
+      ...(type ? { type } : {}),
+      name: str(p.name) || f.name,
+      upstream: addrs
+        ? str(p.upstream) ||
+          (str(p.host)
+            ? `${str(p.type).toLowerCase()}://${
+                p.username || p.password ? `${str(p.username)}:${str(p.password)}@` : ""
+              }${str(p.host)}`
+            : f.upstream)
+        : f.upstream,
+      host: str(p.host) || f.host,
+      username: str(p.username) || f.username,
+      password: str(p.password) || f.password,
+      method: str(p.method) || f.method,
+      uuid: str(p.uuid) || f.uuid,
+      tls: typeof p.tls === "boolean" ? p.tls : f.tls,
+      sni: p.sni !== undefined ? str(p.sni) : f.sni,
+      remark: p.remark !== undefined ? str(p.remark) : f.remark,
+      ...(security ? { security } : {}),
+      pbk: p.pbk !== undefined ? str(p.pbk) : f.pbk,
+      sid: p.sid !== undefined ? str(p.sid) : f.sid,
+      flow: p.flow !== undefined ? str(p.flow) : f.flow,
+      fingerprint: str(p.fingerprint) || f.fingerprint,
+      ...(transport ? { transport } : {}),
+      path: p.path !== undefined ? str(p.path) : f.path,
+      hostHeader: p.host_header !== undefined ? str(p.host_header) : f.hostHeader,
+      serviceName: p.service_name !== undefined ? str(p.service_name) : f.serviceName,
+      vmessSecurity: str(p.vmess_security) || f.vmessSecurity,
+    }));
+    // REALITY 自带 TLS：链接里 security=reality 时同步打开 TLS 开关，避免保存时被清空。
+    if (security === "reality") setForm((f) => ({ ...f, tls: true }));
+  }
+
+  async function parseShareLink() {
+    const text = shareLink.trim();
+    if (!text) return;
+    setParsing(true);
+    setParseError("");
+    setError("");
+    try {
+      const { proxy } = await api.parseUpstream(text);
+      applyParsed(proxy);
+      toast.success("已解析并填入表单");
+    } catch (err: any) {
+      // 后端未合并该接口时会是 404/405；统一在表单里给出可读提示，不崩溃。
+      const status = typeof err?.status === "number" ? err.status : 0;
+      const msg =
+        status === 404 || status === 405
+          ? "当前后端不支持分享链接解析（/api/upstreams/parse），请手动填写字段。"
+          : err?.message || "解析失败";
+      setParseError(msg);
+    } finally {
+      setParsing(false);
+    }
   }
 
   async function save(e: React.FormEvent) {
@@ -285,11 +460,34 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       body.host = form.host.trim();
       body.method = form.method;
       body.password = form.password;
+    } else if (form.type === "vless") {
+      // REALITY 自带 TLS，按 security 归一化开关，避免出现 security=tls + tls=false。
+      const security = asSecurity(form.security);
+      const tls = security === "reality" ? true : form.tls;
+      body.host = form.host.trim();
+      body.uuid = form.uuid.trim();
+      body.security = security;
+      body.tls = tls;
+      body.sni = tls ? form.sni.trim() : "";
+      body.pbk = security === "reality" ? form.pbk.trim() : "";
+      body.sid = security === "reality" ? form.sid.trim() : "";
+      body.fingerprint = security === "reality" ? form.fingerprint || "chrome" : "";
+      body.flow = form.flow;
+      body.transport = form.transport;
+      body.path = form.transport === "ws" ? form.path.trim() : "";
+      body.host_header = form.transport === "ws" ? form.hostHeader.trim() : "";
+      body.service_name = form.transport === "grpc" ? form.serviceName.trim() : "";
     } else {
       body.host = form.host.trim();
       body.uuid = form.uuid.trim();
+      body.security = form.tls ? "tls" : "none";
       body.tls = form.tls;
       body.sni = form.tls ? form.sni.trim() : "";
+      body.transport = form.transport;
+      body.path = form.transport === "ws" ? form.path.trim() : "";
+      body.host_header = form.transport === "ws" ? form.hostHeader.trim() : "";
+      body.service_name = form.transport === "grpc" ? form.serviceName.trim() : "";
+      body.vmess_security = form.vmessSecurity || "auto";
     }
     try {
       if (editing) await api.updateUpstream(editing.id, body);
@@ -472,7 +670,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       <div className="space-y-5">
         <PageHeader
           title="上游代理"
-          description="支持 HTTP / SOCKS5 / Shadowsocks / VLESS；VMess 仅保存配置，隧道暂未支持。"
+          description="支持 HTTP / SOCKS5 / Shadowsocks / VLESS（含 REALITY）/ VMess。"
         />
         <div className="flex items-center justify-between gap-3">
           <Skeleton className="h-5 w-32" />
@@ -497,7 +695,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     <div className="space-y-5">
       <PageHeader
         title="上游代理"
-        description="支持 HTTP / SOCKS5 / Shadowsocks / VLESS；VMess 仅保存配置，隧道暂未支持。"
+        description="支持 HTTP / SOCKS5 / Shadowsocks / VLESS（含 REALITY）/ VMess。"
       />
 
       {showEmpty ? (
@@ -647,9 +845,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                         <TableCell>
                           <div className="flex flex-wrap items-center gap-1.5">
                             <Badge variant="outline">{TYPE_LABEL[u.type] ?? u.type}</Badge>
-                            {u.type === "vmess" ? (
-                              <span className="text-xs text-muted-foreground">暂未支持</span>
-                            ) : null}
+                            <RouteBadges u={u} />
                           </div>
                         </TableCell>
                         <TableCell>
@@ -661,7 +857,14 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                           ) : u.type === "vless" || u.type === "vmess" ? (
                             <div className="max-w-[180px] truncate font-mono text-xs text-muted-foreground">
                               {u.uuid ? `UUID ${u.uuid.slice(0, 8)}…` : "UUID 未设置"}
-                              {u.tls ? " · TLS" : ""}
+                              {u.type === "vless" && u.security === "reality"
+                                ? " · REALITY"
+                                : u.tls
+                                  ? " · TLS"
+                                  : ""}
+                              {u.transport && u.transport !== "tcp"
+                                ? ` · ${u.transport === "ws" ? "WS" : "gRPC"} ${u.transport === "ws" ? u.path || "/" : u.service_name || ""}`.trimEnd()
+                                : ""}
                             </div>
                           ) : u.username ? (
                             <div className="max-w-[180px] truncate font-mono text-xs text-muted-foreground">
@@ -731,7 +934,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
           <DialogHeader>
             <DialogTitle>{editing ? `编辑上游 ${editing.name}` : "添加上游代理"}</DialogTitle>
             <DialogDescription>
-              支持 HTTP / SOCKS5 / Shadowsocks / VLESS 与 VMess 配置保存。
+              支持 HTTP / SOCKS5 / Shadowsocks / VLESS（REALITY / Vision / WS / gRPC）与 VMess。
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={save} className="space-y-4">
@@ -753,6 +956,47 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 />
               </Field>
             </div>
+
+            {!editing ? (
+              <div className="space-y-1.5 rounded-lg border bg-muted/30 px-3 py-2">
+                <Label htmlFor="up-share">粘贴分享链接（可选）</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="up-share"
+                    className="font-mono text-xs"
+                    value={shareLink}
+                    onChange={(e) => setShareLink(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (!parsing) parseShareLink();
+                      }
+                    }}
+                    placeholder="vless://uuid@1.2.3.4:443?security=reality&pbk=…&sid=…&sni=…#name"
+                    spellCheck={false}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={parseShareLink}
+                    disabled={parsing || !shareLink.trim()}
+                    className="shrink-0"
+                  >
+                    {parsing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                    解析并填入
+                  </Button>
+                </div>
+                {parseError ? (
+                  <p className="text-xs text-destructive" role="alert">
+                    {parseError}
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    支持 vless://、vmess://、ss://、http://、socks5://，解析后仍可手动修改。
+                  </p>
+                )}
+              </div>
+            ) : null}
 
             {form.type === "http" || form.type === "socks5" ? (
               <>
@@ -812,7 +1056,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             ) : null}
 
             {form.type === "vless" || form.type === "vmess" ? (
-              <>
+              <div className="grid grid-cols-2 gap-3">
                 <Field label="UUID" htmlFor="up-uuid">
                   <Input
                     id="up-uuid"
@@ -823,14 +1067,105 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                     spellCheck={false}
                   />
                 </Field>
+                <Field label="传输方式" htmlFor="up-transport">
+                  <FormSelect
+                    id="up-transport"
+                    value={form.transport}
+                    onValueChange={(v) => setForm({ ...form, transport: v as UpstreamForm["transport"] })}
+                    items={TRANSPORT_OPTIONS}
+                  />
+                </Field>
+              </div>
+            ) : null}
+
+            {form.type === "vless" ? (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="安全层" htmlFor="up-security">
+                    <FormSelect
+                      id="up-security"
+                      value={form.security}
+                      onValueChange={(v) => setForm({ ...form, security: asSecurity(v) })}
+                      items={SECURITY_OPTIONS}
+                    />
+                  </Field>
+                  <Field label="Flow" htmlFor="up-flow" hint="XTLS Vision 需要服务端开启对应流控。">
+                    <FormSelect
+                      id="up-flow"
+                      value={form.flow}
+                      onValueChange={(v) => setForm({ ...form, flow: v })}
+                      items={
+                        FLOW_OPTIONS.some((o) => o.value === form.flow)
+                          ? FLOW_OPTIONS
+                          : [...FLOW_OPTIONS, { value: form.flow, label: form.flow }]
+                      }
+                    />
+                  </Field>
+                </div>
+
+                {form.security === "reality" ? (
+                  <div className="grid grid-cols-3 gap-3">
+                    <Field label="公钥 pbk" htmlFor="up-pbk">
+                      <Input
+                        id="up-pbk"
+                        className="font-mono"
+                        value={form.pbk}
+                        onChange={(e) => setForm({ ...form, pbk: e.target.value })}
+                        placeholder="REALITY 公钥"
+                        spellCheck={false}
+                      />
+                    </Field>
+                    <Field label="Short ID" htmlFor="up-sid">
+                      <Input
+                        id="up-sid"
+                        className="font-mono"
+                        value={form.sid}
+                        onChange={(e) => setForm({ ...form, sid: e.target.value })}
+                        placeholder="sid"
+                        spellCheck={false}
+                      />
+                    </Field>
+                    <Field label="指纹" htmlFor="up-fingerprint">
+                      <FormSelect
+                        id="up-fingerprint"
+                        value={form.fingerprint}
+                        onValueChange={(v) => setForm({ ...form, fingerprint: v })}
+                        items={FINGERPRINT_OPTIONS}
+                      />
+                    </Field>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between rounded-lg border px-3 py-2">
+                    <div>
+                      <div className="text-sm font-medium">启用 TLS</div>
+                      <p className="text-xs text-muted-foreground">
+                        严格校验服务端证书，SNI 留空时使用服务器主机名。
+                      </p>
+                    </div>
+                    <Switch
+                      checked={form.tls}
+                      onCheckedChange={(v) => setForm({ ...form, tls: Boolean(v) })}
+                      aria-label="启用 TLS"
+                    />
+                  </div>
+                )}
+              </>
+            ) : null}
+
+            {form.type === "vmess" ? (
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="安全层" htmlFor="up-vmess-security">
+                  <FormSelect
+                    id="up-vmess-security"
+                    value={form.vmessSecurity}
+                    onValueChange={(v) => setForm({ ...form, vmessSecurity: v })}
+                    items={VMESS_SECURITY_OPTIONS}
+                  />
+                </Field>
                 <div className="flex items-center justify-between rounded-lg border px-3 py-2">
                   <div>
                     <div className="text-sm font-medium">启用 TLS</div>
-                    <p className="text-xs text-muted-foreground">
-                      {form.type === "vless"
-                        ? "严格校验服务端证书，SNI 留空时使用服务器主机名。"
-                        : "VMess 暂未支持隧道，仅保存配置。"}
-                    </p>
+                    <p className="text-xs text-muted-foreground">由 sing-box 出站发起 VMess 连接。</p>
                   </div>
                   <Switch
                     checked={form.tls}
@@ -838,7 +1173,12 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                     aria-label="启用 TLS"
                   />
                 </div>
-                {form.tls ? (
+              </div>
+            ) : null}
+
+            {form.type === "vless" || form.type === "vmess" ? (
+              <>
+                {form.tls || form.security === "reality" ? (
                   <Field label="SNI" htmlFor="up-sni" hint="留空则使用服务器主机名；IP 地址不会发送 SNI。">
                     <Input
                       id="up-sni"
@@ -850,10 +1190,43 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                     />
                   </Field>
                 ) : null}
-                {form.type === "vmess" ? (
-                  <p className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
-                    VMess 出站隧道尚未实现：配置可以保存和导入，但健康探测会显示「vmess 暂未支持」。
-                  </p>
+
+                {form.transport === "ws" ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="WS Path" htmlFor="up-path" hint="默认 /。">
+                      <Input
+                        id="up-path"
+                        className="font-mono"
+                        value={form.path}
+                        onChange={(e) => setForm({ ...form, path: e.target.value })}
+                        placeholder="/ws"
+                        spellCheck={false}
+                      />
+                    </Field>
+                    <Field label="WS Host 头" htmlFor="up-host-header" hint="留空则不额外携带 Host。">
+                      <Input
+                        id="up-host-header"
+                        className="font-mono"
+                        value={form.hostHeader}
+                        onChange={(e) => setForm({ ...form, hostHeader: e.target.value })}
+                        placeholder="cdn.example.com"
+                        spellCheck={false}
+                      />
+                    </Field>
+                  </div>
+                ) : null}
+
+                {form.transport === "grpc" ? (
+                  <Field label="gRPC Service Name" htmlFor="up-service-name" hint="留空则使用空 serviceName。">
+                    <Input
+                      id="up-service-name"
+                      className="font-mono"
+                      value={form.serviceName}
+                      onChange={(e) => setForm({ ...form, serviceName: e.target.value })}
+                      placeholder="grpc-service"
+                      spellCheck={false}
+                    />
+                  </Field>
                 ) : null}
               </>
             ) : null}
@@ -889,6 +1262,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             <DialogTitle>批量导入上游</DialogTitle>
             <DialogDescription>
               支持 URI 行、IP:PORT、IP:PORT:USER:PASS、base64 订阅、sing-box JSON、Clash 节点列表；自动去重。
+              节点支持 VLESS（REALITY / XTLS Vision / WS / gRPC）、VMess（WS / gRPC）、Shadowsocks。
             </DialogDescription>
           </DialogHeader>
 
@@ -904,7 +1278,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 className="min-h-[160px] font-mono text-xs"
                 value={importText}
                 onChange={(e) => setImportText(e.target.value)}
-                placeholder={"http://user:pass@1.2.3.4:8080#US-01\nsocks5://1.2.3.4:1080\n1.2.3.4:8080\n1.2.3.4:8080:user:pass"}
+                placeholder={"http://user:pass@1.2.3.4:8080#US-01\nsocks5://1.2.3.4:1080\nvless://uuid@1.2.3.4:443?security=reality&pbk=…&sid=…&flow=xtls-rprx-vision&sni=www.apple.com#REALITY-01\n1.2.3.4:8080"}
               />
               <Button
                 className="w-full"

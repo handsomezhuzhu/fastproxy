@@ -79,9 +79,6 @@ func (in *Upstream) validateVless() error {
 		if in.PBK == "" {
 			return errors.New("REALITY 上游必须填写公钥 pbk")
 		}
-		if in.SID == "" {
-			return errors.New("REALITY 上游必须填写 short id（sid）")
-		}
 	}
 	if in.Transport == "grpc" && in.ServiceName == "" {
 		in.ServiceName = ""

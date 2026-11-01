@@ -437,8 +437,6 @@ func TestUpstreamRealityFieldsPersist(t *testing.T) {
 	}{
 		{"reality no pbk", &Upstream{Name: "x", Type: UpstreamVless, Host: "h:1",
 			UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Security: SecurityReality, SID: "01"}, "pbk"},
-		{"reality no sid", &Upstream{Name: "x", Type: UpstreamVless, Host: "h:1",
-			UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Security: SecurityReality, PBK: "pk"}, "sid"},
 		{"bad transport", &Upstream{Name: "x", Type: UpstreamVmess, Host: "h:1",
 			UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Transport: "quic"}, "tcp/ws/grpc"},
 		{"bad flow", &Upstream{Name: "x", Type: UpstreamVless, Host: "h:1",
@@ -455,6 +453,11 @@ func TestUpstreamRealityFieldsPersist(t *testing.T) {
 		if _, err := s.UpsertUpstream("", c.in); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: expected error containing %q, got %v", c.name, c.want, err)
 		}
+	}
+	// An empty short id is legal for REALITY (servers may accept the zero id).
+	if _, err := s.UpsertUpstream("", &Upstream{Name: "no-sid", Type: UpstreamVless, Host: "h:1",
+		UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Security: SecurityReality, PBK: "pk"}); err != nil {
+		t.Errorf("REALITY without sid should be accepted, got %v", err)
 	}
 }
 

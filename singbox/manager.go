@@ -137,9 +137,9 @@ func (m *Manager) needed() []config.Upstream {
 		if !NeedsSingBox(*u) || u.Host == "" || u.UUID == "" {
 			continue
 		}
-		if u.Type == config.UpstreamVless && u.Security == config.SecurityReality && (u.PBK == "" || u.SID == "") {
+		if u.Type == config.UpstreamVless && u.Security == config.SecurityReality && u.PBK == "" {
 			if m.log != nil {
-				m.log.Warnf("上游 %s 的 REALITY 配置缺少 pbk/sid，已跳过", u.Name)
+				m.log.Warnf("上游 %s 的 REALITY 配置缺少 pbk，已跳过", u.Name)
 			}
 			continue
 		}

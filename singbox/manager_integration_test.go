@@ -63,7 +63,11 @@ type serverSpec struct {
 	path        string
 	host        string
 	serviceName string
-	tlsTweak    string // "insecure_client" | "" — test-only hazard notes
+	// reality only: the TLS target the server disguises as, and the accepted
+	// SNI list. Zero values fall back to the discard listener below.
+	handshakePort uint16
+	serverNames   []string
+	tlsTweak      string // "insecure_client" | "" — test-only hazard notes
 }
 
 // startServer starts a sing-box instance exposing one inbound of the given
@@ -90,15 +94,25 @@ func startServer(t *testing.T, spec serverSpec) (string, uint16) {
 		}
 	}
 	if spec.security == "reality" {
-		raw["tls"] = map[string]any{
+		hp := spec.handshakePort
+		if hp == 0 {
+			hp = realHandshakePort(t)
+		}
+		tlsCfg := map[string]any{
 			"enabled": true,
 			"reality": map[string]any{
 				"enabled":     true,
-				"handshake":   map[string]any{"server": "127.0.0.1", "server_port": int(realHandshakePort(t))},
+				"handshake":   map[string]any{"server": "127.0.0.1", "server_port": int(hp)},
 				"private_key": spec.privateKey,
 				"short_id":    []string{spec.shortID},
 			},
 		}
+		// sing-box's REALITY inbound takes the accepted SNI from the TLS
+		// server_name field (one name per inbound).
+		if len(spec.serverNames) > 0 {
+			tlsCfg["server_name"] = spec.serverNames[0]
+		}
+		raw["tls"] = tlsCfg
 	}
 	if spec.transport != "" {
 		tr := map[string]any{"type": spec.transport}

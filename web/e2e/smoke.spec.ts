@@ -325,7 +325,7 @@ test("上游代理：批量导入 REALITY/Vision 节点后列表显示 e2e-reali
   // 后端合并 sing-box 之前，旧导入器会拒绝 REALITY：此时用例跳过（保留断言供联调后启用）。
   const added = dialog.getByText("新增 1", { exact: true });
   const skipped = await dialog
-    .getByText(/跳过 1/)
+    .getByText(/问题 [1-9]/)
     .isVisible({ timeout: 20_000 })
     .catch(() => false);
   test.skip(skipped, "当前后端仍拒绝 REALITY 导入（等 sing-box 后端合并后启用）");

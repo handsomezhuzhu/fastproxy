@@ -216,7 +216,7 @@ export function SettingsPage({
 
               <Button type="submit" className="w-full" disabled={saving}>
                 {saving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                {saving ? "保存中…" : "保存系统设置"}
+                <span className="inline-block min-w-24 text-center">{saving ? "保存中…" : "保存系统设置"}</span>
               </Button>
             </form>
           </CardContent>
@@ -259,7 +259,7 @@ export function SettingsPage({
                 </Field>
                 <Button type="submit" variant="secondary" className="w-full" disabled={pwdBusy || !newPassword}>
                   {pwdBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                  {pwdBusy ? "处理中…" : "修改密码"}
+                  <span className="inline-block min-w-16 text-center">{pwdBusy ? "处理中…" : "修改密码"}</span>
                 </Button>
               </form>
             </CardContent>

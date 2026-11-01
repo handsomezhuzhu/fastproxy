@@ -245,7 +245,7 @@ export function PaginationControls({
           value={String(pageSize)}
           onValueChange={(v) => onChange(1, Number(v))}
         >
-          <SelectTrigger size="sm" className="w-24" aria-label="每页条数">
+          <SelectTrigger className="w-24" aria-label="每页行数">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

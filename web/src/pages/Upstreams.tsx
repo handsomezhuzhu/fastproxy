@@ -583,7 +583,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
               </Button>
               <Button type="submit" disabled={busy}>
                 {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                {busy ? "保存中…" : "保存"}
+                <span className="inline-block min-w-16 text-center">{busy ? "保存中…" : "保存"}</span>
               </Button>
             </DialogFooter>
           </form>
@@ -619,7 +619,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 onClick={() => runImport(false)}
               >
                 {importing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                {importing ? "导入中…" : "导入文本"}
+                <span className="inline-block min-w-16 text-center">{importing ? "导入中…" : "导入文本"}</span>
               </Button>
             </TabsContent>
 
@@ -638,7 +638,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 onClick={() => runImport(true)}
               >
                 {importing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                {importing ? "拉取中…" : "拉取并导入"}
+                <span className="inline-block min-w-16 text-center">{importing ? "拉取中…" : "拉取并导入"}</span>
               </Button>
             </TabsContent>
           </Tabs>

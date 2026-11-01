@@ -459,7 +459,7 @@ export function AccountsPage({
               </Button>
               <Button type="submit" disabled={busy || data.ports.length === 0}>
                 {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                {busy ? "保存中…" : "保存"}
+                <span className="inline-block min-w-16 text-center">{busy ? "保存中…" : "保存"}</span>
               </Button>
             </DialogFooter>
           </form>

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -351,6 +352,140 @@ func TestUpstreamImportDedupIncludesProtocolOnly(t *testing.T) {
 	}
 }
 
+// TestUpstreamRealityFieldsPersist covers the columns added for the embedded
+// sing-box outbounds: REALITY keys, Vision flow, uTLS fingerprint and the
+// ws/grpc transport options.
+func TestUpstreamRealityFieldsPersist(t *testing.T) {
+	s := tempStore(t, 7788)
+
+	vl, err := s.UpsertUpstream("", &Upstream{
+		Name: "reality", Type: UpstreamVless, Host: "2.2.2.2:443",
+		UUID: "b831381d-6324-4d53-ad4f-8cda48b30811",
+		Security: SecurityReality, PBK: "pub-key", SID: "a1b2", Flow: UpstreamFlowVision,
+		Fingerprint: "firefox", Transport: "ws", Path: "/ws", HostHeader: "cdn.example.com",
+		SNI: "www.example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vl.Security != SecurityReality || vl.PBK != "pub-key" || vl.SID != "a1b2" ||
+		vl.Flow != UpstreamFlowVision || vl.Fingerprint != "firefox" || vl.Transport != "ws" ||
+		vl.Path != "/ws" || vl.HostHeader != "cdn.example.com" {
+		t.Fatalf("reality fields not normalised: %+v", vl)
+	}
+	if !vl.TLS {
+		t.Fatal("reality must imply the TLS flag")
+	}
+
+	vm, err := s.UpsertUpstream("", &Upstream{
+		Name: "vmess-grpc", Type: UpstreamVmess, Host: "3.3.3.3:443",
+		UUID: "b831381d-6324-4d53-ad4f-8cda48b30811",
+		Transport: "grpc", ServiceName: "svc", TLS: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vm.VMessSecurity != "auto" || vm.Transport != "grpc" || vm.ServiceName != "svc" || !vm.TLS {
+		t.Fatalf("vmess fields not normalised: %+v", vm)
+	}
+
+	// Read back through both scan paths + JSON round-trip of the API shape.
+	items, _, err := s.ListUpstreams(50, 0, "reality")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("list: n=%d err=%v", len(items), err)
+	}
+	got := items[0]
+	if got.PBK != "pub-key" || got.SID != "a1b2" || got.Flow != UpstreamFlowVision ||
+		got.Fingerprint != "firefox" || got.Path != "/ws" || got.HostHeader != "cdn.example.com" {
+		t.Fatalf("reality fields not persisted: %+v", got)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"pbk":"pub-key"`, `"sid":"a1b2"`, `"flow":"xtls-rprx-vision"`,
+		`"fingerprint":"firefox"`, `"transport":"ws"`, `"path":"/ws"`, `"host_header":"cdn.example.com"`,
+		`"security":"reality"`} {
+		if !strings.Contains(string(raw), key) {
+			t.Fatalf("upstream JSON missing %s: %s", key, raw)
+		}
+	}
+
+	// Update keeps them and survives a reload of the row.
+	vl.Transport = "grpc"
+	vl.ServiceName = "rpc"
+	vl.Path = ""
+	vl.HostHeader = ""
+	if _, err := s.UpsertUpstream(vl.ID, vl); err != nil {
+		t.Fatal(err)
+	}
+	var found *Upstream
+	for _, u := range s.Upstreams() {
+		if u.ID == vl.ID {
+			found = u
+		}
+	}
+	if found == nil || found.Transport != "grpc" || found.ServiceName != "rpc" || found.PBK != "pub-key" {
+		t.Fatalf("update lost fields: %+v", found)
+	}
+
+	// Validation.
+	bad := []struct {
+		name string
+		in   *Upstream
+		want string
+	}{
+		{"reality no pbk", &Upstream{Name: "x", Type: UpstreamVless, Host: "h:1",
+			UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Security: SecurityReality, SID: "01"}, "pbk"},
+		{"bad transport", &Upstream{Name: "x", Type: UpstreamVmess, Host: "h:1",
+			UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Transport: "quic"}, "tcp/ws/grpc"},
+		{"bad flow", &Upstream{Name: "x", Type: UpstreamVless, Host: "h:1",
+			UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", TLS: true, Flow: "xtls-rprx-direct"}, "flow"},
+		{"flow without tls", &Upstream{Name: "x", Type: UpstreamVless, Host: "h:1",
+			UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Flow: UpstreamFlowVision}, "TLS"},
+		{"bad security", &Upstream{Name: "x", Type: UpstreamVless, Host: "h:1",
+			UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Security: "xtls"}, "security"},
+		{"bad vmess security", &Upstream{Name: "x", Type: UpstreamVmess, Host: "h:1",
+			UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", VMessSecurity: "rc4"}, "VMess"},
+		{"vmess no uuid", &Upstream{Name: "x", Type: UpstreamVmess, Host: "h:1"}, "UUID"},
+	}
+	for _, c := range bad {
+		if _, err := s.UpsertUpstream("", c.in); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: expected error containing %q, got %v", c.name, c.want, err)
+		}
+	}
+	// An empty short id is legal for REALITY (servers may accept the zero id).
+	if _, err := s.UpsertUpstream("", &Upstream{Name: "no-sid", Type: UpstreamVless, Host: "h:1",
+		UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Security: SecurityReality, PBK: "pk"}); err != nil {
+		t.Errorf("REALITY without sid should be accepted, got %v", err)
+	}
+}
+
+// TestUpstreamImportDedupIncludesTransport: same endpoint with different ws
+// path / REALITY sid / transport is a distinct upstream.
+func TestUpstreamImportDedupIncludesTransport(t *testing.T) {
+	s := tempStore(t, 7788)
+	uuid := "b831381d-6324-4d53-ad4f-8cda48b30811"
+	cands := []*Upstream{
+		{Name: "a", Type: UpstreamVless, Host: "1.1.1.1:443", UUID: uuid, TLS: true, Transport: "ws", Path: "/a"},
+		{Name: "b", Type: UpstreamVless, Host: "1.1.1.1:443", UUID: uuid, TLS: true, Transport: "ws", Path: "/b"},
+		{Name: "c", Type: UpstreamVless, Host: "1.1.1.1:443", UUID: uuid, TLS: true, Transport: "grpc", ServiceName: "x"},
+		{Name: "a-dup", Type: UpstreamVless, Host: "1.1.1.1:443", UUID: uuid, TLS: true, Transport: "ws", Path: "/a"},
+	}
+	added, dups, problems := s.ImportUpstreams(cands)
+	if added != 3 || len(dups) != 1 || len(problems) != 0 {
+		t.Fatalf("added=%d dups=%v problems=%v", added, dups, problems)
+	}
+	var paths []string
+	for _, u := range s.Upstreams() {
+		paths = append(paths, u.Transport+u.Path+u.ServiceName)
+	}
+	sort.Strings(paths)
+	if strings.Join(paths, ",") != "grpcx,ws/a,ws/b" {
+		t.Fatalf("unexpected transports: %v", paths)
+	}
+}
+
 // TestMigrationAddsProtocolColumns simulates a pre-upgrade database (no
 // method/uuid/tls/sni columns) and verifies the ALTER migration runs on open.
 func TestMigrationAddsProtocolColumns(t *testing.T) {
@@ -380,7 +515,9 @@ func TestMigrationAddsProtocolColumns(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open round %d: %v", round, err)
 		}
-		for _, col := range []string{"method", "uuid", "tls", "sni"} {
+		for _, col := range []string{"method", "uuid", "tls", "sni",
+			"security", "pbk", "sid", "flow", "fingerprint", "transport", "path",
+			"host_header", "service_name", "vmess_security"} {
 			ok, err := s.columnExists("upstreams", col)
 			if err != nil || !ok {
 				t.Fatalf("round %d: column %s missing (err=%v)", round, col, err)

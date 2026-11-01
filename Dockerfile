@@ -10,7 +10,7 @@ FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY . .
 COPY --from=web /app/admin/dist ./admin/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/fastproxy .
+RUN CGO_ENABLED=0 go build -tags with_utls -trimpath -ldflags "-s -w" -o /out/fastproxy .
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates

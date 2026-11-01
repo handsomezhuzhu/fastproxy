@@ -27,8 +27,10 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # -tags with_utls: embedded sing-box compiles REALITY/uTLS only with that
+      # tag; the production image and release binaries use it as well.
       - name: Test
-        run: go test ./... -count=1 -timeout 300s
+        run: go test -tags with_utls ./... -count=1 -timeout 600s
 
   ui-e2e:
     name: UI e2e (Playwright)
@@ -122,7 +124,7 @@ jobs:
           for pair in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64; do
             os=${pair%-*}; arch=${pair#*-}; ext=""
             [ "$os" = "windows" ] && ext=".exe"
-            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -tags with_utls -trimpath \
               -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
               -o "dist/fastproxy-$pair$ext" .
           done

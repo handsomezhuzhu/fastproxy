@@ -19,6 +19,10 @@ const (
 
 // dialVless opens a VLESS tunnel (TCP transport, optionally over TLS) to addr.
 //
+// This is the native client: plain TCP transport, no flow control. REALITY,
+// XTLS Vision and WebSocket/gRPC transports are handled by the embedded
+// sing-box instance (DialTunnel dispatches there first).
+//
 // Request header: [0x00 version][16B uuid][0x00 addonsLen][0x01 cmd=TCP]
 // [2B port BE][ATYP][addr]. The response header [version][addonsLen][addons]
 // is drained before the connection is handed back for raw relaying.

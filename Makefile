@@ -17,8 +17,13 @@ web:
 build:
 	go build -trimpath -ldflags "-s -w" -o fastproxy .
 
+# REQUIRED for the production binary: embedded sing-box only compiles REALITY
+# (and any uTLS fingerprinting) in with the with_utls build tag.
+build-utls:
+	go build -tags with_utls -trimpath -ldflags "-s -w" -o fastproxy .
+
 test:
-	go test ./... -count=1
+	go test -tags with_utls ./... -count=1
 
 smoke:
 	cd web && npm run build && node scripts/smoke-dom.mjs

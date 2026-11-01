@@ -38,8 +38,20 @@ type Proxy struct {
 	Pass   string // http/socks5/shadowsocks password
 	Method string // shadowsocks cipher
 	UUID   string // vless/vmess user id
-	TLS    bool   // vless/vmess TLS on top of TCP
+	TLS    bool   // vless/vmess TLS on top of the transport
 	SNI    string // vless/vmess TLS server name
+
+	// vless/vmess advanced options (served by the embedded sing-box).
+	Security    string // "" | "none" | "tls" | "reality"
+	PBK         string // REALITY public key
+	SID         string // REALITY short id
+	Flow        string // xtls-rprx-vision
+	Fingerprint string // uTLS fingerprint
+	Transport   string // ""/tcp/ws/grpc
+	Path        string // ws path
+	HostHeader  string // ws Host
+	ServiceName string // grpc service name
+	VMessSecurity string // vmess cipher (scy), "" = auto
 }
 
 // Result is the outcome of one parse run.
@@ -51,7 +63,23 @@ type Result struct {
 // DedupKey is the identity used to skip repeated nodes inside one import and
 // by the store against existing rows.
 func (p Proxy) DedupKey() string {
-	return p.Type + "|" + p.Host + "|" + p.Method + "|" + p.UUID + "|" + p.User + "|" + p.Pass
+	return p.Type + "|" + p.Host + "|" + p.Method + "|" + p.UUID + "|" + p.User + "|" + p.Pass +
+		"|" + p.PBK + "|" + p.SID + "|" + p.Flow + "|" + p.Security + "|" + p.Transport +
+		"|" + p.Path + "|" + p.HostHeader + "|" + p.ServiceName
+}
+
+// normalizeTransport canonicalises a transport name; "" and "tcp" both mean
+// plain TCP. It reports false for transports FastProxy cannot serve.
+func normalizeTransport(network string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(network)) {
+	case "", "tcp", "raw":
+		return "", true
+	case "ws", "websocket":
+		return "ws", true
+	case "grpc", "gun":
+		return "grpc", true
+	}
+	return "", false
 }
 
 const maxSubscriptionBytes = 2 << 20
@@ -97,7 +125,16 @@ func Fetch(rawURL string) (string, error) {
 
 // Parse extracts upstream candidates from subscription content.
 func Parse(text string) Result {
+	// Editors and PowerShell on Windows save pasted content with CRLF (and
+	// the occasional lone CR); normalise once so the line/YAML readers, which
+	// trim ASCII spaces only, see clean "\n" line endings.
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
 	text = strings.TrimSpace(strings.TrimPrefix(text, "\ufeff"))
+	// U+FEFF encodes as the three bytes EF BB BF; TrimSpace/Prefix match the
+	// rune, so a byte-wise copy carrying "\xef\xbb\xbf" would survive. Trim
+	// it here too (it would otherwise hide a leading "- name: ..." key).
+	text = strings.TrimPrefix(text, "\xef\xbb\xbf")
 	if text == "" {
 		return Result{Problems: []string{"内容为空"}}
 	}
@@ -109,7 +146,9 @@ func Parse(text string) Result {
 		}
 	}
 
-	// Clash YAML `proxies:` block.
+	// Clash YAML `proxies:` block. Checked before the base64 attempt: parsed
+	// YAML is printable ASCII and would otherwise be mistaken for a wrapped
+	// URI list.
 	if strings.Contains(text, "proxies:") {
 		if r, ok := parseClashYAML(text); ok {
 			return r
@@ -357,6 +396,9 @@ type vmessJSON struct {
 
 // parseVmessURI decodes the base64 JSON payload of a vmess:// share link.
 // The body is everything after "vmess://" (no fragment concept).
+//
+// Mapping: net -> Transport (tcp/ws/grpc), tls -> TLS, sni -> SNI (falls back
+// to host), host -> HostHeader, path -> Path, scy -> VMessSecurity.
 func parseVmessURI(rest string) (Proxy, error) {
 	raw := strings.TrimSpace(rest)
 	raw = strings.TrimSuffix(raw, "/")
@@ -375,8 +417,9 @@ func parseVmessURI(rest string) (Proxy, error) {
 	if strings.TrimSpace(v.ID) == "" {
 		return Proxy{}, errors.New("vmess 节点缺少 id（UUID）")
 	}
-	if net := strings.ToLower(strings.TrimSpace(v.Net)); net != "" && net != "tcp" {
-		return Proxy{}, fmt.Errorf("暂不支持 %s 传输", net)
+	transport, ok := normalizeTransport(v.Net)
+	if !ok {
+		return Proxy{}, fmt.Errorf("暂不支持 %s 传输（仅支持 tcp/ws/grpc）", v.Net)
 	}
 	hp := net.JoinHostPort(v.Address, port)
 	name := strings.TrimSpace(v.PS)
@@ -387,12 +430,34 @@ func parseVmessURI(rest string) (Proxy, error) {
 	if sni == "" {
 		sni = strings.TrimSpace(v.Host)
 	}
-	return Proxy{Name: name, Type: "vmess", Host: hp,
-		UUID: strings.TrimSpace(v.ID), TLS: strings.EqualFold(v.TLS, "tls"), SNI: sni}, nil
+	security := ""
+	if strings.EqualFold(v.TLS, "tls") || strings.EqualFold(v.TLS, "reality") {
+		security = "tls"
+	}
+	p := Proxy{Name: name, Type: "vmess", Host: hp, UUID: strings.TrimSpace(v.ID),
+		TLS: security == "tls", SNI: sni, Security: security, Transport: transport,
+		Path: strings.TrimSpace(v.Path), HostHeader: strings.TrimSpace(v.Host),
+		VMessSecurity: strings.ToLower(strings.TrimSpace(v.Cipher))}
+	if p.VMessSecurity == "" {
+		p.VMessSecurity = "auto"
+	}
+	if transport == "ws" && p.Path == "" {
+		p.Path = "/"
+	}
+	return p, nil
 }
 
 // --- vless (vless://uuid@host:port?params#name) ---
 
+// parseVlessURI maps the v2rayN / Xray share-link query onto Proxy:
+//
+//	security  none | tls | reality
+//	type      tcp | ws | grpc  (anything else is reported as a problem)
+//	flow      xtls-rprx-vision
+//	pbk/sid   REALITY public key / short id
+//	fp        uTLS fingerprint (defaults to chrome for REALITY)
+//	sni/peer  TLS server name; host doubles as SNI and ws Host
+//	path / serviceName   ws path / grpc service
 func parseVlessURI(rest string) (Proxy, error) {
 	body, name := splitName(rest)
 	var query string
@@ -420,40 +485,60 @@ func parseVlessURI(rest string) (Proxy, error) {
 	if err != nil {
 		return Proxy{}, fmt.Errorf("vless:// 参数解析失败: %v", err)
 	}
-	if net := strings.ToLower(q.Get("type")); net != "" && net != "tcp" {
-		return Proxy{}, fmt.Errorf("暂不支持 %s 传输", net)
+	transport, ok := normalizeTransport(q.Get("type"))
+	if !ok {
+		return Proxy{}, fmt.Errorf("暂不支持 %s 传输（仅支持 tcp/ws/grpc）", q.Get("type"))
 	}
 	if strings.EqualFold(q.Get("encryption"), "aes-128-gcm") ||
 		(q.Get("encryption") != "" && !strings.EqualFold(q.Get("encryption"), "none")) {
 		return Proxy{}, fmt.Errorf("vless 暂不支持加密 %q（应使用 encryption=none）", q.Get("encryption"))
 	}
-	// REALITY needs the server public key + short id and a uTLS handshake; a
-	// plain TLS client silently falls back to the real SNI site and hangs.
-	// Reject loudly instead of storing a node that can never work.
-	security := strings.ToLower(q.Get("security"))
-	if security == "reality" {
-		return Proxy{}, errors.New("vless 暂不支持 REALITY（需要 pbk/sid），请改用普通 TLS 节点，或用本地客户端转成 socks5 上游")
-	}
-	if flow := strings.ToLower(q.Get("flow")); flow != "" {
-		return Proxy{}, fmt.Errorf("vless 暂不支持 flow=%s（XTLS Vision），请改用普通 TCP 节点", flow)
-	}
-	if security != "" && security != "tls" && security != "none" {
+	security := strings.ToLower(strings.TrimSpace(q.Get("security")))
+	switch security {
+	case "", "none", "tls", "reality":
+	case "xtls":
+		return Proxy{}, errors.New("vless 不支持已废弃的 security=xtls（XTLS Vision 请用 security=tls + flow=xtls-rprx-vision）")
+	default:
 		return Proxy{}, fmt.Errorf("暂不支持 security=%s", security)
 	}
-	tls := security == "tls"
+	flow := strings.ToLower(strings.TrimSpace(q.Get("flow")))
+	if flow != "" && flow != "xtls-rprx-vision" {
+		return Proxy{}, fmt.Errorf("vless 暂不支持 flow=%s（仅支持 xtls-rprx-vision）", flow)
+	}
+	if flow != "" && security != "tls" && security != "reality" {
+		return Proxy{}, fmt.Errorf("vless flow=%s 需要 security=tls 或 security=reality", flow)
+	}
+	hostHeader := strings.TrimSpace(q.Get("host"))
 	sni := q.Get("sni")
 	if sni == "" {
 		sni = q.Get("peer")
 	}
 	if sni == "" {
-		sni = q.Get("host")
+		sni = hostHeader
 	}
-	hp := net.JoinHostPort(host, port)
+	p := Proxy{Name: name, Type: "vless", Host: net.JoinHostPort(host, port),
+		UUID: uuid, SNI: strings.TrimSpace(sni), Security: security,
+		Transport: transport, Flow: flow,
+		PBK: strings.TrimSpace(q.Get("pbk")), SID: strings.ToLower(strings.TrimSpace(q.Get("sid"))),
+		Fingerprint: strings.TrimSpace(q.Get("fp")),
+		Path:        strings.TrimSpace(q.Get("path")), HostHeader: hostHeader,
+		ServiceName: strings.TrimSpace(q.Get("serviceName"))}
+	if security == "reality" {
+		if p.PBK == "" || p.SID == "" {
+			return Proxy{}, errors.New("REALITY 节点缺少 pbk 或 sid")
+		}
+		if p.Fingerprint == "" {
+			p.Fingerprint = "chrome"
+		}
+	}
+	p.TLS = security == "tls" || security == "reality"
+	if transport == "ws" && p.Path == "" {
+		p.Path = "/"
+	}
 	if name == "" {
-		name = hp
+		p.Name = p.Host
 	}
-	return Proxy{Name: name, Type: "vless", Host: hp,
-		UUID: uuid, TLS: tls, SNI: strings.TrimSpace(sni)}, nil
+	return p, nil
 }
 
 // anyString renders a JSON scalar (string or number) as a string.
@@ -601,62 +686,165 @@ func proxyFromJSON(m map[string]any) (*Proxy, error) {
 		return &Proxy{Name: name, Type: "shadowsocks", Host: hp,
 			Method: method, Pass: str(m["password"])}, nil
 	case "vmess", "vless":
-		hp, err := nodeHostPort(m)
-		if err != nil {
-			return nil, err
-		}
-		network := strings.ToLower(str(m["network"])) // Clash style
-		if network == "" {
-			// sing-box nests the transport inside {"transport":{"type":...}}.
-			if tr, ok := m["transport"].(map[string]any); ok {
-				network = strings.ToLower(str(tr["type"]))
-			}
-		}
-		if network != "" && network != "tcp" {
-			return nil, fmt.Errorf("%s (%s): 暂不支持 %s 传输", name, hp, network)
-		}
-		uuid := str(m["uuid"])
-		if uuid == "" {
-			return nil, fmt.Errorf("%s (%s): 缺少 uuid", name, hp)
-		}
-		security := strings.ToLower(str(m["security"]))
-		if typ == "vless" {
-			if security == "xtls" {
-				return nil, fmt.Errorf("%s (%s): vless 暂不支持 security=xtls", name, hp)
-			}
-			if security == "reality" {
-				return nil, fmt.Errorf("%s (%s): vless 暂不支持 REALITY（需要 pbk/sid）", name, hp)
-			}
-			if flow := strings.ToLower(str(m["flow"])); flow != "" {
-				return nil, fmt.Errorf("%s (%s): vless 暂不支持 flow=%s（XTLS Vision）", name, hp, flow)
-			}
-			if enc := strings.ToLower(str(m["encryption"])); enc != "" && enc != "none" {
-				return nil, fmt.Errorf("%s (%s): vless 暂不支持加密 %q", name, hp, enc)
-			}
-		}
-		// Clash omits security=reality and uses reality-opts instead.
-		if opts, ok := m["reality-opts"].(map[string]any); ok && len(opts) > 0 {
-			return nil, fmt.Errorf("%s (%s): 暂不支持 REALITY", name, hp)
-		}
-		sni := str(m["servername"])
-		if sni == "" {
-			sni = str(m["sni"])
-		}
-		tls := parseBool(m["tls"]) || security == "tls"
-		// sing-box: "tls":{"enabled":true,"server_name":"...","reality":{...}}
-		if obj, ok := m["tls"].(map[string]any); ok {
-			if realObj, ok := obj["reality"].(map[string]any); ok &&
-				(parseBool(realObj["enabled"]) || str(realObj["public_key"]) != "") {
-				return nil, fmt.Errorf("%s (%s): 暂不支持 REALITY", name, hp)
-			}
-			tls = parseBool(obj["enabled"])
-			if sni == "" {
-				sni = str(obj["server_name"])
-			}
-		}
-		return &Proxy{Name: name, Type: typ, Host: hp, UUID: uuid, SNI: sni, TLS: tls}, nil
+		return proxyFromJSONV2Ray(m, typ, name)
 	}
 	return nil, errors.New("跳过不支持的节点类型: " + typ)
+}
+
+// proxyFromJSONV2Ray maps one sing-box or Clash vless/vmess node, including
+// REALITY (Clash reality-opts / sing-box tls.reality), XTLS Vision flow and
+// the ws/grpc transports.
+func proxyFromJSONV2Ray(m map[string]any, typ, name string) (*Proxy, error) {
+	hp, err := nodeHostPort(m)
+	if err != nil {
+		return nil, err
+	}
+	uuid := str(m["uuid"])
+	if uuid == "" {
+		return nil, fmt.Errorf("%s (%s): 缺少 uuid", name, hp)
+	}
+	if typ == "vless" {
+		if enc := strings.ToLower(str(m["encryption"])); enc != "" && enc != "none" {
+			return nil, fmt.Errorf("%s (%s): vless 暂不支持加密 %q", name, hp, enc)
+		}
+	}
+	// Transport: Clash top-level "network", sing-box {"transport":{"type":…}}.
+	network := strings.ToLower(str(m["network"]))
+	transportOpts, hasTransportOpts := m["transport"].(map[string]any)
+	if network == "" && hasTransportOpts {
+		network = strings.ToLower(str(transportOpts["type"]))
+	}
+	transport, ok := normalizeTransport(network)
+	if !ok {
+		return nil, fmt.Errorf("%s (%s): 暂不支持 %s 传输（仅支持 tcp/ws/grpc）", name, hp, network)
+	}
+	p := &Proxy{Name: name, Type: typ, Host: hp, UUID: uuid, Transport: transport}
+
+	sni := str(m["servername"])
+	if sni == "" {
+		sni = str(m["sni"])
+	}
+	if typ == "vless" {
+		p.Flow = strings.ToLower(str(m["flow"]))
+	}
+	security := strings.ToLower(str(m["security"]))
+	p.Fingerprint = str(m["client-fingerprint"])
+
+	// Clash: tls: true/false plus reality-opts / ws-opts / grpc-opts.
+	tls := parseBool(m["tls"])
+	if ro, ok := m["reality-opts"].(map[string]any); ok && len(ro) > 0 {
+		p.Security = "reality"
+		p.PBK = str(ro["public-key"])
+		if p.PBK == "" {
+			p.PBK = str(ro["pbk"])
+		}
+		p.SID = strings.ToLower(str(ro["short-id"]))
+		if p.SID == "" {
+			p.SID = strings.ToLower(str(ro["sid"]))
+		}
+	}
+	// sing-box: "tls":{"enabled":true,"server_name":"…","utls":…,"reality":{…}}
+	if obj, ok := m["tls"].(map[string]any); ok {
+		if sni == "" {
+			sni = str(obj["server_name"])
+		}
+		if utls, ok := obj["utls"].(map[string]any); ok && p.Fingerprint == "" {
+			p.Fingerprint = str(utls["fingerprint"])
+		}
+		if realObj, ok := obj["reality"].(map[string]any); ok &&
+			(parseBool(realObj["enabled"]) || str(realObj["public_key"]) != "") {
+			p.Security = "reality"
+			p.PBK = str(realObj["public_key"])
+			p.SID = strings.ToLower(str(realObj["short_id"]))
+		}
+		tls = parseBool(obj["enabled"]) || p.Security == "reality"
+	}
+	if p.Security == "" {
+		switch security {
+		case "reality":
+			p.Security = "reality"
+		case "tls", "xtls":
+			p.Security = "tls"
+		case "none", "":
+			if tls {
+				p.Security = "tls"
+			}
+		default:
+			// VMess uses "security" for its cipher (sing-box) while Clash
+			// keeps it under "cipher"; only vless rejects unknown values.
+			if typ != "vmess" {
+				return nil, fmt.Errorf("%s (%s): 暂不支持 security=%s", name, hp, security)
+			}
+			if tls {
+				p.Security = "tls"
+			}
+		}
+	}
+	p.TLS = p.Security == "tls" || p.Security == "reality"
+	if p.Security == "reality" {
+		if p.PBK == "" || p.SID == "" {
+			return nil, fmt.Errorf("%s (%s): REALITY 节点缺少 public-key 或 short-id", name, hp)
+		}
+		if p.Fingerprint == "" {
+			p.Fingerprint = "chrome"
+		}
+	}
+	switch transport {
+	case "ws":
+		if wo, ok := m["ws-opts"].(map[string]any); ok {
+			p.Path = str(wo["path"])
+			if h, ok := wo["headers"].(map[string]any); ok {
+				p.HostHeader = str(h["Host"])
+				if p.HostHeader == "" {
+					p.HostHeader = str(h["host"])
+				}
+			}
+		}
+		if hasTransportOpts {
+			if wsOpts, ok := transportOpts["headers"].(map[string]any); ok && p.HostHeader == "" {
+				p.HostHeader = str(wsOpts["Host"])
+			}
+			if tp := str(transportOpts["path"]); tp != "" && p.Path == "" {
+				p.Path = tp
+			}
+		}
+		if p.Path == "" {
+			p.Path = "/"
+		}
+	case "grpc":
+		if go_, ok := m["grpc-opts"].(map[string]any); ok {
+			p.ServiceName = str(go_["grpc-service-name"])
+		}
+		if hasTransportOpts {
+			if sn := str(transportOpts["service_name"]); sn != "" {
+				p.ServiceName = sn
+			}
+		}
+	}
+	if typ == "vmess" {
+		p.VMessSecurity = strings.ToLower(str(m["cipher"]))
+		if p.VMessSecurity == "" {
+			p.VMessSecurity = strings.ToLower(str(m["security"]))
+		}
+		if p.VMessSecurity == "" {
+			p.VMessSecurity = "auto"
+		}
+	}
+	if p.Flow != "" && p.Flow != "xtls-rprx-vision" {
+		return nil, fmt.Errorf("%s (%s): vless 暂不支持 flow=%s（仅支持 xtls-rprx-vision）", name, hp, p.Flow)
+	}
+	if p.Flow != "" && p.Security != "tls" && p.Security != "reality" {
+		return nil, fmt.Errorf("%s (%s): flow=%s 需要 TLS 或 REALITY", name, hp, p.Flow)
+	}
+	if sni != "" {
+		p.SNI = sni
+	} else {
+		p.SNI = p.HostHeader
+	}
+	if p.Name == "" {
+		p.Name = p.Host
+	}
+	return p, nil
 }
 
 // nodeHostPort extracts server/port from a JSON node.
@@ -706,6 +894,16 @@ func str(v any) string {
 
 // parseClashYAML handles the `proxies:` list in both flow style
 // (`- {name: x, type: http, ...}`) and block style (key: value lines).
+// Block style:
+//
+//	proxies:
+//	  - name: n
+//	    type: vless
+//	    reality-opts:          <- swallows its nested keys: the value is a
+//	      public-key: pk          dangling "true", so only flat (flow-style)
+//	      short-id: 01           REALITY blocks carry keys the importer reads
+//	    ws-opts:
+//	      path: /ws
 func parseClashYAML(text string) (Result, bool) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	inProxies := false
@@ -730,11 +928,25 @@ func parseClashYAML(text string) (Result, bool) {
 			continue
 		}
 		indent := len(raw) - len(strings.TrimLeft(raw, " "))
+		if cur != nil && indent < curIndent {
+			flush()
+			inProxies = false
+			continue
+		}
 		if strings.HasPrefix(trimmed, "- ") || trimmed == "-" {
+			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
+			// Items indented deeper than the list key belong to the item
+			// started at curIndent (a top-level list, whose items share the
+			// key's indent, must not swallow the following ones).
+			if cur != nil && indent > curIndent {
+				if k, v, ok := cutKV(rest); ok {
+					cur[k] = v
+				}
+				continue
+			}
 			flush()
 			cur = map[string]string{}
 			curIndent = indent
-			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
 			if rest == "" {
 				continue
 			}
@@ -760,15 +972,18 @@ func parseClashYAML(text string) (Result, bool) {
 		}
 	}
 	flush()
+	// A proxies block that yielded nothing (no nodes recognised, no problems)
+	// is not a Clash document: fall through to the line formats instead of
+	// reporting the YAML skeleton as unparseable lines.
 	if len(res.Proxies) == 0 && len(res.Problems) == 0 {
 		return Result{}, false
 	}
 	return res, true
 }
 
+// appendClashItem maps one flat `map[string]string` node.
 func appendClashItem(res *Result, m map[string]string) {
 	typ := strings.ToLower(m["type"])
-	var p Proxy
 	switch typ {
 	case "http", "https", "socks", "socks5":
 		server, port := m["server"], m["port"]
@@ -780,8 +995,8 @@ func appendClashItem(res *Result, m map[string]string) {
 		if strings.HasPrefix(typ, "socks") {
 			t = "socks5"
 		}
-		p = Proxy{Type: t, Host: net.JoinHostPort(server, port),
-			User: m["username"], Pass: m["password"]}
+		res.Proxies = append(res.Proxies, finishClashProxy(m, Proxy{Type: t, Host: net.JoinHostPort(server, port),
+			User: m["username"], Pass: m["password"]}))
 	case "ss", "shadowsocks":
 		server, port := m["server"], m["port"]
 		if server == "" || !validPort(port) {
@@ -797,50 +1012,91 @@ func appendClashItem(res *Result, m map[string]string) {
 				m["name"], server, port, method))
 			return
 		}
-		p = Proxy{Type: "shadowsocks", Host: net.JoinHostPort(server, port),
-			Method: method, Pass: m["password"]}
+		res.Proxies = append(res.Proxies, finishClashProxy(m, Proxy{Type: "shadowsocks", Host: net.JoinHostPort(server, port),
+			Method: method, Pass: m["password"]}))
 	case "vmess", "vless":
 		server, port := m["server"], m["port"]
 		if server == "" || !validPort(port) {
 			res.Problems = append(res.Problems, "节点缺少 server/port: "+m["name"])
 			return
 		}
-		if network := strings.ToLower(m["network"]); network != "" && network != "tcp" {
-			res.Problems = append(res.Problems, fmt.Sprintf("%s (%s:%s): 暂不支持 %s 传输",
-				m["name"], server, port, network))
+		transport, ok := normalizeTransport(m["network"])
+		if !ok {
+			res.Problems = append(res.Problems, fmt.Sprintf("%s (%s:%s): 暂不支持 %s 传输（仅支持 tcp/ws/grpc）",
+				m["name"], server, port, m["network"]))
 			return
 		}
 		if m["uuid"] == "" {
 			res.Problems = append(res.Problems, fmt.Sprintf("%s (%s:%s): 缺少 uuid", m["name"], server, port))
 			return
 		}
-		// Clash YAML stores nested blocks as flat keys, so presence is enough.
-		if _, ok := m["reality-opts"]; ok || strings.EqualFold(m["security"], "reality") {
-			res.Problems = append(res.Problems,
-				fmt.Sprintf("%s (%s:%s): vless 暂不支持 REALITY（需要 pbk/sid）", m["name"], server, port))
+		hp := net.JoinHostPort(server, port)
+		// The YAML reader only keeps flat keys, so REALITY arrives as either
+		// security: reality or a dangling "reality-opts:" entry (no value).
+		security := strings.ToLower(m["security"])
+		pbk := m["public-key"]
+		if pbk == "" {
+			pbk = m["pbk"]
+		}
+		sid := strings.ToLower(m["short-id"])
+		if sid == "" {
+			sid = strings.ToLower(m["sid"])
+		}
+		if security == "reality" || pbk != "" {
+			if pbk == "" || sid == "" {
+				res.Problems = append(res.Problems, fmt.Sprintf(
+					"%s (%s): REALITY 节点缺少 public-key/short-id（YAML 嵌套块无法解析，请用分享链接或 JSON 导入）",
+					m["name"], hp))
+				return
+			}
+			security = "reality"
+		}
+		flow := strings.ToLower(m["flow"])
+		if flow != "" && flow != "xtls-rprx-vision" {
+			res.Problems = append(res.Problems, fmt.Sprintf("%s (%s): vless 暂不支持 flow=%s", m["name"], hp, flow))
 			return
 		}
-		if flow := strings.ToLower(m["flow"]); flow != "" {
-			res.Problems = append(res.Problems,
-				fmt.Sprintf("%s (%s:%s): vless 暂不支持 flow=%s（XTLS Vision）", m["name"], server, port, flow))
-			return
+		p := Proxy{Type: typ, Host: hp, UUID: m["uuid"], Transport: transport,
+			Security: security, PBK: pbk, SID: sid, Flow: flow,
+			Fingerprint: m["client-fingerprint"], Path: m["path"],
+			HostHeader: m["host"], ServiceName: m["service-name"]}
+		if p.Security == "" && (isTrue(m["tls"]) || strings.EqualFold(m["reality-opts"], "true")) {
+			p.Security = "tls"
 		}
-		sni := m["servername"]
-		if sni == "" {
-			sni = m["sni"]
+		p.TLS = p.Security == "tls" || p.Security == "reality"
+		if security == "reality" && p.Fingerprint == "" {
+			p.Fingerprint = "chrome"
 		}
-		p = Proxy{Type: typ, Host: net.JoinHostPort(server, port),
-			UUID: m["uuid"], TLS: isTrue(m["tls"]), SNI: sni}
+		if transport == "ws" && p.Path == "" {
+			p.Path = "/"
+		}
+		if sni := m["servername"]; sni != "" {
+			p.SNI = sni
+		} else {
+			p.SNI = m["sni"]
+		}
+		if typ == "vmess" {
+			p.VMessSecurity = strings.ToLower(m["cipher"])
+			if p.VMessSecurity == "" {
+				p.VMessSecurity = "auto"
+			}
+		}
+		res.Proxies = append(res.Proxies, finishClashProxy(m, p))
+		return
 	default:
 		if typ != "" {
 			res.Problems = append(res.Problems, "跳过不支持的节点类型: "+typ)
 		}
 		return
 	}
+}
+
+// finishClashProxy sets the display name (falling back to the address).
+func finishClashProxy(m map[string]string, p Proxy) Proxy {
 	if p.Name = m["name"]; p.Name == "" {
 		p.Name = p.Host
 	}
-	res.Proxies = append(res.Proxies, p)
+	return p
 }
 
 func isTrue(s string) bool {

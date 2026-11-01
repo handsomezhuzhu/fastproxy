@@ -3,6 +3,7 @@
 package admin
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"embed"
@@ -13,6 +14,7 @@ import (
 	"io/fs"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"path"
 	"strconv"
@@ -46,8 +48,53 @@ type Server struct {
 	ver   string
 	web   fs.FS
 
+	singMu  sync.Mutex
+	singbox SingBoxReloader
+
 	mu    sync.Mutex
 	fails map[string]*failState
+}
+
+// SingBoxReloader is the embedded sing-box manager as seen by the panel.
+// Reload rebuilds the box from the store after upstream changes; Dial is
+// passed to proxy.SingBoxDialer. *singbox.Manager satisfies it.
+type SingBoxReloader interface {
+	Dial(up config.Upstream, addr string, timeout time.Duration) (net.Conn, error)
+	Reload(ctx context.Context) error
+	LastError() error
+}
+
+// SetSingBox installs the embedded sing-box manager. Upstream create/update/
+// delete/import/bulk-delete handlers reload it and use Dial as the dialer
+// for VMess and advanced VLESS nodes.
+func (s *Server) SetSingBox(r SingBoxReloader) {
+	s.singMu.Lock()
+	defer s.singMu.Unlock()
+	s.singbox = r
+	if r != nil {
+		proxy.SingBoxDialer = r.Dial
+	}
+}
+
+func (s *Server) singboxReloader() SingBoxReloader {
+	s.singMu.Lock()
+	defer s.singMu.Unlock()
+	return s.singbox
+}
+
+// reloadSingBox applies upstream changes to the embedded box and returns a
+// warning string for the response ("" on success). The store is already
+// updated when this runs.
+func (s *Server) reloadSingBox() string {
+	r := s.singboxReloader()
+	if r == nil {
+		return ""
+	}
+	if err := r.Reload(context.Background()); err != nil {
+		s.log.Warnf("内置 sing-box 重载失败: %v", err)
+		return "内置 sing-box 重载失败: " + err.Error()
+	}
+	return ""
 }
 
 type failState struct {
@@ -83,6 +130,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/upstreams", s.auth(s.handleListUpstreams))
 	mux.HandleFunc("POST /api/upstreams/bulk", s.auth(s.handleBulkUpstreams))
 	mux.HandleFunc("POST /api/upstreams/import", s.auth(s.handleImportUpstreams))
+	mux.HandleFunc("POST /api/upstreams/parse", s.auth(s.handleParseUpstream))
 	mux.HandleFunc("POST /api/upstreams/check-all", s.auth(s.handleCheckAllUpstreams))
 	mux.HandleFunc("PUT /api/upstreams/{id}", s.auth(s.handleUpdateUpstream))
 	mux.HandleFunc("POST /api/upstreams/{id}/check", s.auth(s.handleCheckUpstream))
@@ -418,22 +466,34 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 //
 //   - Address form (http/socks5): {name, type?, upstream:"http://user:pass@h:p"}
 //   - Field form (all types):    {name, type, host:"h:p", username, password,
-//     method, uuid, tls, sni}
+//     method, uuid, tls, sni} plus the vless/vmess fields
+//     (security, pbk, sid, flow, fingerprint, transport, path, host_header,
+//     service_name, vmess_security).
 //
 // When "upstream" carries an ss:// vmess:// or vless:// share link it is parsed
 // by the importer and the resulting fields win over the explicit ones.
 type upstreamInput struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Upstream string `json:"upstream"`
-	Host     string `json:"host"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Method   string `json:"method"`
-	UUID     string `json:"uuid"`
-	TLS      bool   `json:"tls"`
-	SNI      string `json:"sni"`
-	Remark   string `json:"remark"`
+	Name          string `json:"name"`
+	Type          string `json:"type"`
+	Upstream      string `json:"upstream"`
+	Host          string `json:"host"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
+	Method        string `json:"method"`
+	UUID          string `json:"uuid"`
+	TLS           bool   `json:"tls"`
+	SNI           string `json:"sni"`
+	Security      string `json:"security"`
+	PBK           string `json:"pbk"`
+	SID           string `json:"sid"`
+	Flow          string `json:"flow"`
+	Fingerprint   string `json:"fingerprint"`
+	Transport     string `json:"transport"`
+	Path          string `json:"path"`
+	HostHeader    string `json:"host_header"`
+	ServiceName   string `json:"service_name"`
+	VMessSecurity string `json:"vmess_security"`
+	Remark        string `json:"remark"`
 }
 
 func (in *upstreamInput) toEntity() (*config.Upstream, error) {
@@ -442,6 +502,10 @@ func (in *upstreamInput) toEntity() (*config.Upstream, error) {
 		Username: in.Username, Password: in.Password,
 		Method: in.Method, UUID: in.UUID, TLS: in.TLS, SNI: in.SNI,
 		Remark: in.Remark,
+		Security: in.Security, PBK: in.PBK, SID: in.SID, Flow: in.Flow,
+		Fingerprint: in.Fingerprint, Transport: in.Transport, Path: in.Path,
+		HostHeader: in.HostHeader, ServiceName: in.ServiceName,
+		VMessSecurity: in.VMessSecurity,
 	}
 	raw := strings.TrimSpace(in.Upstream)
 	if raw == "" {
@@ -466,6 +530,10 @@ func (in *upstreamInput) toEntity() (*config.Upstream, error) {
 		u.Type, u.Host = p.Type, p.Host
 		u.Username, u.Password = p.User, p.Pass
 		u.Method, u.UUID, u.TLS, u.SNI = p.Method, p.UUID, p.TLS, p.SNI
+		u.Security, u.PBK, u.SID, u.Flow = p.Security, p.PBK, p.SID, p.Flow
+		u.Fingerprint, u.Transport, u.Path = p.Fingerprint, p.Transport, p.Path
+		u.HostHeader, u.ServiceName = p.HostHeader, p.ServiceName
+		u.VMessSecurity = p.VMessSecurity
 		if strings.TrimSpace(u.Name) == "" {
 			u.Name = p.Name
 		}
@@ -496,7 +564,7 @@ func (s *Server) handleCreateUpstream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.syncRespond(w, saved)
+	s.reloadRespond(w, saved)
 }
 
 func (s *Server) handleUpdateUpstream(w http.ResponseWriter, r *http.Request) {
@@ -516,8 +584,9 @@ func (s *Server) handleUpdateUpstream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Upstream edits apply per-connection; restart listeners only when port
-	// definitions changed, but run Sync for safety (no-op otherwise).
-	s.syncRespond(w, saved)
+	// definitions changed, but run Sync for safety (no-op otherwise). The
+	// embedded sing-box is rebuilt so the new outbound takes effect.
+	s.reloadRespond(w, saved)
 }
 
 func (s *Server) handleDeleteUpstream(w http.ResponseWriter, r *http.Request) {
@@ -525,7 +594,7 @@ func (s *Server) handleDeleteUpstream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.syncRespond(w, nil)
+	s.reloadRespond(w, nil)
 }
 
 // handleImportUpstreams accepts {url} or {text} subscription content.
@@ -557,6 +626,10 @@ func (s *Server) handleImportUpstreams(w http.ResponseWriter, r *http.Request) {
 			Name: p.Name, Type: p.Type, Host: p.Host,
 			Username: p.User, Password: p.Pass,
 			Method: p.Method, UUID: p.UUID, TLS: p.TLS, SNI: p.SNI,
+			Security: p.Security, PBK: p.PBK, SID: p.SID, Flow: p.Flow,
+			Fingerprint: p.Fingerprint, Transport: p.Transport, Path: p.Path,
+			HostHeader: p.HostHeader, ServiceName: p.ServiceName,
+			VMessSecurity: p.VMessSecurity,
 		})
 	}
 	added, duplicates, rejected := s.store.ImportUpstreams(candidates)
@@ -569,12 +642,73 @@ func (s *Server) handleImportUpstreams(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Infof("上游导入: 识别 %d, 新增 %d, 重复 %d, 跳过 %d",
 		len(res.Proxies), added, len(duplicates), len(problems))
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"added":      added,
 		"total":      len(res.Proxies),
 		"duplicates": duplicates,
 		"problems":   problems,
-	})
+	}
+	if s.reloadSingBox() != "" {
+		resp["warning"] = "内置 sing-box 重载失败，新的 VMess/REALITY 节点暂不可用"
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleParseUpstream pre-parses a single share link for the panel's
+// "paste and auto-fill the form" flow. It never touches the store.
+//
+//	POST /api/upstreams/parse {"text":"vless://..."}
+//	200 {"proxy":{name,type,host,uuid,password,method,tls,sni,security,pbk,
+//	              sid,flow,fingerprint,transport,path,host_header,service_name}}
+//	400 {"error":"中文原因"}
+func (s *Server) handleParseUpstream(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Text string `json:"text"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	text := strings.TrimSpace(in.Text)
+	if text == "" {
+		writeErr(w, http.StatusBadRequest, "请粘贴节点分享链接")
+		return
+	}
+	if !strings.Contains(text, "://") && !strings.HasPrefix(text, "vmess://") {
+		writeErr(w, http.StatusBadRequest, "不是有效的分享链接（应以 vless://、vmess:// 或 ss:// 开头）")
+		return
+	}
+	res := importer.Parse(text)
+	if len(res.Proxies) != 1 {
+		msg := "无法解析节点链接"
+		if len(res.Problems) > 0 {
+			msg = res.Problems[0]
+		} else if len(res.Proxies) > 1 {
+			msg = "一次只能粘贴一条节点链接"
+		}
+		writeErr(w, http.StatusBadRequest, msg)
+		return
+	}
+	p := res.Proxies[0]
+	writeJSON(w, http.StatusOK, map[string]any{"proxy": map[string]any{
+		"name":         p.Name,
+		"type":         p.Type,
+		"host":         p.Host,
+		"username":     p.User,
+		"uuid":         p.UUID,
+		"password":     p.Pass,
+		"method":       p.Method,
+		"tls":          p.TLS,
+		"sni":          p.SNI,
+		"security":     p.Security,
+		"pbk":          p.PBK,
+		"sid":          p.SID,
+		"flow":         p.Flow,
+		"fingerprint":  p.Fingerprint,
+		"transport":    p.Transport,
+		"path":         p.Path,
+		"host_header":  p.HostHeader,
+		"service_name": p.ServiceName,
+	}})
 }
 
 // handleCheckUpstream probes one upstream now (health + latency + exit IP).
@@ -617,7 +751,11 @@ func (s *Server) handleBulkUpstreams(w http.ResponseWriter, r *http.Request) {
 	switch in.Action {
 	case "delete":
 		deleted, skipped := s.store.BulkDeleteUpstreams(in.IDs)
-		s.syncRespond(w, map[string]any{"deleted": deleted, "skipped": skipped})
+		var boxWarning string
+		if deleted > 0 {
+			boxWarning = s.reloadSingBox()
+		}
+		s.syncRespondWith(w, s.mgr.Sync(), boxWarning, map[string]any{"deleted": deleted, "skipped": skipped})
 	case "check":
 		type checkOut struct {
 			ID        string `json:"id"`
@@ -832,10 +970,27 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 // syncRespond applies changes to running listeners and answers. Only port
 // definition changes restart listeners; accounts/upstreams apply hot.
+// reloadBox rebuilds the embedded sing-box when upstreams changed.
 func (s *Server) syncRespond(w http.ResponseWriter, saved any) {
+	s.syncRespondWith(w, s.mgr.Sync(), "", saved)
+}
+
+// reloadRespond answers after an upstream mutation, reloading the embedded
+// sing-box so the new outbound/inbound pair takes effect.
+func (s *Server) reloadRespond(w http.ResponseWriter, saved any) {
+	s.syncRespondWith(w, s.mgr.Sync(), s.reloadSingBox(), saved)
+}
+
+func (s *Server) syncRespondWith(w http.ResponseWriter, syncErr error, boxWarning string, saved any) {
 	var warning string
-	if serr := s.mgr.Sync(); serr != nil {
-		warning = serr.Error()
+	if syncErr != nil {
+		warning = syncErr.Error()
+	}
+	if boxWarning != "" {
+		if warning != "" {
+			warning += "；"
+		}
+		warning += boxWarning
 	}
 	resp := map[string]any{"ok": true}
 	if saved != nil {

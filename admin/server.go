@@ -8,6 +8,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -645,8 +646,13 @@ func (s *Server) handlePatchAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteAccount(r.PathValue("id")); err != nil {
-		writeErr(w, http.StatusNotFound, err.Error())
+	err := s.store.DeleteAccount(r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, config.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, err.Error())
+		} else {
+			writeErr(w, http.StatusBadRequest, err.Error())
+		}
 		return
 	}
 	s.syncRespond(w, nil)

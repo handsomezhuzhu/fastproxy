@@ -4,8 +4,10 @@ import {
   Gauge,
   Loader2,
   LogOut,
+  Moon,
   PanelLeft,
   RefreshCw,
+  Sun,
   Zap,
 } from "lucide-react";
 import { api, type Data } from "@/api";
@@ -40,6 +42,34 @@ function readHash(): Page {
   return (NAV_ITEMS.some((n) => n.id === h) ? h : "dashboard") as Page;
 }
 
+// useTheme handles dark/light switching with persistence (shadcn 模板明暗主题).
+function useTheme() {
+  const [theme, setTheme] = React.useState<"dark" | "light">(() => {
+    try {
+      return localStorage.getItem("fp-theme") === "light" ? "light" : "dark";
+    } catch {
+      return "dark";
+    }
+  });
+  React.useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle("dark", theme === "dark");
+    root.style.colorScheme = theme;
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", theme === "dark" ? "#171717" : "#ffffff");
+    try {
+      localStorage.setItem("fp-theme", theme);
+    } catch {
+      /* storage unavailable */
+    }
+  }, [theme]);
+  return {
+    theme,
+    toggle: () => setTheme((t) => (t === "dark" ? "light" : "dark")),
+  };
+}
+
 export default function App() {
   const [session, setSession] = React.useState<{ auth: boolean } | null>(null);
   const [data, setData] = React.useState<Data | null>(null);
@@ -47,6 +77,7 @@ export default function App() {
   const [page, setPage] = React.useState<Page>(readHash);
   const [copyOpen, setCopyOpen] = React.useState(false);
   const [copyPreset, setCopyPreset] = React.useState<CopyPreset>(null);
+  const { theme, toggle } = useTheme();
   const [navOpen, setNavOpen] = React.useState(false);
 
   const reload = React.useCallback(async () => {
@@ -212,6 +243,18 @@ export default function App() {
 
             <div className="flex-1" />
 
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={toggle}
+              aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+            >
+              {theme === "dark" ? (
+                <Sun className="size-4" aria-hidden="true" />
+              ) : (
+                <Moon className="size-4" aria-hidden="true" />
+              )}
+            </Button>
             <div className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
               <Activity className="size-3.5" aria-hidden="true" />
               <span className="tabular-nums">{activeConns} 个活跃连接</span>
@@ -246,7 +289,7 @@ export default function App() {
         </div>
 
         <CopyWizard open={copyOpen} onOpenChange={setCopyOpen} data={data} preset={copyPreset} />
-        <Toaster theme="dark" position="bottom-right" richColors closeButton />
+        <Toaster theme={theme} position="bottom-right" richColors closeButton />
       </div>
     </TooltipProvider>
   );

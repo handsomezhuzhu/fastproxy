@@ -359,8 +359,9 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     }
   }
 
-  // 顺序检测：一个完成后再测下一个，每完成一个立刻把结果写回当前行。
-  async function checkSequentially(ids: string[]) {
+  // 批量并发检测（默认 6 个并发）；每完成一个立刻写回对应行，
+  // 所以界面是“批量在跑 + 逐行实时出结果”，而不是等全部完成。
+  async function checkInBatch(ids: string[]) {
     if (ids.length === 0) {
       toast.info("没有可检测的上游");
       return;
@@ -370,26 +371,29 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     setCheckProgress({ done: 0, total: ids.length });
     let ok = 0;
     let fail = 0;
-    for (let i = 0; i < ids.length; i++) {
-      const id = ids[i];
-      setChecking((c) => ({ ...c, [id]: true }));
-      try {
-        const r = await api.checkUpstream(id);
-        applyCheckResult(id, r);
-        if (r.ok) ok++;
-        else fail++;
-      } catch (err: any) {
-        applyCheckResult(id, { ok: false, error: err?.message || "探测失败" });
-        fail++;
-      } finally {
-        setChecking((c) => ({ ...c, [id]: false }));
-        setCheckProgress({ done: i + 1, total: ids.length });
+    let next = 0;
+    const worker = async () => {
+      for (;;) {
+        const i = next++;
+        if (i >= ids.length) return;
+        const id = ids[i];
+        setChecking((c) => ({ ...c, [id]: true }));
+        try {
+          const r = await api.checkUpstream(id);
+          applyCheckResult(id, r);
+          if (r.ok) ok++;
+          else fail++;
+        } catch (err: any) {
+          applyCheckResult(id, { ok: false, error: err?.message || "探测失败" });
+          fail++;
+        } finally {
+          setChecking((c) => ({ ...c, [id]: false }));
+          setCheckProgress((p) => ({ done: p.done + 1, total: p.total }));
+        }
       }
-      // 让浏览器有机会渲染最新一行，再继续下一个
-      if (i + 1 < ids.length) {
-        await new Promise((res) => window.setTimeout(res, 120));
-      }
-    }
+    };
+    const workers = Array.from({ length: Math.min(6, ids.length) }, () => worker());
+    await Promise.all(workers);
     setBulkBusy(false);
     setCheckingAll(false);
     if (fail > 0) toast.warning(`检测完成：正常 ${ok}，失败 ${fail}`);
@@ -400,7 +404,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
   async function checkAll() {
     try {
       const all = await api.upstreamsList({ limit: 1000, offset: 0 });
-      await checkSequentially(all.entries.map((u) => u.id));
+      await checkInBatch(all.entries.map((u) => u.id));
     } catch (err: any) {
       toast.error(err?.message || "检测失败");
     }
@@ -429,7 +433,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     const ids = [...sel.selected];
     if (ids.length === 0) return;
     if (action === "check") {
-      await checkSequentially(ids);
+      await checkInBatch(ids);
       sel.clear();
       setBulkConfirmDelete(false);
       return;

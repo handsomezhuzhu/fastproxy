@@ -184,7 +184,14 @@ func (r *Runner) CheckAll() (okCount, failCount int) {
 
 	ups := r.store.Upstreams()
 	var ok, failed atomic.Int64
-	sem := make(chan struct{}, 4)
+	concurrency := st.ProbeConcurrency
+	if concurrency <= 0 {
+		concurrency = 6
+	}
+	if concurrency > 32 {
+		concurrency = 32
+	}
+	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for _, u := range ups {
 		u := u

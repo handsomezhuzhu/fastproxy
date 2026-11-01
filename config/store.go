@@ -118,6 +118,7 @@ type Settings struct {
 	ProbeEnabled     bool   `json:"probe_enabled"`
 	ProbeIntervalSec int    `json:"probe_interval_sec"`
 	ProbeTimeoutSec  int    `json:"probe_timeout_sec"`
+	ProbeConcurrency int    `json:"probe_concurrency"`
 	ProbeTarget      string `json:"probe_target"`
 }
 
@@ -134,6 +135,7 @@ func DefaultSettings() Settings {
 		ProbeEnabled:        true,
 		ProbeIntervalSec:    300,
 		ProbeTimeoutSec:     8,
+		ProbeConcurrency:    6,
 		ProbeTarget:         "api.ipify.org",
 	}
 }
@@ -351,6 +353,12 @@ func (s *Store) loadSettingsLocked() error {
 	if st.ProbeTimeoutSec <= 0 {
 		st.ProbeTimeoutSec = DefaultSettings().ProbeTimeoutSec
 	}
+	if st.ProbeConcurrency <= 0 {
+		st.ProbeConcurrency = DefaultSettings().ProbeConcurrency
+	}
+	if st.ProbeConcurrency > 32 {
+		st.ProbeConcurrency = 32
+	}
 	if strings.TrimSpace(st.ProbeTarget) == "" {
 		st.ProbeTarget = DefaultSettings().ProbeTarget
 	}
@@ -388,11 +396,17 @@ func (s *Store) UpdateSettings(in Settings) (Settings, error) {
 		return Settings{}, errors.New("握手超时需在 10-300 秒之间")
 	}
 	in.ProbeTarget = strings.TrimSpace(in.ProbeTarget)
+	if in.ProbeConcurrency == 0 {
+		in.ProbeConcurrency = DefaultSettings().ProbeConcurrency
+	}
 	if in.ProbeIntervalSec < 30 || in.ProbeIntervalSec > 3600 {
 		return Settings{}, errors.New("探测间隔需在 30-3600 秒之间")
 	}
 	if in.ProbeTimeoutSec < 3 || in.ProbeTimeoutSec > 30 {
 		return Settings{}, errors.New("探测超时需在 3-30 秒之间")
+	}
+	if in.ProbeConcurrency < 1 || in.ProbeConcurrency > 32 {
+		return Settings{}, errors.New("检测并发数需在 1-32 之间")
 	}
 	if in.ProbeTarget == "" || strings.ContainsAny(in.ProbeTarget, "/: ") {
 		return Settings{}, errors.New("探测目标应为纯域名，如 api.ipify.org")

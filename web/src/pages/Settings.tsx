@@ -40,6 +40,7 @@ export function SettingsPage({
         handshake_timeout_sec: Number(form.handshake_timeout_sec),
         probe_interval_sec: Number(form.probe_interval_sec),
         probe_timeout_sec: Number(form.probe_timeout_sec),
+        probe_concurrency: Number(form.probe_concurrency),
       });
       toast.success("系统设置已保存");
       await reload();
@@ -172,7 +173,7 @@ export function SettingsPage({
                     aria-label="自动探测上游"
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-3 gap-3">
                   <Field label="探测间隔（秒）" htmlFor="set-probe-interval">
                     <Input
                       id="set-probe-interval"
@@ -195,7 +196,18 @@ export function SettingsPage({
                       onChange={(e) => setForm({ ...form, probe_timeout_sec: Number(e.target.value) })}
                     />
                   </Field>
-                  <div className="col-span-2">
+                  <Field label="检测并发数" htmlFor="set-probe-concurrency">
+                    <Input
+                      id="set-probe-concurrency"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={32}
+                      value={form.probe_concurrency}
+                      onChange={(e) => setForm({ ...form, probe_concurrency: Number(e.target.value) })}
+                    />
+                  </Field>
+                  <div className="col-span-3">
                     <Field
                       label="探测目标（域名）"
                       htmlFor="set-probe-target"

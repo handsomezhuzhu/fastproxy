@@ -23,7 +23,8 @@
 
 设置字段：`access_log, log_level(debug|info|warn|error), log_buffer(100-10000),
 log_retention_days(1-90), allow_direct, dial_timeout_sec(3-120), handshake_timeout_sec(10-300),
-probe_enabled, probe_interval_sec(30-3600), probe_timeout_sec(3-30), probe_target(域名)`。
+probe_enabled, probe_interval_sec(30-3600), probe_timeout_sec(3-30), probe_concurrency(1-32),
+probe_target(域名)`。
 
 ## 上游代理
 

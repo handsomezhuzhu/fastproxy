@@ -79,6 +79,7 @@ export type Settings = {
   probe_enabled: boolean;
   probe_interval_sec: number;
   probe_timeout_sec: number;
+  probe_concurrency: number;
   probe_target: string;
 };
 
@@ -201,6 +202,7 @@ export const defaultSettings: Settings = {
   probe_enabled: true,
   probe_interval_sec: 300,
   probe_timeout_sec: 8,
+  probe_concurrency: 6,
   probe_target: "api.ipify.org",
 };
 

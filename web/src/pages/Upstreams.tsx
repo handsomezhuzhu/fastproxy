@@ -392,7 +392,10 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
         }
       }
     };
-    const workers = Array.from({ length: Math.min(6, ids.length) }, () => worker());
+    const workers = Array.from(
+      { length: Math.min(Math.max(1, Number(data.settings.probe_concurrency) || 6), 32, ids.length) },
+      () => worker()
+    );
     await Promise.all(workers);
     setBulkBusy(false);
     setCheckingAll(false);

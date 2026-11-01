@@ -31,7 +31,7 @@ func (in *Upstream) normalizeTLSLike() error {
 	in.PBK = strings.TrimSpace(in.PBK)
 	in.SID = strings.ToLower(strings.TrimSpace(in.SID))
 	in.Flow = strings.ToLower(strings.TrimSpace(in.Flow))
-	in.Fingerprint = strings.TrimSpace(in.Fingerprint)
+	in.Fingerprint = strings.ToLower(strings.TrimSpace(in.Fingerprint))
 	in.Transport = strings.ToLower(strings.TrimSpace(in.Transport))
 	in.Path = strings.TrimSpace(in.Path)
 	in.HostHeader = strings.TrimSpace(in.HostHeader)
@@ -81,11 +81,21 @@ func (in *Upstream) validateVless() error {
 		if in.PBK == "" {
 			return errors.New("REALITY 上游必须填写公钥 pbk")
 		}
-		if !validRealityPublicKey(in.PBK) {
+		key, ok := decodeRealityPublicKey(in.PBK)
+		if !ok {
 			return errors.New("REALITY 公钥 pbk 格式无效（应为 32 字节 X25519 公钥的 base64url）")
 		}
+		// sing-box decodes public_key strictly with RawURLEncoding; normalise
+		// padded/standard base64 from share links to that form.
+		in.PBK = base64.RawURLEncoding.EncodeToString(key)
 		if in.SID != "" && !validRealityShortID(in.SID) {
 			return errors.New("REALITY short id 格式无效（应为不超过 16 位的十六进制）")
+		}
+		if in.Fingerprint == "" {
+			in.Fingerprint = "chrome"
+		}
+		if !validFingerprint(in.Fingerprint) {
+			return fmt.Errorf("不支持的 uTLS 指纹 %q", in.Fingerprint)
 		}
 	}
 	if in.Transport == "grpc" && in.ServiceName == "" {
@@ -128,9 +138,9 @@ func init() {
 // NormalizeUpstream's switch.
 var validateProtocolUpstream func(*Upstream) error
 
-// validRealityPublicKey accepts the base64 encodings used by share links
+// decodeRealityPublicKey accepts the base64 encodings used by share links
 // (unpadded base64url is the norm; padded/standard forms also decode).
-func validRealityPublicKey(s string) bool {
+func decodeRealityPublicKey(s string) ([]byte, bool) {
 	encodings := []*base64.Encoding{
 		base64.RawURLEncoding,
 		base64.URLEncoding,
@@ -139,8 +149,19 @@ func validRealityPublicKey(s string) bool {
 	}
 	for _, enc := range encodings {
 		if raw, err := enc.DecodeString(s); err == nil && len(raw) == 32 {
-			return true
+			return raw, true
 		}
+	}
+	return nil, false
+}
+
+// validFingerprint mirrors sing-box's uTLS fingerprint enum.
+func validFingerprint(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "chrome", "chrome_psk", "chrome_psk_shuffle", "chrome_padding_psk_shuffle",
+		"chrome_pq", "chrome_pq_psk", "firefox", "edge", "safari", "360", "qq",
+		"ios", "android", "random", "randomized":
+		return true
 	}
 	return false
 }

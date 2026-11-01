@@ -99,7 +99,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz \
+          PRERELEASE=""
+          case "$GITHUB_REF_NAME" in *rc*|*beta*|*alpha*|*dev*) PRERELEASE="--prerelease";; esac
+          gh release create "$GITHUB_REF_NAME" $PRERELEASE dist/*.tar.gz \
             --title "FastProxy $GITHUB_REF_NAME" \
             --notes "FastProxy $GITHUB_REF_NAME — 多端口·多账户·上游绑定的轻量 HTTP/SOCKS5 转发中转。
 

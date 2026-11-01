@@ -20,6 +20,7 @@ import (
 	"github.com/handsomezhuzhu/fastproxy/logx"
 	"github.com/handsomezhuzhu/fastproxy/probe"
 	"github.com/handsomezhuzhu/fastproxy/proxy"
+	"github.com/handsomezhuzhu/fastproxy/singbox"
 )
 
 // version is overridable at build time: -ldflags "-X main.version=v1.0.0"
@@ -122,6 +123,21 @@ func main() {
 	if err := mgr.Sync(); err != nil {
 		log.Printf("部分端口启动失败: %v", err)
 	}
+
+	// Embedded sing-box: fastproxy carries VMess plus VLESS with REALITY,
+	// XTLS Vision, WebSocket or gRPC. Each such upstream gets a loopback
+	// SOCKS5 inbound inside the embedded box; proxy.DialTunnel reaches it
+	// through proxy.SingBoxDialer. A failure here is not fatal: plain
+	// VLESS/TLS, HTTP, SOCKS5 and Shadowsocks keep working natively.
+	sbMgr := singbox.New(store, logger)
+	defer sbMgr.Close()
+	if err := sbMgr.Start(context.Background()); err != nil {
+		logger.Warnf("内置 sing-box 启动失败（VMess/REALITY 上游将不可用）: %v", err)
+	} else if ports := sbMgr.Ports(); len(ports) > 0 {
+		log.Printf("内置 sing-box 已为 %d 个上游提供出站", len(ports))
+	}
+	proxy.SingBoxDialer = sbMgr.Dial
+
 	for _, p := range store.Ports() {
 		if p.Enabled {
 			log.Printf("线路: 端口 %d（备注: %s）", p.Port, remarkOrDash(p.Remark))
@@ -131,6 +147,7 @@ func main() {
 
 	// Admin panel + API.
 	adm := admin.NewServer(store, mgr, logger, prober, version)
+	adm.SetSingBox(sbMgr)
 	httpServer := &http.Server{
 		Addr:              adminAddr,
 		Handler:           adm.Handler(),

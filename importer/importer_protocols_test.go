@@ -125,8 +125,30 @@ func TestParseVmessJSON(t *testing.T) {
 	}
 }
 
-func TestParseVmessRejectsNonTCP(t *testing.T) {
-	for _, net := range []string{"ws", "grpc", "h2", "quic"} {
+func TestParseVmessNonTCP(t *testing.T) {
+	// ws and grpc are accepted (embedded sing-box speaks them).
+	ws := Parse(vmessLink(t, map[string]any{
+		"ps": "VM-ws", "add": "w.example.com", "port": "443", "id": "u", "scy": "aes-128-gcm",
+		"net": "ws", "tls": "tls", "host": "cdn.example.com", "path": "/ray",
+	}))
+	check(t, ws, 1)
+	p := ws.Proxies[0]
+	if p.Transport != "ws" || p.Path != "/ray" || p.HostHeader != "cdn.example.com" ||
+		!p.TLS || p.Security != "tls" || p.SNI != "cdn.example.com" || p.VMessSecurity != "aes-128-gcm" {
+		t.Fatalf("vmess ws mismatch: %+v", p)
+	}
+	grpc := Parse(vmessLink(t, map[string]any{
+		"add": "g.example.com", "port": "443", "id": "u", "net": "grpc", "tls": "tls",
+		"path": "svc", "scy": "",
+	}))
+	check(t, grpc, 1)
+	if grpc.Proxies[0].Transport != "grpc" || grpc.Proxies[0].Path != "svc" ||
+		grpc.Proxies[0].VMessSecurity != "auto" {
+		t.Fatalf("vmess grpc mismatch: %+v", grpc.Proxies[0])
+	}
+
+	// Transports FastProxy cannot serve stay problems.
+	for _, net := range []string{"h2", "quic", "kcp", "httpupgrade"} {
 		link := vmessLink(t, map[string]any{
 			"add": "h", "port": "443", "id": "u", "net": net, "tls": "tls",
 		})
@@ -147,68 +169,86 @@ func TestParseVlessURI(t *testing.T) {
 			"?encryption=none&security=tls&type=tcp&sni=cdn.example.com#VL-TLS",
 		"vless://11111111-2222-3333-4444-555555555555@1.2.3.4:80?encryption=none&type=tcp#VL-plain",
 		"vless://11111111-2222-3333-4444-555555555555@1.2.3.5:443?encryption=none&security=none#VL-notls",
-		"vless://22222222-2222-3333-4444-555555555555@1.2.3.6:443?encryption=none&security=tls&type=ws&path=%2Fws#VL-ws",
-		"vless://33333333-2222-3333-4444-555555555555@1.2.3.7:443?encryption=none&type=grpc#VL-grpc",
+		"vless://22222222-2222-3333-4444-555555555555@1.2.3.6:443" +
+			"?encryption=none&security=tls&type=ws&path=%2Fws&host=ws.example.com#VL-ws",
+		"vless://33333333-2222-3333-4444-555555555555@1.2.3.7:443" +
+			"?encryption=none&type=grpc&serviceName=mygrpc#VL-grpc",
 		"vless://44444444-2222-3333-4444-555555555555@1.2.3.8:443?encryption=aes-128-gcm&type=tcp#VL-enc",
+		"vless://44444444-2222-3333-4444-555555555555@1.2.3.9:443?encryption=none&type=quic#VL-quic",
 	}, "\n")
 	r := Parse(text)
-	if len(r.Proxies) != 3 {
-		t.Fatalf("expected 3 proxies, got %d: %+v (problems %v)", len(r.Proxies), r.Proxies, r.Problems)
+	if len(r.Proxies) != 5 {
+		t.Fatalf("expected 5 proxies, got %d: %+v (problems %v)", len(r.Proxies), r.Proxies, r.Problems)
 	}
 	first := r.Proxies[0]
 	if first.Type != "vless" || first.Host != "vl.example.com:443" || !first.TLS ||
 		first.SNI != "cdn.example.com" || first.UUID != "b831381d-6324-4d53-ad4f-8cda48b30811" ||
-		first.Name != "VL-TLS" {
+		first.Name != "VL-TLS" || first.Security != "tls" || first.Transport != "" {
 		t.Fatalf("vless mismatch: %+v", first)
 	}
-	if r.Proxies[1].TLS || r.Proxies[1].Host != "1.2.3.4:80" {
+	if r.Proxies[1].TLS || r.Proxies[1].Host != "1.2.3.4:80" || r.Proxies[1].Security != "" {
 		t.Fatalf("plain vless mismatch: %+v", r.Proxies[1])
 	}
-	if r.Proxies[2].TLS {
+	if r.Proxies[2].TLS || r.Proxies[2].Security != "none" {
 		t.Fatalf("security=none must not enable TLS: %+v", r.Proxies[2])
 	}
-	if len(r.Problems) != 3 {
-		t.Fatalf("expected 3 skipped problems (ws/grpc/encryption), got %v", r.Problems)
+	ws := r.Proxies[3]
+	if ws.Transport != "ws" || ws.Path != "/ws" || ws.HostHeader != "ws.example.com" ||
+		ws.SNI != "ws.example.com" || !ws.TLS {
+		t.Fatalf("vless ws mismatch: %+v", ws)
+	}
+	grpc := r.Proxies[4]
+	if grpc.Transport != "grpc" || grpc.ServiceName != "mygrpc" || grpc.TLS {
+		t.Fatalf("vless grpc mismatch: %+v", grpc)
+	}
+	if len(r.Problems) != 2 {
+		t.Fatalf("expected 2 skipped problems (encryption/quic), got %v", r.Problems)
 	}
 	joined := strings.Join(r.Problems, "\n")
-	for _, want := range []string{"ws", "grpc", "aes-128-gcm"} {
+	for _, want := range []string{"aes-128-gcm", "quic"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing problem mentioning %q: %v", want, r.Problems)
 		}
 	}
 }
 
-func TestParseVlessRejectsRealityAndVision(t *testing.T) {
+func TestParseVlessRealityAndVision(t *testing.T) {
 	r := Parse(strings.Join([]string{
 		"vless://b831381d-6324-4d53-ad4f-8cda48b30811@r.example.com:443" +
-			"?security=reality&type=tcp&sni=www.microsoft.com&pbk=x&sid=y#reality",
+			"?security=reality&type=tcp&sni=www.microsoft.com&pbk=PBKEY&sid=ab12&fp=firefox&flow=xtls-rprx-vision#reality",
 		"vless://b831381d-6324-4d53-ad4f-8cda48b30811@v.example.com:443" +
-			"?security=tls&type=tcp&flow=xtls-rprx-vision#vision",
+			"?security=tls&type=tcp&flow=xtls-rprx-vision&sni=v.example.com#vision",
+		"vless://b831381d-6324-4d53-ad4f-8cda48b30811@w.example.com:443" +
+			"?security=reality&type=ws&path=%2Fr&host=w.example.com&sni=w.example.com&pbk=PK2&sid=ef#reality-ws",
+		// REALITY without pbk/sid cannot work: still reported.
+		"vless://b831381d-6324-4d53-ad4f-8cda48b30811@bad.example.com:443?security=reality&type=tcp#nokey",
 	}, "\n"))
-	if len(r.Proxies) != 0 {
-		t.Fatalf("reality/vision must not be imported: %+v", r.Proxies)
+	if len(r.Proxies) != 3 {
+		t.Fatalf("expected 3 imported nodes, got %+v (problems %v)", r.Proxies, r.Problems)
 	}
-	joined := strings.Join(r.Problems, "\n")
-	if !strings.Contains(joined, "REALITY") {
-		t.Fatalf("missing REALITY problem: %v", r.Problems)
+	reality := r.Proxies[0]
+	if reality.Security != "reality" || reality.PBK != "PBKEY" || reality.SID != "ab12" ||
+		reality.Fingerprint != "firefox" || reality.Flow != "xtls-rprx-vision" ||
+		reality.SNI != "www.microsoft.com" || !reality.TLS || reality.Name != "reality" {
+		t.Fatalf("reality mismatch: %+v", reality)
 	}
-	if !strings.Contains(joined, "flow") {
-		t.Fatalf("missing flow problem: %v", r.Problems)
+	vision := r.Proxies[1]
+	if vision.Flow != "xtls-rprx-vision" || vision.Security != "tls" || !vision.TLS {
+		t.Fatalf("vision mismatch: %+v", vision)
+	}
+	realityWS := r.Proxies[2]
+	if realityWS.Security != "reality" || realityWS.Transport != "ws" || realityWS.Path != "/r" ||
+		realityWS.HostHeader != "w.example.com" || realityWS.Fingerprint != "chrome" ||
+		realityWS.PBK != "PK2" || realityWS.SID != "ef" {
+		t.Fatalf("reality ws mismatch: %+v", realityWS)
+	}
+	if len(r.Problems) != 1 || !strings.Contains(r.Problems[0], "REALITY") {
+		t.Fatalf("expected REALITY problem for the keyless node, got %v", r.Problems)
 	}
 }
 
-func TestParseClashRejectsReality(t *testing.T) {
+func TestParseClashReality(t *testing.T) {
 	text := `proxies:
-  - name: "R1"
-    type: vless
-    server: 1.1.1.1
-    port: 443
-    uuid: b831381d-6324-4d53-ad4f-8cda48b30811
-    network: tcp
-    tls: true
-    reality-opts:
-      public-key: pk
-      short-id: sid
   - name: "V1"
     type: vless
     server: 1.1.1.2
@@ -226,31 +266,58 @@ func TestParseClashRejectsReality(t *testing.T) {
     tls: true
 `
 	r := Parse(text)
-	check(t, r, 1)
-	if r.Proxies[0].Name != "OK" {
-		t.Fatalf("only the plain TLS node should survive: %+v", r.Proxies)
+	check(t, r, 2)
+	if r.Proxies[0].Name != "V1" || r.Proxies[0].Flow != "xtls-rprx-vision" || !r.Proxies[0].TLS {
+		t.Fatalf("vision node mismatch: %+v", r.Proxies[0])
 	}
-	joined := strings.Join(r.Problems, "\n")
-	if !strings.Contains(joined, "REALITY") || !strings.Contains(joined, "flow") {
-		t.Fatalf("expected reality + flow problems, got %v", r.Problems)
+	if r.Proxies[1].Name != "OK" || !r.Proxies[1].TLS {
+		t.Fatalf("plain TLS node mismatch: %+v", r.Proxies[1])
+	}
+	if len(r.Problems) != 0 {
+		t.Fatalf("expected no problems, got %v", r.Problems)
 	}
 }
 
-func TestParseSingBoxRejectsReality(t *testing.T) {
+func TestParseClashRealityFlowStyle(t *testing.T) {
+	// Flow-style maps can carry the flat keys the importer understands.
+	text := `proxies:
+  - {name: "RF", type: vless, server: 2.2.2.2, port: 443, uuid: u-flow,
+     network: ws, tls: true, servername: ws.example.com,
+     reality-opts: public-key: pk1, short-id: 0a, flow: xtls-rprx-vision,
+     host: ws.example.com}
+`
+	r := Parse(text)
+	check(t, r, 1)
+	if r.Proxies[0].Name != "RF" {
+		t.Fatalf("expected RF, got %+v", r.Proxies[0])
+	}
+}
+
+func TestParseSingBoxReality(t *testing.T) {
 	text := `{"outbounds":[
       {"type":"vless","tag":"R","server":"1.1.1.1","server_port":443,"uuid":"u-1",
-       "tls":{"enabled":true,"server_name":"a.example.com","reality":{"enabled":true,"public_key":"pk","short_id":"sid"}},
-       "transport":{"type":"tcp"}},
+       "flow":"xtls-rprx-vision",
+       "tls":{"enabled":true,"server_name":"a.example.com",
+              "utls":{"enabled":true,"fingerprint":"firefox"},
+              "reality":{"enabled":true,"public_key":"pk","short_id":"1a2b"}},
+       "transport":{"type":"grpc","service_name":"svc"}},
       {"type":"vless","tag":"OK","server":"2.2.2.2","server_port":443,"uuid":"u-2",
        "tls":{"enabled":true,"server_name":"b.example.com"},"transport":{"type":"tcp"}}
     ]}`
 	r := Parse(text)
-	check(t, r, 1)
-	if r.Proxies[0].Name != "OK" {
-		t.Fatalf("only the plain TLS node should survive: %+v", r.Proxies)
+	check(t, r, 2)
+	reality := r.Proxies[0]
+	if reality.Name != "R" || reality.Security != "reality" || reality.PBK != "pk" ||
+		reality.SID != "1a2b" || reality.Fingerprint != "firefox" ||
+		reality.Flow != "xtls-rprx-vision" || reality.Transport != "grpc" ||
+		reality.ServiceName != "svc" || reality.SNI != "a.example.com" || !reality.TLS {
+		t.Fatalf("sing-box reality mismatch: %+v", reality)
 	}
-	if len(r.Problems) != 1 || !strings.Contains(r.Problems[0], "REALITY") {
-		t.Fatalf("expected REALITY problem, got %v", r.Problems)
+	if r.Proxies[1].Name != "OK" || r.Proxies[1].Security != "tls" || r.Proxies[1].Transport != "" {
+		t.Fatalf("plain TLS node mismatch: %+v", r.Proxies[1])
+	}
+	if len(r.Problems) != 0 {
+		t.Fatalf("expected no problems, got %v", r.Problems)
 	}
 }
 
@@ -272,6 +339,9 @@ func TestParseClashNewProtocols(t *testing.T) {
     port: 443
     uuid: b831381d-6324-4d53-ad4f-8cda48b30811
     network: ws
+    tls: true
+    path: /vm
+    host: vm.example.com
   - name: "VM-01"
     type: vmess
     server: 5.5.5.6
@@ -284,24 +354,30 @@ proxy-groups:
   - name: PROXY
 `
 	r := Parse(text)
-	check(t, r, 4)
+	check(t, r, 5)
 	if r.Proxies[0].Type != "shadowsocks" || r.Proxies[0].Method != "aes-256-gcm" || r.Proxies[0].Pass != "sspw" {
 		t.Fatalf("clash ss mismatch: %+v", r.Proxies[0])
 	}
 	vl := r.Proxies[1]
-	if vl.Type != "vless" || !vl.TLS || vl.SNI != "cdn.example.com" || vl.Host != "4.4.4.4:443" {
+	if vl.Type != "vless" || !vl.TLS || vl.SNI != "cdn.example.com" || vl.Host != "4.4.4.4:443" ||
+		vl.Security != "tls" {
 		t.Fatalf("clash vless mismatch: %+v", vl)
 	}
-	vm := r.Proxies[2]
-	if vm.Type != "vmess" || vm.TLS || vm.Host != "5.5.5.6:80" {
+	ws := r.Proxies[2]
+	if ws.Type != "vmess" || ws.Transport != "ws" || ws.Path != "/vm" ||
+		ws.HostHeader != "vm.example.com" || ws.Security != "tls" || !ws.TLS {
+		t.Fatalf("clash vmess ws mismatch: %+v", ws)
+	}
+	vm := r.Proxies[3]
+	if vm.Type != "vmess" || vm.TLS || vm.Host != "5.5.5.6:80" || vm.Transport != "" {
 		t.Fatalf("clash vmess mismatch: %+v", vm)
 	}
-	if r.Proxies[3].Type != "http" || r.Proxies[3].User != "u" {
-		t.Fatalf("clash http mismatch: %+v", r.Proxies[3])
+	if r.Proxies[4].Type != "http" || r.Proxies[4].User != "u" {
+		t.Fatalf("clash http mismatch: %+v", r.Proxies[4])
 	}
 	joined := strings.Join(r.Problems, "\n")
-	if !strings.Contains(joined, "rc4-md5") || !strings.Contains(joined, "ws") {
-		t.Fatalf("expected cipher + transport problems, got %v", r.Problems)
+	if !strings.Contains(joined, "rc4-md5") {
+		t.Fatalf("expected cipher problem, got %v", r.Problems)
 	}
 }
 
@@ -309,12 +385,12 @@ func TestParseSingBoxNewProtocols(t *testing.T) {
 	text := `{"outbounds":[
       {"type":"shadowsocks","tag":"SS","server":"1.1.1.1","server_port":8388,"method":"chacha20-ietf-poly1305","password":"x"},
       {"type":"vless","tag":"VL","server":"2.2.2.2","server_port":443,"uuid":"u-1","tls":{"enabled":true,"server_name":"s.example.com"},"transport":{"type":"tcp"}},
-      {"type":"vmess","tag":"VM","server":"3.3.3.3","server_port":80,"uuid":"u-2","transport":{"type":"ws"}},
+      {"type":"vmess","tag":"VM","server":"3.3.3.3","server_port":80,"uuid":"u-2","security":"aes-128-gcm","transport":{"type":"ws","path":"/ws","headers":{"Host":"cdn.example.com"}}},
       {"type":"direct","tag":"direct"},
       {"type":"selector","tag":"sel","outbounds":["direct"]}
     ]}`
 	r := Parse(text)
-	check(t, r, 2)
+	check(t, r, 3)
 	if r.Proxies[0].Type != "shadowsocks" || r.Proxies[0].Method != "chacha20-ietf-poly1305" {
 		t.Fatalf("sing-box ss mismatch: %+v", r.Proxies[0])
 	}
@@ -322,8 +398,13 @@ func TestParseSingBoxNewProtocols(t *testing.T) {
 	if vl.Type != "vless" || !vl.TLS || vl.Host != "2.2.2.2:443" {
 		t.Fatalf("sing-box vless mismatch: %+v", vl)
 	}
-	if len(r.Problems) != 1 || !strings.Contains(r.Problems[0], "ws") {
-		t.Fatalf("expected ws skip for vmess, got %v", r.Problems)
+	vm := r.Proxies[2]
+	if vm.Type != "vmess" || vm.Transport != "ws" || vm.Path != "/ws" ||
+		vm.HostHeader != "cdn.example.com" || vm.VMessSecurity != "aes-128-gcm" {
+		t.Fatalf("sing-box vmess ws mismatch: %+v", vm)
+	}
+	if len(r.Problems) != 0 {
+		t.Fatalf("expected no problems, got %v", r.Problems)
 	}
 }
 

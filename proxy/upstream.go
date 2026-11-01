@@ -28,20 +28,29 @@ func dialTarget(up *config.Upstream, addr string, timeout time.Duration) (net.Co
 	return DialTunnel(*up, addr, timeout)
 }
 
+// SingBoxDialer is set at startup by main to the embedded sing-box manager.
+// It carries VMess and advanced VLESS (REALITY / Vision / WebSocket / gRPC)
+// upstreams that the native client cannot speak. nil means those upstreams
+// report a clear "not initialised" error.
+var SingBoxDialer func(up config.Upstream, addr string, timeout time.Duration) (net.Conn, error)
+
 // DialTunnel opens a tunnel to addr ("host:port", usually the origin server)
 // through the upstream proxy, authenticating against it when needed.
 //
 // The tunnel protocol is chosen by up.Type: http (CONNECT), socks5,
-// shadowsocks (AEAD TCP), vless (TCP, optional TLS) or vmess (rejected with a
-// clear error until a client is implemented).
+// shadowsocks (AEAD TCP), vmess (embedded sing-box) or vless (native client
+// for plain TCP; embedded sing-box for REALITY / Vision / ws / grpc).
 func DialTunnel(up config.Upstream, addr string, timeout time.Duration) (net.Conn, error) {
 	switch up.Type {
 	case config.UpstreamShadowsocks:
 		return dialShadowsocks(up, addr, timeout)
 	case config.UpstreamVless:
+		if needsSingBox(up) {
+			return dialViaSingBox(up, addr, timeout)
+		}
 		return dialVless(up, addr, timeout)
 	case config.UpstreamVmess:
-		return dialVmess(up, addr, timeout)
+		return dialViaSingBox(up, addr, timeout)
 	}
 	conn, err := net.DialTimeout("tcp", up.Host, timeout)
 	if err != nil {

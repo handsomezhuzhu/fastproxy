@@ -8,20 +8,15 @@ import (
 	"github.com/handsomezhuzhu/fastproxy/config"
 )
 
-// ErrVmessUnsupported is returned for vmess upstreams.
-//
-// About VMess: no small, dependable, pure-Go client library exists that
-// implements VMess AEAD (the only variant modern servers accept — the legacy
-// MD5/alt-header variant is deprecated and blocked by default). The realistic
-// options are xray-core or sing-box, which would pull in a full proxy engine
-// (30+ transitive modules, custom transports, config dialects) just for one
-// egress protocol. Rather than ship untested crypto against an unimplemented
-// library, vmess nodes are imported and stored as valid configuration but the
-// tunnel reports this error. The health prober surfaces it as a failed check.
+// ErrVmessUnsupported is kept for compatibility with older callers; VMess is
+// now served by the embedded sing-box instance (see SingBoxDialer) and only
+// reports this error when that instance was never initialised.
 var ErrVmessUnsupported = errors.New(
-	"vmess 暂未支持：已保存配置，但出站隧道尚未实现（当前支持 http/socks5/shadowsocks/vless）")
+	"vmess 需要内置 sing-box，但 sing-box 尚未初始化")
 
-// dialVmess fails explicitly; it exists so DialTunnel recognises the type.
-func dialVmess(config.Upstream, string, time.Duration) (net.Conn, error) {
-	return nil, ErrVmessUnsupported
+// dialVmess routes VMess through the embedded sing-box hook. It exists so the
+// type is recognised even when callers bypass DialTunnel.
+func dialVmess(up config.Upstream, addr string, timeout time.Duration) (net.Conn, error) {
+	return dialViaSingBox(up, addr, timeout)
 }
+

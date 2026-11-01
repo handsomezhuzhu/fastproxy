@@ -10,11 +10,13 @@
 - **三层模型**：上游代理池 / 端口（纯入口）/ 账户（每端口自带默认账号，账户决定去向）· 无“全局账户”概念，端口与账户是硬边界
 - **快速开始三步**：建上游 → 建端口（自动生成默认账号）→ 客户端立即可用；需要更多身份时就继续加普通账号并绑定上游
 - **上游多协议**：上游出站支持 `http`、`socks5`、`Shadowsocks`（AEAD TCP：aes-128/256-gcm、chacha20-ietf-poly1305）、
-  `VLESS`（TCP，可 TLS）；`VMess` 可保存配置但隧道暂未实现（如实返回错误，不伪装可用）
+  `VLESS`（TCP，可 TLS；REALITY / `flow=xtls-rprx-vision` / WebSocket / gRPC 由内嵌 sing-box 承载）、
+  `VMess`（内嵌 sing-box：TCP/WS/gRPC，可 TLS）
 - **上游批量导入**：订阅链接或文本粘贴，支持
   `http://user:pass@host:port#名称`、`socks5://`、`ss://`、`vless://`、`vmess://`、
   `IP:PORT`、`IP:PORT:USER:PASS`、base64 订阅、sing-box JSON、Clash JSON/YAML 节点列表，
-  自动去重并给出逐行错误（ws/grpc 等非 TCP 传输会明确跳过）
+  REALITY（`pbk`/`sid`）、Vision flow、ws/grpc 传输字段一并保存，自动去重并给出逐行错误
+  （quic/kcp/h2 等无法承载的传输会明确跳过）
 - **上游测速**：控制台一键测试连通性与延迟
 - **主动探测与 IP 检测**：定时（默认 5 分钟）通过每个上游请求出口 IP，记录健康状态、延迟、失败原因与**实际出口 IP**；本机直连出口 IP 同步展示；真实连接失败也会被动标记上游异常
 - **复制向导**：选择「端口 / 账户」→ 选择对象 → 选择格式（HTTP URL、SOCKS5 URL、curl 命令、分字段、JSON），一键批量复制

@@ -170,10 +170,17 @@ func TestDialTunnelDispatchesByType(t *testing.T) {
 		t.Fatalf("vless dispatch: %q", body)
 	}
 
-	// vmess is rejected before any network I/O.
+	// vmess without an initialised sing-box hook reports the explicit error.
 	if _, err := DialTunnel(config.Upstream{Type: config.UpstreamVmess, Host: "127.0.0.1:1",
 		UUID: testUUID}, target, time.Second); !errors.Is(err, ErrVmessUnsupported) {
 		t.Fatalf("vmess should return ErrVmessUnsupported, got %v", err)
+	}
+
+	// A REALITY vless node must be routed to sing-box (and fail cleanly when
+	// the hook is not installed), never to the native plain-TCP client.
+	if _, err := DialTunnel(config.Upstream{Type: config.UpstreamVless, Host: "127.0.0.1:1",
+		UUID: testUUID, Security: config.SecurityReality, PBK: "pk", SID: "01"}, target, time.Second); err == nil {
+		t.Fatal("reality vless without sing-box should fail")
 	}
 
 	// socks5 and http still route through their own paths (HTTPS upstream is
@@ -189,7 +196,7 @@ func TestDialTunnelDispatchesByType(t *testing.T) {
 func TestVmessReturnsClearError(t *testing.T) {
 	up := config.Upstream{Type: config.UpstreamVmess, Host: "127.0.0.1:1", UUID: testUUID}
 	_, err := DialTunnel(up, "example.com:80", time.Second)
-	if err == nil || !strings.Contains(err.Error(), "vmess 暂未支持") {
+	if err == nil || !errors.Is(err, ErrVmessUnsupported) {
 		t.Fatalf("expected explicit vmess error, got %v", err)
 	}
 }

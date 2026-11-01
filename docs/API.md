@@ -35,12 +35,18 @@ probe_enabled, probe_interval_sec(30-3600), probe_timeout_sec(3-30), probe_targe
 | POST | `/api/upstreams/{id}/test` | 立即探测该上游（健康 + 延迟 + 出口 IP），返回 `{ok, latency_ms, exit_ip, error?}` |
 | POST | `/api/upstreams/{id}/check` | 同上（`/test` 为兼容别名） |
 | POST | `/api/upstreams/check-all` | 检测全部上游与本机出口，返回 `{ok, failed, checked, server_ip}` |
-| POST | `/api/upstreams/import` | `{url}` 或 `{text}` → `{added,total,duplicates[],problems[]}` |
+| POST | `/api/upstreams/import` | `{url}` 或 `{text}` → `{added,total,duplicates[],problems[],warning?}` |
+| POST | `/api/upstreams/parse` | `{text:"vless://…"}` → `{proxy:{name,type,host,uuid,password,method,tls,sni,security,pbk,sid,flow,fingerprint,transport,path,host_header,service_name}}`；解析失败 400 `{error:"中文原因"}`。只读，供前端“粘贴分享链接自动填表” |
 
 `/api/data` 与 `GET /api/upstreams` 的 `upstreams[]` 字段：
 `id, name, type, host, username?, password?, remark?, method?, uuid?, tls?, sni?`，
+vless/vmess 高级字段 `security(""|none|tls|reality), pbk?, sid?, flow?, fingerprint?, transport?(""|tcp|ws|grpc), path?, host_header?, service_name?, vmess_security?`，
 以及探测字段 `health(ok|fail|unknown), latency_ms, exit_ip, last_check_at(秒), last_error`；
 另有 `probe:{server_ip,last_check_at}`。
+
+> 上游增删改/导入后服务端会重建内嵌 sing-box：VMess 与 VLESS（REALITY / Vision / WS / gRPC）经
+> 127.0.0.1:20000 起的本地 SOCKS 出站；普通 VLESS（TCP，可 TLS）、http/socks5/ss 仍走原生实现。
+> 正式二进制需以 `-tags with_utls` 构建（Dockerfile / CI / `make build-utls` 已带）。
 
 ### 上游创建/更新的两种请求形状
 

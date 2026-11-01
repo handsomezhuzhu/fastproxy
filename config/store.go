@@ -5,7 +5,8 @@
 //
 //	settings(key, value)            -- admin hash, session secret, JSON settings
 //	upstreams(id, name, type, host, username, password, method, uuid, tls, sni,
-//	          remark, created_at, updated_at)
+//	          security, pbk, sid, flow, fingerprint, transport, path, host_header,
+//	          service_name, vmess_security, remark, created_at, updated_at)
 //	ports(id, port UNIQUE, default_upstream, enabled, remark, created_at, updated_at)
 //	accounts(id, username UNIQUE, password, port_id, upstream_id, enabled, remark, ...)
 //	logs(ts, level, port, account, client, proto, target, status, bytes..., msg)
@@ -69,6 +70,18 @@ type Upstream struct {
 	TLS      bool   `json:"tls,omitempty"`    // vless / vmess: TLS on top of TCP
 	SNI      string `json:"sni,omitempty"`    // vless / vmess: TLS server name ("" = host)
 	Remark   string `json:"remark,omitempty"`
+
+	// vless / vmess advanced options (tunnelled through embedded sing-box).
+	Security      string `json:"security,omitempty"`       // "" | "none" | "tls" | "reality"
+	PBK           string `json:"pbk,omitempty"`            // REALITY public key
+	SID           string `json:"sid,omitempty"`            // REALITY short id
+	Flow          string `json:"flow,omitempty"`           // xtls-rprx-vision
+	Fingerprint   string `json:"fingerprint,omitempty"`    // uTLS fingerprint (default chrome)
+	Transport     string `json:"transport,omitempty"`      // ""/tcp/ws/grpc
+	Path          string `json:"path,omitempty"`           // ws path
+	HostHeader    string `json:"host_header,omitempty"`    // ws Host header
+	ServiceName   string `json:"service_name,omitempty"`   // grpc service name
+	VMessSecurity string `json:"vmess_security,omitempty"` // vmess cipher, default auto
 
 	// Probe state (maintained by the prober and passive failure tracking).
 	Health      string `json:"health"` // ok | fail | unknown
@@ -205,6 +218,16 @@ func (s *Store) migrate() error {
 			uuid TEXT NOT NULL DEFAULT '',
 			tls INTEGER NOT NULL DEFAULT 0,
 			sni TEXT NOT NULL DEFAULT '',
+			security TEXT NOT NULL DEFAULT '',
+			pbk TEXT NOT NULL DEFAULT '',
+			sid TEXT NOT NULL DEFAULT '',
+			flow TEXT NOT NULL DEFAULT '',
+			fingerprint TEXT NOT NULL DEFAULT '',
+			transport TEXT NOT NULL DEFAULT '',
+			path TEXT NOT NULL DEFAULT '',
+			host_header TEXT NOT NULL DEFAULT '',
+			service_name TEXT NOT NULL DEFAULT '',
+			vmess_security TEXT NOT NULL DEFAULT '',
 			remark TEXT NOT NULL DEFAULT '',
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL)`,
@@ -263,6 +286,17 @@ func (s *Store) migrate() error {
 		"uuid":          "TEXT NOT NULL DEFAULT ''",
 		"tls":           "INTEGER NOT NULL DEFAULT 0",
 		"sni":           "TEXT NOT NULL DEFAULT ''",
+		// REALITY / Vision / transport columns (embedded sing-box era).
+		"security":       "TEXT NOT NULL DEFAULT ''",
+		"pbk":            "TEXT NOT NULL DEFAULT ''",
+		"sid":            "TEXT NOT NULL DEFAULT ''",
+		"flow":           "TEXT NOT NULL DEFAULT ''",
+		"fingerprint":    "TEXT NOT NULL DEFAULT ''",
+		"transport":      "TEXT NOT NULL DEFAULT ''",
+		"path":           "TEXT NOT NULL DEFAULT ''",
+		"host_header":    "TEXT NOT NULL DEFAULT ''",
+		"service_name":   "TEXT NOT NULL DEFAULT ''",
+		"vmess_security": "TEXT NOT NULL DEFAULT ''",
 	}
 	for name, def := range cols {
 		exists, err := s.columnExists("upstreams", name)
@@ -415,7 +449,8 @@ func (s *Store) UpdateSettings(in Settings) (Settings, error) {
 // upstreamColumns is the column list shared by every upstream read; the
 // matching scanUpstream keeps SELECT and Scan in lockstep.
 const upstreamColumns = `id, name, type, host, username, password, method, uuid, tls, sni, remark,
-	health, latency_ms, exit_ip, last_check_at, last_error`
+	health, latency_ms, exit_ip, last_check_at, last_error,
+	security, pbk, sid, flow, fingerprint, transport, path, host_header, service_name, vmess_security`
 
 // upstreamScanner is satisfied by both *sql.Row and *sql.Rows.
 type upstreamScanner interface {
@@ -427,7 +462,9 @@ func scanUpstream(sc upstreamScanner) (Upstream, error) {
 	var tls int
 	if err := sc.Scan(&u.ID, &u.Name, &u.Type, &u.Host, &u.Username, &u.Password,
 		&u.Method, &u.UUID, &tls, &u.SNI, &u.Remark,
-		&u.Health, &u.LatencyMS, &u.ExitIP, &u.LastCheckAt, &u.LastError); err != nil {
+		&u.Health, &u.LatencyMS, &u.ExitIP, &u.LastCheckAt, &u.LastError,
+		&u.Security, &u.PBK, &u.SID, &u.Flow, &u.Fingerprint,
+		&u.Transport, &u.Path, &u.HostHeader, &u.ServiceName, &u.VMessSecurity); err != nil {
 		return Upstream{}, err
 	}
 	u.TLS = tls != 0
@@ -524,12 +561,19 @@ func NormalizeUpstream(in *Upstream) error {
 		if len(in.UUID) != 36 && len(in.UUID) != 32 {
 			return fmt.Errorf("UUID %q 格式无效", in.UUID)
 		}
+		if validateProtocolUpstream != nil {
+			if err := validateProtocolUpstream(in); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
 func upstreamDedupKey(u *Upstream) string {
-	return u.Type + "|" + u.Host + "|" + u.Method + "|" + u.UUID + "|" + u.Username + "|" + u.Password
+	return u.Type + "|" + u.Host + "|" + u.Method + "|" + u.UUID + "|" + u.Username + "|" + u.Password +
+		"|" + u.PBK + "|" + u.SID + "|" + u.Flow + "|" + u.Security + "|" + u.Transport +
+		"|" + u.Path + "|" + u.HostHeader + "|" + u.ServiceName
 }
 
 // UpsertUpstream validates and inserts (id == "") or updates an upstream.
@@ -556,10 +600,14 @@ func (s *Store) UpsertUpstream(id string, in *Upstream) (*Upstream, error) {
 	if id == "" {
 		in.ID = randomHex(4)
 		_, err := s.db.Exec(`INSERT INTO upstreams
-			(id, name, type, host, username, password, method, uuid, tls, sni, remark, health, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,'unknown',?,?)`,
+			(id, name, type, host, username, password, method, uuid, tls, sni, remark, health, created_at, updated_at,
+			 security, pbk, sid, flow, fingerprint, transport, path, host_header, service_name, vmess_security)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,'unknown',?,?,
+			 ?,?,?,?,?,?,?,?,?,?)`,
 			in.ID, in.Name, in.Type, in.Host, in.Username, in.Password,
-			in.Method, in.UUID, boolInt(in.TLS), in.SNI, in.Remark, now, now)
+			in.Method, in.UUID, boolInt(in.TLS), in.SNI, in.Remark, now, now,
+			in.Security, in.PBK, in.SID, in.Flow, in.Fingerprint,
+			in.Transport, in.Path, in.HostHeader, in.ServiceName, in.VMessSecurity)
 		if err != nil {
 			return nil, err
 		}
@@ -577,9 +625,12 @@ func (s *Store) UpsertUpstream(id string, in *Upstream) (*Upstream, error) {
 			oldMethod != in.Method || oldUUID != in.UUID || (oldTLS != 0) != in.TLS {
 			reset = true
 		}
-		const setCols = `name=?, type=?, host=?, username=?, password=?, method=?, uuid=?, tls=?, sni=?, remark=?`
+		const setCols = `name=?, type=?, host=?, username=?, password=?, method=?, uuid=?, tls=?, sni=?, remark=?,
+			security=?, pbk=?, sid=?, flow=?, fingerprint=?, transport=?, path=?, host_header=?, service_name=?, vmess_security=?`
 		args := []any{in.Name, in.Type, in.Host, in.Username, in.Password,
-			in.Method, in.UUID, boolInt(in.TLS), in.SNI, in.Remark}
+			in.Method, in.UUID, boolInt(in.TLS), in.SNI, in.Remark,
+			in.Security, in.PBK, in.SID, in.Flow, in.Fingerprint,
+			in.Transport, in.Path, in.HostHeader, in.ServiceName, in.VMessSecurity}
 		var res sql.Result
 		if reset {
 			res, err = s.db.Exec(`UPDATE upstreams SET `+setCols+`,
@@ -647,12 +698,15 @@ func (s *Store) ImportUpstreams(candidates []*Upstream) (int, []string, []string
 	defer s.mu.Unlock()
 
 	seen := map[string]bool{}
-	rows, err := s.db.Query(`SELECT type, host, username, password, method, uuid FROM upstreams`)
+	rows, err := s.db.Query(`SELECT type, host, username, password, method, uuid, security, pbk, sid, flow, transport, path, host_header, service_name FROM upstreams`)
 	if err == nil {
 		for rows.Next() {
 			var typ, host, user, pass, method, uuid string
-			if rows.Scan(&typ, &host, &user, &pass, &method, &uuid) == nil {
-				seen[typ+"|"+host+"|"+method+"|"+uuid+"|"+user+"|"+pass] = true
+			var sec, pbk, sid, flow, transport, path, hostHeader, service string
+			if rows.Scan(&typ, &host, &user, &pass, &method, &uuid,
+				&sec, &pbk, &sid, &flow, &transport, &path, &hostHeader, &service) == nil {
+				seen[typ+"|"+host+"|"+method+"|"+uuid+"|"+user+"|"+pass+
+					"|"+pbk+"|"+sid+"|"+flow+"|"+sec+"|"+transport+"|"+path+"|"+hostHeader+"|"+service] = true
 			}
 		}
 		rows.Close()
@@ -683,10 +737,14 @@ func (s *Store) ImportUpstreams(candidates []*Upstream) (int, []string, []string
 		seen[key] = true
 		u.ID = randomHex(4)
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO upstreams
-			(id, name, type, host, username, password, method, uuid, tls, sni, remark, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			(id, name, type, host, username, password, method, uuid, tls, sni, remark, created_at, updated_at,
+			 security, pbk, sid, flow, fingerprint, transport, path, host_header, service_name, vmess_security)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,
+			 ?,?,?,?,?,?,?,?,?,?)`,
 			u.ID, name, u.Type, u.Host, u.Username, u.Password,
-			u.Method, u.UUID, boolInt(u.TLS), u.SNI, u.Remark, now, now); err != nil {
+			u.Method, u.UUID, boolInt(u.TLS), u.SNI, u.Remark, now, now,
+			u.Security, u.PBK, u.SID, u.Flow, u.Fingerprint,
+			u.Transport, u.Path, u.HostHeader, u.ServiceName, u.VMessSecurity); err != nil {
 			return added, duplicates, problems
 		}
 		added++

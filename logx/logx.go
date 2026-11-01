@@ -269,12 +269,13 @@ func (l *Logger) Close() {
 	}
 }
 
-// Filter selects entries for Recent.
+// Filter selects entries for Recent/CountLogs/QueryLogs.
 type Filter struct {
 	Port    int
 	Account string
 	Level   string // minimum level
 	Limit   int
+	Offset  int
 }
 
 // Recent returns entries newest-first. The database is authoritative when

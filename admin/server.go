@@ -74,11 +74,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/data", s.auth(s.handleData))
 	mux.HandleFunc("GET /api/stats", s.auth(s.handleStats))
 	mux.HandleFunc("GET /api/logs", s.auth(s.handleLogs))
+	mux.HandleFunc("DELETE /api/logs", s.auth(s.handleClearLogs))
 	mux.HandleFunc("GET /api/metrics/hours", s.auth(s.handleMetrics))
 	mux.HandleFunc("GET /api/settings", s.auth(s.handleGetSettings))
 	mux.HandleFunc("PUT /api/settings", s.auth(s.handleUpdateSettings))
 
 	mux.HandleFunc("POST /api/upstreams", s.auth(s.handleCreateUpstream))
+	mux.HandleFunc("GET /api/upstreams", s.auth(s.handleListUpstreams))
+	mux.HandleFunc("POST /api/upstreams/bulk", s.auth(s.handleBulkUpstreams))
 	mux.HandleFunc("POST /api/upstreams/import", s.auth(s.handleImportUpstreams))
 	mux.HandleFunc("POST /api/upstreams/check-all", s.auth(s.handleCheckAllUpstreams))
 	mux.HandleFunc("PUT /api/upstreams/{id}", s.auth(s.handleUpdateUpstream))
@@ -87,11 +90,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/upstreams/{id}", s.auth(s.handleDeleteUpstream))
 
 	mux.HandleFunc("POST /api/ports", s.auth(s.handleCreatePort))
+	mux.HandleFunc("POST /api/ports/bulk", s.auth(s.handleBulkPorts))
 	mux.HandleFunc("PUT /api/ports/{id}", s.auth(s.handleUpdatePort))
 	mux.HandleFunc("PATCH /api/ports/{id}", s.auth(s.handlePatchPort))
 	mux.HandleFunc("DELETE /api/ports/{id}", s.auth(s.handleDeletePort))
 
 	mux.HandleFunc("POST /api/accounts", s.auth(s.handleCreateAccount))
+	mux.HandleFunc("POST /api/accounts/bulk", s.auth(s.handleBulkAccounts))
 	mux.HandleFunc("PUT /api/accounts/{id}", s.auth(s.handleUpdateAccount))
 	mux.HandleFunc("PATCH /api/accounts/{id}", s.auth(s.handlePatchAccount))
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.auth(s.handleDeleteAccount))
@@ -324,10 +329,43 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("limit"); v != "" {
 		f.Limit, _ = strconv.Atoi(v)
 	}
+	if v := q.Get("offset"); v != "" {
+		f.Offset, _ = strconv.Atoi(v)
+	}
 	if v := q.Get("port"); v != "" {
 		f.Port, _ = strconv.Atoi(v)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"entries": s.log.Recent(f)})
+	total, _ := s.store.CountLogs(logx.Filter{Port: f.Port, Account: f.Account, Level: f.Level})
+	writeJSON(w, http.StatusOK, map[string]any{"entries": s.log.Recent(f), "total": total})
+}
+
+// handleClearLogs wipes all access logs after confirmation.
+func (s *Server) handleClearLogs(w http.ResponseWriter, r *http.Request) {
+	n, err := s.store.ClearLogs()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.log.Infof("清空日志: 删除 %d 条", n)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": n})
+}
+
+// handleListUpstreams is the paged upstream listing for the upstreams page.
+func (s *Server) handleListUpstreams(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	if limit <= 0 {
+		limit = 50
+	}
+	items, total, err := s.store.ListUpstreams(limit, offset, q.Get("q"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items, "total": total, "limit": limit, "offset": offset,
+	})
 }
 
 // handleMetrics returns 24 hourly buckets of connections and traffic for the
@@ -514,6 +552,87 @@ func (s *Server) handleCheckAllUpstreams(w http.ResponseWriter, r *http.Request)
 		"checked":   ok + failed,
 		"server_ip": serverIP,
 	})
+}
+
+// handleBulkUpstreams applies bulk delete/check to upstreams.
+func (s *Server) handleBulkUpstreams(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		IDs    []string `json:"ids"`
+		Action string   `json:"action"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	switch in.Action {
+	case "delete":
+		deleted, skipped := s.store.BulkDeleteUpstreams(in.IDs)
+		s.syncRespond(w, map[string]any{"deleted": deleted, "skipped": skipped})
+	case "check":
+		type checkOut struct {
+			ID        string `json:"id"`
+			OK        bool   `json:"ok"`
+			LatencyMS int64  `json:"latency_ms"`
+			ExitIP    string `json:"exit_ip,omitempty"`
+			Error     string `json:"error,omitempty"`
+		}
+		out := make([]checkOut, 0, len(in.IDs))
+		okCount := 0
+		for _, id := range in.IDs {
+			res, found := s.probe.CheckOne(id)
+			if !found {
+				out = append(out, checkOut{ID: id, OK: false, Error: "不存在"})
+				continue
+			}
+			if res.OK {
+				okCount++
+			}
+			out = append(out, checkOut{
+				ID: id, OK: res.OK, LatencyMS: res.LatencyMS, ExitIP: res.ExitIP, Error: res.Error,
+			})
+		}
+		serverIP, _ := s.probe.ServerIP()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": okCount, "failed": len(out) - okCount, "checks": out, "server_ip": serverIP,
+		})
+	default:
+		writeErr(w, http.StatusBadRequest, "action 仅支持 delete 或 check")
+	}
+}
+
+// handleBulkAccounts applies bulk enable/disable/delete to accounts.
+func (s *Server) handleBulkAccounts(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		IDs    []string `json:"ids"`
+		Action string   `json:"action"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	switch in.Action {
+	case "delete", "enable", "disable":
+		updated, problems := s.store.BulkAccounts(in.IDs, in.Action)
+		s.syncRespond(w, map[string]any{"updated": updated, "errors": problems})
+	default:
+		writeErr(w, http.StatusBadRequest, "action 仅支持 delete/enable/disable")
+	}
+}
+
+// handleBulkPorts applies bulk enable/disable/delete to ports.
+func (s *Server) handleBulkPorts(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		IDs    []string `json:"ids"`
+		Action string   `json:"action"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	switch in.Action {
+	case "delete", "enable", "disable":
+		updated, problems := s.store.BulkPorts(in.IDs, in.Action)
+		s.syncRespond(w, map[string]any{"updated": updated, "errors": problems})
+	default:
+		writeErr(w, http.StatusBadRequest, "action 仅支持 delete/enable/disable")
+	}
 }
 
 // --- ports ---

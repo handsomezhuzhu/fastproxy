@@ -38,9 +38,21 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Switch } from "@/components/ui/switch";
-import { DotBadge, EmptyState, Field, PageHeader, Toolbar } from "@/components/page";
+import {
+  DotBadge,
+  EmptyState,
+  Field,
+  PageHeader,
+  PaginationControls,
+  SelectAllCheckbox,
+  Toolbar,
+  usePagination,
+  useSelection,
+} from "@/components/page";
 import { bytes } from "@/lib/utils";
 import type { CopyPreset } from "@/components/CopyWizard";
+
+type BulkAction = "enable" | "disable" | "delete";
 
 export function PortsPage({
   data,
@@ -60,6 +72,14 @@ export function PortsPage({
   const [toggling, setToggling] = React.useState(false);
   const [created, setCreated] = React.useState<{ port: number; account: Account } | null>(null);
   const [copied, setCopied] = React.useState(false);
+
+  // Bulk state
+  const sel = useSelection();
+  const [bulkAction, setBulkAction] = React.useState<BulkAction | null>(null);
+  const [bulkBusy, setBulkBusy] = React.useState(false);
+  const [bulkConfirmDelete, setBulkConfirmDelete] = React.useState(false);
+
+  const pag = usePagination(data.ports);
 
   const status = Object.fromEntries(data.status.ports.map((s) => [s.id, s]));
   const listening = data.ports.filter((p) => status[p.id]?.listening).length;
@@ -89,9 +109,15 @@ export function PortsPage({
       } else {
         const res = await api.createPort({ port: Number(form.port), remark: form.remark });
         const acc = res.saved?.default_account;
+        // saved.port 可能是完整 Port 对象（React error #31 修复：不得直接渲染对象）
+        const savedPort = res.saved?.port;
+        const portNum =
+          savedPort && typeof savedPort === "object"
+            ? savedPort.port
+            : Number(savedPort ?? form.port);
         if (acc) {
           // 不改变页面状态：保存成功后弹出默认账号提示。
-          setCreated({ port: res.saved?.port ?? Number(form.port), account: acc });
+          setCreated({ port: portNum, account: acc });
           setCopied(false);
         } else if (res.warning) {
           toast.warning(`已保存，但监听失败：${res.warning}`);
@@ -146,6 +172,43 @@ export function PortsPage({
     }
   }
 
+  const actionLabels: Record<BulkAction, string> = { enable: "启用", disable: "禁用", delete: "删除" };
+
+  async function runBulk(action: BulkAction) {
+    const ids = [...sel.selected];
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const r = await api.bulkPorts(ids, action);
+      const failed = r.errors ?? [];
+      const done = r.updated ?? Math.max(0, ids.length - failed.length);
+      if (failed.length > 0) {
+        toast.error(`${failed.length} 个端口${actionLabels[action]}失败：${failed[0].error}`);
+        if (done > 0) toast.success(`已${actionLabels[action]} ${done} 个端口`);
+      } else {
+        toast.success(`已${actionLabels[action]} ${done} 个端口`);
+      }
+      sel.clear();
+      await reload();
+    } catch (err: any) {
+      // 后端批量接口未上线（404）或其他错误：友好提示，不清空选择
+      toast.error(err?.message || "批量操作失败");
+    } finally {
+      setBulkBusy(false);
+      setBulkConfirmDelete(false);
+    }
+  }
+
+  function askBulk(action: BulkAction) {
+    setBulkAction(action);
+    if (action === "delete") setBulkConfirmDelete(true);
+    else runBulk(action);
+  }
+
+  const pageIDs = pag.pageItems.map((p) => p.id);
+  const pageAllSelected = pageIDs.length > 0 && pageIDs.every((id) => sel.selected.has(id));
+  const pageSomeSelected = pageIDs.some((id) => sel.selected.has(id));
+
   return (
     <div className="space-y-5">
       <PageHeader
@@ -171,9 +234,40 @@ export function PortsPage({
               <Plus className="size-4" aria-hidden="true" /> 新增线路
             </Button>
           </Toolbar>
+
+          {sel.selected.size > 0 ? (
+            <div
+              className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2"
+              role="status"
+            >
+              <span className="text-sm tabular-nums">已选 {sel.selected.size} 项 ·</span>
+              <Button size="sm" variant="outline" onClick={() => askBulk("enable")} disabled={bulkBusy}>
+                启用
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => askBulk("disable")} disabled={bulkBusy}>
+                禁用
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => askBulk("delete")} disabled={bulkBusy}>
+                {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                删除
+              </Button>
+              <Button size="sm" variant="ghost" onClick={sel.clear} aria-label="取消选择">
+                取消
+              </Button>
+            </div>
+          ) : null}
+
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <SelectAllCheckbox
+                    checked={pageAllSelected}
+                    indeterminate={!pageAllSelected && pageSomeSelected}
+                    onCheckedChange={(v) => sel.toggleMany(pageIDs, v)}
+                    label="全选当前页"
+                  />
+                </TableHead>
                 <TableHead className="w-16">启用</TableHead>
                 <TableHead>端口</TableHead>
                 <TableHead>状态</TableHead>
@@ -187,11 +281,21 @@ export function PortsPage({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.ports.map((p) => {
+              {pag.pageItems.map((p) => {
                 const s = status[p.id];
                 const bound = data.accounts.filter((a) => a.port_id === p.id).length;
+                const checked = sel.selected.has(p.id);
                 return (
-                  <TableRow key={p.id}>
+                  <TableRow key={p.id} data-state={checked ? "selected" : undefined}>
+                    <TableCell>
+                      <input
+                        type="checkbox"
+                        className="size-3.5 accent-primary focus-visible:outline-2 focus-visible:outline-ring"
+                        checked={checked}
+                        onChange={(e) => sel.toggle(p.id, e.target.checked)}
+                        aria-label={`选择 端口 ${p.port}`}
+                      />
+                    </TableCell>
                     <TableCell>
                       <Switch
                         checked={p.enabled}
@@ -257,6 +361,13 @@ export function PortsPage({
               })}
             </TableBody>
           </Table>
+
+          <PaginationControls
+            page={pag.page}
+            pageSize={pag.pageSize}
+            total={pag.total}
+            onChange={pag.onChange}
+          />
         </>
       )}
 
@@ -350,6 +461,24 @@ export function PortsPage({
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction onClick={remove}>删除</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={bulkConfirmDelete} onOpenChange={(v) => !v && setBulkConfirmDelete(false)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>批量删除 {sel.selected.size} 个端口？</AlertDialogTitle>
+            <AlertDialogDescription>
+              其默认账号将一并删除；仍有其他绑定账户的端口会跳过并报错。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => runBulk(bulkAction ?? "delete")} disabled={bulkBusy}>
+              {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+              删除
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

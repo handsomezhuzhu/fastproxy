@@ -39,9 +39,21 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Switch } from "@/components/ui/switch";
-import { EmptyState, Field, FormSelect, PageHeader, Toolbar } from "@/components/page";
+import {
+  EmptyState,
+  Field,
+  FormSelect,
+  PageHeader,
+  PaginationControls,
+  SelectAllCheckbox,
+  Toolbar,
+  usePagination,
+  useSelection,
+} from "@/components/page";
 import { bytes } from "@/lib/utils";
 import type { CopyPreset } from "@/components/CopyWizard";
+
+type BulkAction = "enable" | "disable" | "delete";
 
 export function AccountsPage({
   data,
@@ -65,6 +77,14 @@ export function AccountsPage({
   const [busy, setBusy] = React.useState(false);
   const [deleting, setDeleting] = React.useState<Account | null>(null);
   const [revealed, setRevealed] = React.useState<Record<string, boolean>>({});
+
+  // Bulk state
+  const sel = useSelection();
+  const [bulkAction, setBulkAction] = React.useState<BulkAction | null>(null);
+  const [bulkBusy, setBulkBusy] = React.useState(false);
+  const [bulkConfirmDelete, setBulkConfirmDelete] = React.useState(false);
+
+  const pag = usePagination(data.accounts);
 
   const status = Object.fromEntries(data.status.accounts.map((s) => [s.id, s]));
   const upstreamName = (id: string) => data.upstreams.find((u) => u.id === id)?.name ?? "–";
@@ -141,6 +161,44 @@ export function AccountsPage({
     }
   }
 
+  const actionLabels: Record<BulkAction, string> = { enable: "启用", disable: "禁用", delete: "删除" };
+
+  async function runBulk(action: BulkAction) {
+    const ids = [...sel.selected];
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const r = await api.bulkAccounts(ids, action);
+      const failed = r.errors ?? [];
+      const done = r.updated ?? Math.max(0, ids.length - failed.length);
+      if (failed.length > 0) {
+        toast.error(`${failed.length} 个账户${actionLabels[action]}失败：${failed[0].error}`);
+        if (done > 0) toast.success(`已${actionLabels[action]} ${done} 个账户`);
+      } else {
+        toast.success(`已${actionLabels[action]} ${done} 个账户`);
+      }
+      sel.clear();
+      await reload();
+    } catch (err: any) {
+      toast.error(err?.message || "批量操作失败");
+    } finally {
+      setBulkBusy(false);
+      setBulkConfirmDelete(false);
+    }
+  }
+
+  function askBulk(action: BulkAction) {
+    setBulkAction(action);
+    if (action === "delete") setBulkConfirmDelete(true);
+    else runBulk(action);
+  }
+
+  // 默认账号随端口删除，不参与批量选择
+  const selectable = (a: Account) => !a.is_default;
+  const pageIDs = pag.pageItems.filter(selectable).map((a) => a.id);
+  const pageAllSelected = pageIDs.length > 0 && pageIDs.every((id) => sel.selected.has(id));
+  const pageSomeSelected = pageIDs.some((id) => sel.selected.has(id));
+
   const portItems = data.ports.map((p) => ({ value: p.id, label: `端口 ${p.port}` }));
   const upstreamItems = [
     { value: "", label: "直连（默认）" },
@@ -174,9 +232,40 @@ export function AccountsPage({
               <Plus className="size-4" aria-hidden="true" /> 新增账户
             </Button>
           </Toolbar>
+
+          {sel.selected.size > 0 ? (
+            <div
+              className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2"
+              role="status"
+            >
+              <span className="text-sm tabular-nums">已选 {sel.selected.size} 项 ·</span>
+              <Button size="sm" variant="outline" onClick={() => askBulk("enable")} disabled={bulkBusy}>
+                启用
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => askBulk("disable")} disabled={bulkBusy}>
+                禁用
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => askBulk("delete")} disabled={bulkBusy}>
+                {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                删除
+              </Button>
+              <Button size="sm" variant="ghost" onClick={sel.clear} aria-label="取消选择">
+                取消
+              </Button>
+            </div>
+          ) : null}
+
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <SelectAllCheckbox
+                    checked={pageAllSelected}
+                    indeterminate={!pageAllSelected && pageSomeSelected}
+                    onCheckedChange={(v) => sel.toggleMany(pageIDs, v)}
+                    label="全选当前页"
+                  />
+                </TableHead>
                 <TableHead className="w-16">启用</TableHead>
                 <TableHead>用户名</TableHead>
                 <TableHead>密码</TableHead>
@@ -191,11 +280,23 @@ export function AccountsPage({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.accounts.map((a) => {
+              {pag.pageItems.map((a) => {
                 const s = status[a.id];
                 const shown = revealed[a.id];
+                const checked = sel.selected.has(a.id);
                 return (
-                  <TableRow key={a.id}>
+                  <TableRow key={a.id} data-state={checked ? "selected" : undefined}>
+                    <TableCell>
+                      <input
+                        type="checkbox"
+                        className="size-3.5 accent-primary focus-visible:outline-2 focus-visible:outline-ring"
+                        checked={checked}
+                        disabled={!selectable(a)}
+                        title={selectable(a) ? undefined : "默认账号随端口删除"}
+                        onChange={(e) => sel.toggle(a.id, e.target.checked)}
+                        aria-label={`选择 账户 ${a.username}`}
+                      />
+                    </TableCell>
                     <TableCell>
                       <Switch
                         checked={a.enabled}
@@ -278,6 +379,13 @@ export function AccountsPage({
               })}
             </TableBody>
           </Table>
+
+          <PaginationControls
+            page={pag.page}
+            pageSize={pag.pageSize}
+            total={pag.total}
+            onChange={pag.onChange}
+          />
         </>
       )}
 
@@ -365,6 +473,22 @@ export function AccountsPage({
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction onClick={remove}>删除</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={bulkConfirmDelete} onOpenChange={(v) => !v && setBulkConfirmDelete(false)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>批量删除 {sel.selected.size} 个账户？</AlertDialogTitle>
+            <AlertDialogDescription>删除后这些账户无法再通过任何端口认证。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => runBulk(bulkAction ?? "delete")} disabled={bulkBusy}>
+              {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+              删除
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

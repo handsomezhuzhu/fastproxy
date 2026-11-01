@@ -1,11 +1,21 @@
 import * as React from "react";
-import { RefreshCw, ScrollText } from "lucide-react";
+import { Loader2, RefreshCw, ScrollText, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { api, type Data, type LogEntry } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Table,
   TableBody,
@@ -14,7 +24,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { EmptyState, FormSelect, PageHeader, Toolbar } from "@/components/page";
+import { EmptyState, FormSelect, PageHeader, PaginationControls, Toolbar } from "@/components/page";
 import { bytes, clock } from "@/lib/utils";
 
 function statusVariant(status?: string) {
@@ -25,30 +35,43 @@ function statusVariant(status?: string) {
 }
 
 export function LogsPage({ data }: { data: Data }) {
+  // Server-side pagination state
   const [entries, setEntries] = React.useState<LogEntry[] | null>(null);
+  const [total, setTotal] = React.useState(0);
+  const [page, setPage] = React.useState(1);
+  const [pageSize, setPageSize] = React.useState(50);
+
   const [level, setLevel] = React.useState("debug");
   const [port, setPort] = React.useState("");
   const [account, setAccount] = React.useState("");
-  const [limit, setLimit] = React.useState("200");
   const [auto, setAuto] = React.useState(true);
   const [loading, setLoading] = React.useState(false);
+  const [clearOpen, setClearOpen] = React.useState(false);
+  const [clearing, setClearing] = React.useState(false);
+
+  // 筛选变化时回到第一页
+  React.useEffect(() => {
+    setPage(1);
+  }, [level, port, account]);
 
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
       const r = await api.logs({
-        limit: Number(limit),
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
         level,
         port: port ? Number(port) : undefined,
         account: account || undefined,
       });
       setEntries(r.entries);
+      setTotal(r.total);
     } catch {
       /* 保留旧数据 */
     } finally {
       setLoading(false);
     }
-  }, [level, port, account, limit]);
+  }, [page, pageSize, level, port, account]);
 
   React.useEffect(() => {
     load();
@@ -56,9 +79,24 @@ export function LogsPage({ data }: { data: Data }) {
 
   React.useEffect(() => {
     if (!auto) return;
-    const t = window.setInterval(load, 4000);
+    const t = window.setInterval(() => load(), 4000);
     return () => window.clearInterval(t);
   }, [auto, load]);
+
+  async function clearLogs() {
+    setClearing(true);
+    try {
+      await api.clearLogs();
+      toast.success("连接日志已清空");
+      setClearOpen(false);
+      setPage(1);
+      await load();
+    } catch (err: any) {
+      toast.error(err?.message || "清空失败");
+    } finally {
+      setClearing(false);
+    }
+  }
 
   return (
     <div className="space-y-5">
@@ -99,105 +137,156 @@ export function LogsPage({ data }: { data: Data }) {
         />
         <FormSelect
           id="log-limit"
-          aria-label="日志条数"
-          value={limit}
-          onValueChange={setLimit}
+          aria-label="每页条数"
+          value={String(pageSize)}
+          onValueChange={(v) => {
+            setPageSize(Number(v));
+            setPage(1);
+          }}
           items={[
-            { value: "100", label: "最近 100 条" },
-            { value: "200", label: "最近 200 条" },
-            { value: "500", label: "最近 500 条" },
+            { value: "20", label: "每页 20 条" },
+            { value: "50", label: "每页 50 条" },
+            { value: "100", label: "每页 100 条" },
           ]}
         />
       </div>
 
-      <Toolbar
-        count={entries === null ? "加载中…" : `${entries.length} 条记录`}
-        detail={auto ? "每 4 秒自动刷新" : undefined}
-      >
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Switch checked={auto} onCheckedChange={setAuto} aria-label="自动刷新日志" size="sm" />
-          自动刷新
-        </label>
-        <Button variant="outline" size="sm" onClick={load} disabled={loading}>
-          <RefreshCw className={loading ? "size-4 animate-spin" : "size-4"} aria-hidden="true" />
-          刷新
-        </Button>
-      </Toolbar>
-
       {entries === null ? (
-        <Card>
-          <CardContent className="space-y-2 p-4">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-8 w-full" />
-            ))}
-          </CardContent>
-        </Card>
-      ) : entries.length === 0 ? (
-        <EmptyState
-          icon={<ScrollText className="size-5" aria-hidden="true" />}
-          title="暂无日志"
-          description="客户端产生连接后，记录会实时出现在这里。"
-        />
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <Skeleton className="h-5 w-32" />
+            <div className="flex gap-2">
+              <Skeleton className="h-7 w-20" />
+              <Skeleton className="h-7 w-20" />
+            </div>
+          </div>
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Skeleton key={i} className="h-9 w-full" />
+          ))}
+        </div>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>时间</TableHead>
-              <TableHead>级别</TableHead>
-              <TableHead>端口</TableHead>
-              <TableHead>账户</TableHead>
-              <TableHead>客户端</TableHead>
-              <TableHead>协议</TableHead>
-              <TableHead>目标</TableHead>
-              <TableHead>状态</TableHead>
-              <TableHead className="text-right">流量</TableHead>
-              <TableHead className="text-right">耗时</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {entries.map((e, i) => {
-              const st = statusVariant(e.status);
-              return (
-                <TableRow key={`${e.time}-${i}`} className={e.level === "warn" || e.level === "error" ? "bg-destructive/5" : ""}>
-                  <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums text-muted-foreground">
-                    {clock(e.time)}
-                  </TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={e.level === "error" ? "destructive" : "outline"}
-                      className={e.level === "warn" ? "bg-amber-500/15 text-amber-400" : ""}
-                    >
-                      {e.level}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-xs tabular-nums">{e.port || "–"}</TableCell>
-                  <TableCell className="text-xs">{e.account || "–"}</TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">{e.client || "–"}</TableCell>
-                  <TableCell className="text-xs">{e.proto || "–"}</TableCell>
-                  <TableCell className="max-w-[220px] truncate font-mono text-xs" title={e.target || e.msg}>
-                    {e.target || e.msg || "–"}
-                  </TableCell>
-                  <TableCell>
-                    {e.status ? (
-                      <Badge variant="secondary" className={st.className}>
-                        {st.label}
-                      </Badge>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">–</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
-                    ↑{bytes(e.bytes_out)} ↓{bytes(e.bytes_in)}
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground">
-                    {e.duration_ms} ms
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+        <>
+          <Toolbar count={`${total} 条记录`} detail={auto ? "每 4 秒自动刷新" : undefined}>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Switch checked={auto} onCheckedChange={setAuto} aria-label="自动刷新日志" size="sm" />
+              自动刷新
+            </label>
+            <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+              {loading ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <RefreshCw className="size-4" aria-hidden="true" />
+              )}
+              刷新
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setClearOpen(true)}
+              disabled={total === 0}
+            >
+              <Trash2 className="size-4" aria-hidden="true" />
+              清空日志
+            </Button>
+          </Toolbar>
+
+          {entries.length === 0 ? (
+            <EmptyState
+              icon={<ScrollText className="size-5" aria-hidden="true" />}
+              title="暂无日志"
+              description="客户端产生连接后，记录会实时出现在这里。"
+            />
+          ) : (
+            <>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>时间</TableHead>
+                    <TableHead>级别</TableHead>
+                    <TableHead>端口</TableHead>
+                    <TableHead>账户</TableHead>
+                    <TableHead>客户端</TableHead>
+                    <TableHead>协议</TableHead>
+                    <TableHead>目标</TableHead>
+                    <TableHead>状态</TableHead>
+                    <TableHead className="text-right">流量</TableHead>
+                    <TableHead className="text-right">耗时</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {entries.map((e, i) => {
+                    const st = statusVariant(e.status);
+                    return (
+                      <TableRow key={`${e.time}-${i}`} className={e.level === "warn" || e.level === "error" ? "bg-destructive/5" : ""}>
+                        <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums text-muted-foreground">
+                          {clock(e.time)}
+                        </TableCell>
+                        <TableCell>
+                          <Badge
+                            variant={e.level === "error" ? "destructive" : "outline"}
+                            className={e.level === "warn" ? "bg-amber-500/15 text-amber-400" : ""}
+                          >
+                            {e.level}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-xs tabular-nums">{e.port || "–"}</TableCell>
+                        <TableCell className="text-xs">{e.account || "–"}</TableCell>
+                        <TableCell className="font-mono text-xs text-muted-foreground">{e.client || "–"}</TableCell>
+                        <TableCell className="text-xs">{e.proto || "–"}</TableCell>
+                        <TableCell className="max-w-[220px] truncate font-mono text-xs" title={e.target || e.msg}>
+                          {e.target || e.msg || "–"}
+                        </TableCell>
+                        <TableCell>
+                          {e.status ? (
+                            <Badge variant="secondary" className={st.className}>
+                              {st.label}
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">–</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
+                          ↑{bytes(e.bytes_out)} ↓{bytes(e.bytes_in)}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground">
+                          {e.duration_ms} ms
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+              <PaginationControls
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                onChange={(p, s) => {
+                  setPage(p);
+                  setPageSize(s);
+                }}
+              />
+            </>
+          )}
+        </>
       )}
+
+      <AlertDialog open={clearOpen} onOpenChange={setClearOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>清空全部连接日志？</AlertDialogTitle>
+            <AlertDialogDescription>
+              将删除全部 {total} 条结构化记录，无法恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={clearLogs} disabled={clearing}>
+              {clearing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+              清空
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -48,7 +48,7 @@ export function MetricsChart({ points }: { points: MetricPoint[] }) {
     <div>
       <svg
         viewBox={`0 0 ${W} ${H}`}
-        className="h-[220px] w-full"
+        className="chart-animate h-[220px] w-full"
         role="img"
         aria-label="近 24 小时连接数与流量趋势图"
         preserveAspectRatio="none"

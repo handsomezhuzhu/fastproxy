@@ -1014,12 +1014,7 @@ func (s *Store) QueryHourlyMetrics(hours int) []MetricPoint {
 	return out
 }
 
-// QueryLogs returns access logs newest-first.
-func (s *Store) QueryLogs(f logx.Filter) ([]logx.Entry, error) {
-	limit := f.Limit
-	if limit <= 0 || limit > 1000 {
-		limit = 200
-	}
+func logsWhere(f logx.Filter) (string, []any) {
 	var where []string
 	var args []any
 	if f.Port != 0 {
@@ -1040,11 +1035,48 @@ func (s *Store) QueryLogs(f logx.Filter) ([]logx.Entry, error) {
 			args = append(args, l)
 		}
 	}
-	q := `SELECT ts, level, port, account, client, proto, target, status, bytes_in, bytes_out, duration_ms, msg FROM logs`
-	if len(where) > 0 {
-		q += " WHERE " + strings.Join(where, " AND ")
+	if len(where) == 0 {
+		return "", args
 	}
-	q += " ORDER BY id DESC LIMIT ?"
+	return " WHERE " + strings.Join(where, " AND "), args
+}
+
+// CountLogs returns the total number of access logs matching the filter.
+func (s *Store) CountLogs(f logx.Filter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	where, args := logsWhere(f)
+	var n int64
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM logs`+where, args...).Scan(&n)
+	return n, err
+}
+
+// ClearLogs deletes every access log and returns how many were removed.
+func (s *Store) ClearLogs() (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`DELETE FROM logs`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// QueryLogs returns access logs newest-first.
+func (s *Store) QueryLogs(f logx.Filter) ([]logx.Entry, error) {
+	limit := f.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	where, args := logsWhere(f)
+	var offset string
+	if f.Offset > 0 {
+		offset = fmt.Sprintf(" OFFSET %d", f.Offset)
+	}
+	q := `SELECT ts, level, port, account, client, proto, target, status, bytes_in, bytes_out, duration_ms, msg FROM logs` +
+		where + ` ORDER BY id DESC LIMIT ?` + offset
 	args = append(args, limit)
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -1083,6 +1115,164 @@ func placeholders(n int) string {
 		return ""
 	}
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// ListUpstreams queries the pool with optional keyword + limit/offset for
+// the paged upstream list UI ("GET /api/upstreams").
+func (s *Store) ListUpstreams(limit, offset int, q string) ([]*Upstream, int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var where string
+	var args []any
+	if q = strings.TrimSpace(q); q != "" {
+		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
+		pat := "%" + esc + "%"
+		where = ` WHERE (name LIKE ? ESCAPE '\' OR host LIKE ? ESCAPE '\' OR username LIKE ? ESCAPE '\')`
+		args = append(args, pat, pat, pat)
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var total int64
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM upstreams`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	qAll := `SELECT id, name, type, host, username, password, remark,
+		health, latency_ms, exit_ip, last_check_at, last_error FROM upstreams` + where +
+		` ORDER BY created_at LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+	rows, err := s.db.Query(qAll, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]*Upstream, 0, limit)
+	for rows.Next() {
+		var u Upstream
+		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.Host, &u.Username, &u.Password, &u.Remark,
+			&u.Health, &u.LatencyMS, &u.ExitIP, &u.LastCheckAt, &u.LastError); err != nil {
+			continue
+		}
+		c := resolveUpstream(u)
+		items = append(items, &c)
+	}
+	return items, total, nil
+}
+
+// BulkOpError annotates a per-entity failure inside a bulk action.
+type BulkOpError struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// BulkAccounts applies one action ("delete"|"enable"|"disable") to accounts.
+func (s *Store) BulkAccounts(ids []string, action string) (int64, []BulkOpError) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var updated int64
+	var problems []BulkOpError
+	now := time.Now().Unix()
+	for _, id := range ids {
+		if action == "delete" {
+			var def int
+			err := s.db.QueryRow(`SELECT is_default FROM accounts WHERE id=?`, id).Scan(&def)
+			if err != nil {
+				problems = append(problems, BulkOpError{ID: id, Reason: "不存在"})
+				continue
+			}
+			if def == 1 {
+				problems = append(problems, BulkOpError{ID: id, Reason: "默认账户不可删除"})
+				continue
+			}
+			res, err := s.db.Exec(`DELETE FROM accounts WHERE id=?`, id)
+			if err != nil {
+				problems = append(problems, BulkOpError{ID: id, Reason: err.Error()})
+				continue
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				problems = append(problems, BulkOpError{ID: id, Reason: "不存在"})
+				continue
+			}
+			updated++
+			continue
+		}
+		enabled := action == "enable"
+		res, err := s.db.Exec(`UPDATE accounts SET enabled=?, updated_at=? WHERE id=?`, boolInt(enabled), now, id)
+		if err != nil {
+			problems = append(problems, BulkOpError{ID: id, Reason: err.Error()})
+			continue
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			problems = append(problems, BulkOpError{ID: id, Reason: "不存在"})
+			continue
+		}
+		updated++
+	}
+	return updated, problems
+}
+
+// BulkPorts applies one action ("enable"|"disable"|"delete") to ports.
+// Deletion follows the same rules as a single remove (blocked while other
+// accounts are bound, conditional default-account cascade on success).
+func (s *Store) BulkPorts(ids []string, action string) (int64, []BulkOpError) {
+	var updated int64
+	var problems []BulkOpError
+	for _, id := range ids {
+		if action == "delete" {
+			if err := s.DeletePort(id); err != nil {
+				problems = append(problems, BulkOpError{ID: id, Reason: err.Error()})
+				continue
+			}
+			updated++
+			continue
+		}
+		s.mu.Lock()
+		res, err := s.db.Exec(`UPDATE ports SET enabled=?, updated_at=? WHERE id=?`, boolInt(action == "enable"), time.Now().Unix(), id)
+		s.mu.Unlock()
+		if err != nil {
+			problems = append(problems, BulkOpError{ID: id, Reason: err.Error()})
+			continue
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			problems = append(problems, BulkOpError{ID: id, Reason: "不存在"})
+			continue
+		}
+		updated++
+	}
+	return updated, problems
+}
+
+// BulkDeleteUpstreams deletes upstreams, skipping ones referenced by accounts.
+func (s *Store) BulkDeleteUpstreams(ids []string) (int64, []BulkOpError) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var deleted int64
+	var skipped []BulkOpError
+	for _, id := range ids {
+		var user string
+		err := s.db.QueryRow(`SELECT username FROM accounts WHERE upstream_id=? LIMIT 1`, id).Scan(&user)
+		if err == nil {
+			skipped = append(skipped, BulkOpError{ID: id, Reason: "仍被账户 " + user + " 引用"})
+			continue
+		}
+		res, err := s.db.Exec(`DELETE FROM upstreams WHERE id=?`, id)
+		if err != nil {
+			skipped = append(skipped, BulkOpError{ID: id, Reason: err.Error()})
+			continue
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			skipped = append(skipped, BulkOpError{ID: id, Reason: "不存在"})
+			continue
+		}
+		deleted++
+	}
+	return deleted, skipped
 }
 
 // checkSecretRefsLocked verifies that all ${VAR} references in sensitive

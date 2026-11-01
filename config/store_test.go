@@ -402,6 +402,131 @@ func TestLogPersistenceAndPrune(t *testing.T) {
 	}
 }
 
+func TestBulkOperationsAndPaging(t *testing.T) {
+	s := tempStore(t, 7788)
+
+	// setup: 1 upstream + 2 ports + 3 accounts (1 default each)
+	up, err := s.UpsertUpstream("", upstreamFixture("main"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p1, err := s.UpsertPort("", portFixture(10201))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := s.UpsertPort("", portFixture(10202))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a1, err := s.UpsertAccount("", accountFixture("u1", "pw", p1.ID, up.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, err := s.UpsertAccount("", accountFixture("u2", "pw", p1.ID, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// BulkAccounts disable.
+	updated, problems := s.BulkAccounts([]string{a1.ID, a2.ID}, "disable")
+	if updated != 2 || len(problems) != 0 {
+		t.Fatalf("disable: updated=%d problems=%v", updated, problems)
+	}
+	for _, a := range s.Accounts() {
+		if !a.IsDefault && a.Enabled {
+			t.Fatalf("disable not applied: %+v", a)
+		}
+	}
+	// BulkAccounts enable + delete (default blocked).
+	updated, problems = s.BulkAccounts([]string{s.GetDefaultAccount(p1.ID).ID, a1.ID, a2.ID, "nope"}, "delete")
+	if updated != 2 || len(problems) != 2 {
+		t.Fatalf("delete: updated=%d problems=%v", updated, problems)
+	}
+	joined := ""
+	for _, p := range problems {
+		joined += p.Reason + ";"
+	}
+	if !strings.Contains(joined, "默认账户不可删除") || !strings.Contains(joined, "不存在") {
+		t.Fatalf("unexpected problems: %v", problems)
+	}
+	if _, err := s.UpsertAccount("", accountFixture("u3", "pw", p1.ID, "")); err != nil {
+		t.Fatal(err)
+	}
+
+	// BulkUpstream delete skips referenced upstreams.
+	used, err := s.UpsertUpstream("", upstreamFixture("被引用"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertAccount("", accountFixture("u1", "pw", p1.ID, used.ID)); err != nil {
+		t.Fatal(err)
+	}
+	deleted, skipped := s.BulkDeleteUpstreams([]string{used.ID, "missing"})
+	if deleted != 0 || len(skipped) != 2 {
+		t.Fatalf("bulk upstream delete: %d %v", deleted, skipped)
+	}
+	if !strings.Contains(skipped[0].Reason, "引用") {
+		t.Fatalf("expected reference reason, got %q", skipped[0].Reason)
+	}
+
+	// Paged list + query.
+	spare, err := s.UpsertUpstream("", upstreamFixture("备用-HK"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, total, err := s.ListUpstreams(1, 0, "")
+	if err != nil || total != 3 || len(items) != 1 {
+		t.Fatalf("paged list: total=%d n=%d err=%v", total, len(items), err)
+	}
+	if items, total, err = s.ListUpstreams(50, 0, "HK"); total != 1 || items[0].ID != spare.ID {
+		t.Fatalf("keyword search: %+v total=%d err=%v", items, total, err)
+	}
+	if items, total, err = s.ListUpstreams(50, 0, "8080"); total != 3 {
+		t.Fatalf("host search: %d", total)
+	}
+
+	// Bulk ports enable/disable + delete-blocking.
+	updated, problems = s.BulkPorts([]string{p2.ID, "nope"}, "disable")
+	if updated != 1 || len(problems) != 1 {
+		t.Fatalf("bulk ports disable: %v %v", updated, problems)
+	}
+	updated, problems = s.BulkPorts([]string{p1.ID, p2.ID}, "enable")
+	if updated != 2 {
+		t.Fatalf("enable upstreams via ports: issues: %v", problems)
+	}
+	// A port with a non-default account must stay un-deletable.
+	p3, err := s.UpsertPort("", portFixture(10203))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertAccount("", accountFixture("tom", "pw", p3.ID, "")); err != nil {
+		t.Fatal(err)
+	}
+	updated, problems = s.BulkPorts([]string{p3.ID}, "delete")
+	if updated != 0 || !strings.Contains(problems[0].Reason, "请先删除绑定账户") {
+		t.Fatalf("delete blocked: %v %v", updated, problems)
+	}
+
+	// Log pagination + clearing.
+	for i := 0; i < 30; i++ {
+		if err := s.InsertLog(testEntry(10201, "alice", "info", "")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	total3, _ := s.CountLogs(logx.Filter{})
+	page1, _ := s.QueryLogs(logx.Filter{Limit: 10, Offset: 0, Account: "alice"})
+	page2, _ := s.QueryLogs(logx.Filter{Limit: 10, Offset: 20, Account: "alice"})
+	if total3 != 30 || len(page1) != 10 || len(page2) != 10 {
+		t.Fatalf("log paging: total=%d p1=%d p2=%d", total3, len(page1), len(page2))
+	}
+	rowsCleared, err := s.ClearLogs()
+	if err != nil || rowsCleared != 30 {
+		t.Fatalf("clear logs: %d %v", rowsCleared, err)
+	}
+	if total4, _ := s.CountLogs(logx.Filter{}); total4 != 0 {
+		t.Fatalf("clear not applied: %d", total4)
+	}
+}
+
 func testEntry(port int, user, level, status string) logx.Entry {
 	return logx.Entry{
 		Level: level, Port: port, Account: user, Status: status,

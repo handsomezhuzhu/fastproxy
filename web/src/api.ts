@@ -42,7 +42,8 @@ export type Account = {
 export type CreatePortResult = {
   ok?: boolean;
   saved?: {
-    port?: number;
+    /** Newer backends return the full Port object; older ones returned the bare port number. */
+    port?: Port | number;
     default_account?: Account;
   };
   warning?: string;
@@ -123,6 +124,16 @@ export type ImportResult = {
   total: number;
   duplicates: string[];
   problems: string[];
+};
+
+/** Shared batch-operation payload (partial fields per action). */
+export type BulkResult = {
+  ok?: boolean;
+  updated?: number;
+  deleted?: number;
+  errors?: { id: string; error: string }[];
+  skipped?: { id: string; reason: string }[];
+  checks?: { id: string; ok: boolean; latency_ms?: number; error?: string }[];
 };
 
 export class ApiError extends Error {
@@ -237,14 +248,37 @@ export const api = {
     return { ...r, duplicates: r.duplicates ?? [], problems: r.problems ?? [] };
   },
 
-  logs: (params: { limit?: number; port?: number; account?: string; level?: string }) => {
+  /** Server-paged upstream list; q fuzzy-matches name/host. Falls back to a single item payload if the backend is older. */
+  upstreamsList: async (params: { limit?: number; offset?: number; q?: string }) => {
     const q = new URLSearchParams();
     if (params.limit) q.set("limit", String(params.limit));
+    if (params.offset) q.set("offset", String(params.offset));
+    if (params.q) q.set("q", params.q);
+    const r = await req<{ entries?: Upstream[]; total?: number }>(`/api/upstreams?${q.toString()}`);
+    const entries = r.entries ?? [];
+    return { entries, total: r.total ?? entries.length };
+  },
+
+  logs: (params: { limit?: number; offset?: number; port?: number; account?: string; level?: string }) => {
+    const q = new URLSearchParams();
+    if (params.limit) q.set("limit", String(params.limit));
+    if (params.offset) q.set("offset", String(params.offset));
     if (params.port) q.set("port", String(params.port));
     if (params.account) q.set("account", params.account);
     if (params.level) q.set("level", params.level);
-    return req<{ entries: LogEntry[] }>(`/api/logs?${q.toString()}`).then((r) => ({ entries: r.entries ?? [] }));
+    return req<{ entries: LogEntry[]; total?: number }>(`/api/logs?${q.toString()}`).then((r) => ({
+      entries: r.entries ?? [],
+      total: r.total ?? (r.entries ?? []).length,
+    }));
   },
+  clearLogs: () => req<{ ok: true }>("/api/logs", { method: "DELETE" }),
+
+  bulkAccounts: (ids: string[], action: "delete" | "enable" | "disable") =>
+    req<BulkResult>("/api/accounts/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }),
+  bulkPorts: (ids: string[], action: "enable" | "disable" | "delete") =>
+    req<BulkResult>("/api/ports/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }),
+  bulkUpstreams: (ids: string[], action: "delete" | "check") =>
+    req<BulkResult>("/api/upstreams/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }),
 
   stats: async () => {
     const r = await req<{ status: { ports: PortStatus[]; accounts: AccountStatus[] } }>("/api/stats");

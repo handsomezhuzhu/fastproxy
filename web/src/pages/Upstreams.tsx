@@ -7,6 +7,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Search,
   Trash2,
   Zap,
 } from "lucide-react";
@@ -48,9 +49,19 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { DotBadge, EmptyState, Field, PageHeader, Toolbar } from "@/components/page";
+import {
+  DotBadge,
+  EmptyState,
+  Field,
+  PageHeader,
+  PaginationControls,
+  SelectAllCheckbox,
+  Toolbar,
+  useSelection,
+} from "@/components/page";
 import { timeAgo } from "@/lib/utils";
 
 function HealthCell({ u }: { u: Upstream }) {
@@ -81,7 +92,18 @@ function HealthCell({ u }: { u: Upstream }) {
   );
 }
 
+type BulkAction = "delete" | "check";
+
 export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Promise<void> }) {
+  // Server-side pagination state
+  const [list, setList] = React.useState<Upstream[] | null>(null);
+  const [total, setTotal] = React.useState(0);
+  const [page, setPage] = React.useState(1);
+  const [pageSize, setPageSize] = React.useState(20);
+  const [keyword, setKeyword] = React.useState("");
+  const [q, setQ] = React.useState("");
+  const [refreshing, setRefreshing] = React.useState(false);
+
   const [open, setOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<Upstream | null>(null);
   const [form, setForm] = React.useState({ name: "", upstream: "", remark: "" });
@@ -96,6 +118,51 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
   const [importURL, setImportURL] = React.useState("");
   const [importing, setImporting] = React.useState(false);
   const [result, setResult] = React.useState<ImportResult | null>(null);
+
+  // Bulk state
+  const sel = useSelection();
+  const [bulkBusy, setBulkBusy] = React.useState(false);
+  const [bulkConfirmDelete, setBulkConfirmDelete] = React.useState(false);
+
+  // 300ms 防抖搜索
+  React.useEffect(() => {
+    const t = window.setTimeout(() => {
+      setQ(keyword.trim());
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(t);
+  }, [keyword]);
+
+  const load = React.useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!opts?.silent) setRefreshing(true);
+      try {
+        const r = await api.upstreamsList({
+          limit: pageSize,
+          offset: (page - 1) * pageSize,
+          q: q || undefined,
+        });
+        setList(r.entries);
+        setTotal(r.total);
+      } catch (err: any) {
+        // 后端分页接口未上线时不要整页崩溃
+        setList((prev) => prev ?? []);
+        toast.error(err?.message || "加载上游列表失败");
+      } finally {
+        setRefreshing(false);
+      }
+    },
+    [page, pageSize, q]
+  );
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  const refreshAll = React.useCallback(async () => {
+    await load({ silent: true });
+    await reload(); // /api/data 全量同步（统计卡、账户下拉等）
+  }, [load, reload]);
 
   function openCreate() {
     setEditing(null);
@@ -124,7 +191,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       else await api.createUpstream(form);
       toast.success("上游已保存");
       setOpen(false);
-      await reload();
+      await refreshAll();
     } catch (err: any) {
       setError(err?.message || "保存失败");
     } finally {
@@ -138,7 +205,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       await api.deleteUpstream(deleting.id);
       toast.success(`上游「${deleting.name}」已删除`);
       setDeleting(null);
-      await reload();
+      await refreshAll();
     } catch (err: any) {
       toast.error(err?.message || "删除失败");
     }
@@ -153,7 +220,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       } else {
         toast.error(`${u.name}：${r.error || "探测失败"}`);
       }
-      await reload();
+      await refreshAll();
     } catch (err: any) {
       toast.error(err?.message || "探测失败");
     } finally {
@@ -170,7 +237,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       } else {
         toast.success(`检测完成：${r.checked} 个上游全部正常${r.server_ip ? ` · 本机出口 ${r.server_ip}` : ""}`);
       }
-      await reload();
+      await refreshAll();
     } catch (err: any) {
       toast.error(err?.message || "检测失败");
     } finally {
@@ -186,7 +253,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       setResult(r);
       if (r.added > 0) {
         toast.success(`成功导入 ${r.added} 个上游`);
-        await reload();
+        await refreshAll();
       } else {
         toast.warning("没有新增上游：可能全部重复或格式无法识别");
       }
@@ -197,8 +264,72 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     }
   }
 
+  async function runBulk(action: BulkAction) {
+    const ids = [...sel.selected];
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const r = await api.bulkUpstreams(ids, action);
+      if (action === "delete") {
+        const skipped = r.skipped ?? [];
+        const deleted = r.deleted ?? Math.max(0, ids.length - skipped.length);
+        if (skipped.length > 0) {
+          toast.error(`${skipped.length} 个上游跳过：${skipped[0].reason}`);
+          if (deleted > 0) toast.success(`已删除 ${deleted} 个上游`);
+        } else {
+          toast.success(`已删除 ${deleted} 个上游`);
+        }
+      } else {
+        const checks = r.checks ?? [];
+        const ok = checks.filter((c) => c.ok).length;
+        const fail = checks.filter((c) => !c.ok).length;
+        if (fail > 0) toast.warning(`检测完成：正常 ${ok}，失败 ${fail}`);
+        else toast.success(`检测完成：${ok} 个上游全部正常`);
+      }
+      sel.clear();
+      await refreshAll();
+    } catch (err: any) {
+      toast.error(err?.message || "批量操作失败");
+    } finally {
+      setBulkBusy(false);
+      setBulkConfirmDelete(false);
+    }
+  }
+
+  function askBulk(action: BulkAction) {
+    if (action === "delete") setBulkConfirmDelete(true);
+    else runBulk("check");
+  }
+
   const refs = (id: string) => data.accounts.filter((a) => a.upstream_id === id).length;
-  const healthy = data.upstreams.filter((u) => u.health === "ok").length;
+
+  const pageIDs = (list ?? []).map((u) => u.id);
+  const pageAllSelected = pageIDs.length > 0 && pageIDs.every((id) => sel.selected.has(id));
+  const pageSomeSelected = pageIDs.some((id) => sel.selected.has(id));
+
+  // 首次加载：Skeleton 覆盖工具栏与表格
+  if (list === null) {
+    return (
+      <div className="space-y-5">
+        <PageHeader title="上游代理" description="支持 http / socks5；健康检查由定时探测维护。" />
+        <div className="flex items-center justify-between gap-3">
+          <Skeleton className="h-5 w-32" />
+          <div className="flex gap-2">
+            <Skeleton className="h-7 w-40" />
+            <Skeleton className="h-7 w-20" />
+            <Skeleton className="h-7 w-20" />
+          </div>
+        </div>
+        <div className="space-y-2">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const showEmpty = total === 0 && !q;
 
   return (
     <div className="space-y-5">
@@ -207,7 +338,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
         description="支持 http / socks5；健康检查由定时探测维护。"
       />
 
-      {data.upstreams.length === 0 ? (
+      {showEmpty ? (
         <EmptyState
           icon={<Layers className="size-5" aria-hidden="true" />}
           title="还没有上游代理"
@@ -220,7 +351,23 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
         />
       ) : (
         <>
-          <Toolbar count={`${data.upstreams.length} 个上游`} detail={`正常 ${healthy}`}>
+          <Toolbar
+            count={`${total} 个上游`}
+            detail={q ? `按「${q}」筛选` : refreshing ? "刷新中…" : undefined}
+          >
+            <div className="relative">
+              <Search
+                className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <Input
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                className="h-7 w-44 pl-8 text-xs"
+                placeholder="搜索名称或地址…"
+                aria-label="搜索上游"
+              />
+            </div>
             <Button variant="outline" size="sm" onClick={checkAll} disabled={checkingAll}>
               {checkingAll ? (
                 <Loader2 className="size-4 animate-spin" aria-hidden="true" />
@@ -243,81 +390,145 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
               <Plus className="size-4" aria-hidden="true" /> 添加上游
             </Button>
           </Toolbar>
-          <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>名称</TableHead>
-              <TableHead>类型</TableHead>
-              <TableHead>地址</TableHead>
-              <TableHead>健康</TableHead>
-              <TableHead>出口 IP</TableHead>
-              <TableHead className="text-right">引用</TableHead>
-              <TableHead className="w-12">
-                <span className="sr-only">操作</span>
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data.upstreams.map((u) => (
-              <TableRow key={u.id}>
-                <TableCell>
-                  <div className="font-medium">{u.name}</div>
-                  {u.remark ? (
-                    <div className="max-w-[160px] truncate text-xs text-muted-foreground">{u.remark}</div>
-                  ) : null}
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline">{u.type}</Badge>
-                </TableCell>
-                <TableCell>
-                  <div className="font-mono text-xs">{u.host}</div>
-                  {u.username ? (
-                    <div className="max-w-[180px] truncate font-mono text-xs text-muted-foreground">
-                      账号 {u.username}
-                    </div>
-                  ) : null}
-                </TableCell>
-                <TableCell>
-                  <HealthCell u={u} />
-                </TableCell>
-                <TableCell>
-                  {u.exit_ip ? (
-                    <span className="font-mono text-xs tabular-nums">{u.exit_ip}</span>
-                  ) : (
-                    <span className="text-xs text-muted-foreground">–</span>
-                  )}
-                </TableCell>
-                <TableCell className="text-right text-xs tabular-nums">{refs(u.id)}</TableCell>
-                <TableCell>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger
-                      className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                      aria-label={`上游 ${u.name} 操作菜单`}
-                    >
-                      {checking[u.id] ? (
-                        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                      ) : (
-                        <Ellipsis className="size-4" aria-hidden="true" />
-                      )}
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-40">
-                      <DropdownMenuItem onClick={() => checkOne(u)} disabled={checking[u.id]}>
-                        <Zap className="size-4" aria-hidden="true" /> 立即检测
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => openEdit(u)}>
-                        <Pencil className="size-4" aria-hidden="true" /> 编辑
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem variant="destructive" onClick={() => setDeleting(u)}>
-                        <Trash2 className="size-4" aria-hidden="true" /> 删除
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-          </Table>
+
+          {sel.selected.size > 0 ? (
+            <div
+              className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2"
+              role="status"
+            >
+              <span className="text-sm tabular-nums">已选 {sel.selected.size} 项 ·</span>
+              <Button size="sm" variant="outline" onClick={() => askBulk("check")} disabled={bulkBusy}>
+                {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                检测
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => askBulk("delete")} disabled={bulkBusy}>
+                删除
+              </Button>
+              <Button size="sm" variant="ghost" onClick={sel.clear} aria-label="取消选择">
+                取消
+              </Button>
+            </div>
+          ) : null}
+
+          {(list ?? []).length === 0 ? (
+            <EmptyState
+              icon={<Search className="size-5" aria-hidden="true" />}
+              title="没有匹配的上游"
+              description={`换个关键字试试，或直接添加新上游。`}
+              action={
+                <Button size="sm" variant="outline" onClick={() => setKeyword("")}>
+                  清空搜索
+                </Button>
+              }
+            />
+          ) : (
+            <>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-10">
+                      <SelectAllCheckbox
+                        checked={pageAllSelected}
+                        indeterminate={!pageAllSelected && pageSomeSelected}
+                        onCheckedChange={(v) => sel.toggleMany(pageIDs, v)}
+                        label="全选当前页"
+                      />
+                    </TableHead>
+                    <TableHead>名称</TableHead>
+                    <TableHead>类型</TableHead>
+                    <TableHead>地址</TableHead>
+                    <TableHead>健康</TableHead>
+                    <TableHead>出口 IP</TableHead>
+                    <TableHead className="text-right">引用</TableHead>
+                    <TableHead className="w-12">
+                      <span className="sr-only">操作</span>
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(list ?? []).map((u) => {
+                    const checked = sel.selected.has(u.id);
+                    return (
+                      <TableRow key={u.id} data-state={checked ? "selected" : undefined}>
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            className="size-3.5 accent-primary focus-visible:outline-2 focus-visible:outline-ring"
+                            checked={checked}
+                            onChange={(e) => sel.toggle(u.id, e.target.checked)}
+                            aria-label={`选择 上游 ${u.name}`}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <div className="font-medium">{u.name}</div>
+                          {u.remark ? (
+                            <div className="max-w-[160px] truncate text-xs text-muted-foreground">{u.remark}</div>
+                          ) : null}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{u.type}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <div className="font-mono text-xs">{u.host}</div>
+                          {u.username ? (
+                            <div className="max-w-[180px] truncate font-mono text-xs text-muted-foreground">
+                              账号 {u.username}
+                            </div>
+                          ) : null}
+                        </TableCell>
+                        <TableCell>
+                          <HealthCell u={u} />
+                        </TableCell>
+                        <TableCell>
+                          {u.exit_ip ? (
+                            <span className="font-mono text-xs tabular-nums">{u.exit_ip}</span>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">–</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right text-xs tabular-nums">{refs(u.id)}</TableCell>
+                        <TableCell>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger
+                              className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                              aria-label={`上游 ${u.name} 操作菜单`}
+                            >
+                              {checking[u.id] ? (
+                                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                              ) : (
+                                <Ellipsis className="size-4" aria-hidden="true" />
+                              )}
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-40">
+                              <DropdownMenuItem onClick={() => checkOne(u)} disabled={checking[u.id]}>
+                                <Zap className="size-4" aria-hidden="true" /> 立即检测
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => openEdit(u)}>
+                                <Pencil className="size-4" aria-hidden="true" /> 编辑
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem variant="destructive" onClick={() => setDeleting(u)}>
+                                <Trash2 className="size-4" aria-hidden="true" /> 删除
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+              <PaginationControls
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                onChange={(p, s) => {
+                  setPage(p);
+                  setPageSize(s);
+                }}
+              />
+            </>
+          )}
         </>
       )}
 
@@ -357,12 +568,17 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 onChange={(e) => setForm({ ...form, remark: e.target.value })}
               />
             </Field>
-            {error ? <p className="text-xs text-destructive" role="alert">{error}</p> : null}
+            {error ? (
+              <p className="text-xs text-destructive" role="alert">
+                {error}
+              </p>
+            ) : null}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 取消
               </Button>
               <Button type="submit" disabled={busy}>
+                {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
                 {busy ? "保存中…" : "保存"}
               </Button>
             </DialogFooter>
@@ -475,6 +691,22 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction onClick={remove}>删除</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={bulkConfirmDelete} onOpenChange={(v) => !v && setBulkConfirmDelete(false)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>批量删除 {sel.selected.size} 个上游？</AlertDialogTitle>
+            <AlertDialogDescription>仍被账户引用的上游会跳过并在结果中列出原因。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => runBulk("delete")} disabled={bulkBusy}>
+              {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+              删除
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

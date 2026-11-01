@@ -73,7 +73,15 @@ import {
 } from "@/components/page";
 import { timeAgo } from "@/lib/utils";
 
-function HealthCell({ u }: { u: Upstream }) {
+function HealthCell({ u, checking }: { u: Upstream; checking?: boolean }) {
+  if (checking) {
+    return (
+      <DotBadge tone="muted">
+        <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+        检测中…
+      </DotBadge>
+    );
+  }
   if (!u.last_check_at) {
     return <DotBadge tone="muted">未检测</DotBadge>;
   }
@@ -176,6 +184,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
   const [deleting, setDeleting] = React.useState<Upstream | null>(null);
   const [checking, setChecking] = React.useState<Record<string, boolean>>({});
   const [checkingAll, setCheckingAll] = React.useState(false);
+  const [checkProgress, setCheckProgress] = React.useState({ done: 0, total: 0 });
 
   const [importOpen, setImportOpen] = React.useState(false);
   const [importText, setImportText] = React.useState("");
@@ -307,37 +316,93 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     }
   }
 
+  // Merge one check result into the visible list immediately (no full reload),
+  // so a sequential bulk check updates rows as each result arrives.
+  function applyCheckResult(
+    id: string,
+    r: { ok?: boolean; latency_ms?: number; exit_ip?: string; error?: string }
+  ) {
+    setList((prev) =>
+      prev
+        ? prev.map((u) =>
+            u.id === id
+              ? {
+                  ...u,
+                  health: r.ok ? ("ok" as const) : ("fail" as const),
+                  latency_ms: r.ok ? r.latency_ms ?? 0 : 0,
+                  exit_ip: r.ok ? r.exit_ip || "" : "",
+                  last_error: r.ok ? "" : r.error || "探测失败",
+                  last_check_at: Math.floor(Date.now() / 1000),
+                }
+              : u
+          )
+        : prev
+    );
+  }
+
   async function checkOne(u: Upstream) {
     setChecking((c) => ({ ...c, [u.id]: true }));
     try {
       const r = await api.checkUpstream(u.id);
+      applyCheckResult(u.id, r);
       if (r.ok) {
         toast.success(`${u.name}：正常 · ${r.latency_ms} ms · 出口 ${r.exit_ip || "未知"}`);
       } else {
         toast.error(`${u.name}：${r.error || "探测失败"}`);
       }
-      await refreshAll();
+      await reload();
     } catch (err: any) {
+      applyCheckResult(u.id, { ok: false, error: err?.message || "探测失败" });
       toast.error(err?.message || "探测失败");
     } finally {
       setChecking((c) => ({ ...c, [u.id]: false }));
     }
   }
 
-  async function checkAll() {
+  // 顺序检测：一个完成后再测下一个，每完成一个立刻把结果写回当前行。
+  async function checkSequentially(ids: string[]) {
+    if (ids.length === 0) {
+      toast.info("没有可检测的上游");
+      return;
+    }
+    setBulkBusy(true);
     setCheckingAll(true);
-    try {
-      const r = await api.checkAllUpstreams();
-      if (r.failed > 0) {
-        toast.warning(`检测完成：正常 ${r.ok}，失败 ${r.failed}${r.server_ip ? ` · 本机出口 ${r.server_ip}` : ""}`);
-      } else {
-        toast.success(`检测完成：${r.checked} 个上游全部正常${r.server_ip ? ` · 本机出口 ${r.server_ip}` : ""}`);
+    setCheckProgress({ done: 0, total: ids.length });
+    let ok = 0;
+    let fail = 0;
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      setChecking((c) => ({ ...c, [id]: true }));
+      try {
+        const r = await api.checkUpstream(id);
+        applyCheckResult(id, r);
+        if (r.ok) ok++;
+        else fail++;
+      } catch (err: any) {
+        applyCheckResult(id, { ok: false, error: err?.message || "探测失败" });
+        fail++;
+      } finally {
+        setChecking((c) => ({ ...c, [id]: false }));
+        setCheckProgress({ done: i + 1, total: ids.length });
       }
-      await refreshAll();
+      // 让浏览器有机会渲染最新一行，再继续下一个
+      if (i + 1 < ids.length) {
+        await new Promise((res) => window.setTimeout(res, 120));
+      }
+    }
+    setBulkBusy(false);
+    setCheckingAll(false);
+    if (fail > 0) toast.warning(`检测完成：正常 ${ok}，失败 ${fail}`);
+    else toast.success(`检测完成：${ok} 个上游全部正常`);
+    await refreshAll();
+  }
+
+  async function checkAll() {
+    try {
+      const all = await api.upstreamsList({ limit: 1000, offset: 0 });
+      await checkSequentially(all.entries.map((u) => u.id));
     } catch (err: any) {
       toast.error(err?.message || "检测失败");
-    } finally {
-      setCheckingAll(false);
     }
   }
 
@@ -363,24 +428,22 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
   async function runBulk(action: BulkAction) {
     const ids = [...sel.selected];
     if (ids.length === 0) return;
+    if (action === "check") {
+      await checkSequentially(ids);
+      sel.clear();
+      setBulkConfirmDelete(false);
+      return;
+    }
     setBulkBusy(true);
     try {
       const r = await api.bulkUpstreams(ids, action);
-      if (action === "delete") {
-        const skipped = r.skipped ?? [];
-        const deleted = r.deleted ?? Math.max(0, ids.length - skipped.length);
-        if (skipped.length > 0) {
-          toast.error(`${skipped.length} 个上游跳过：${skipped[0].reason}`);
-          if (deleted > 0) toast.success(`已删除 ${deleted} 个上游`);
-        } else {
-          toast.success(`已删除 ${deleted} 个上游`);
-        }
+      const skipped = r.skipped ?? [];
+      const deleted = r.deleted ?? Math.max(0, ids.length - skipped.length);
+      if (skipped.length > 0) {
+        toast.error(`${skipped.length} 个上游跳过：${skipped[0].reason}`);
+        if (deleted > 0) toast.success(`已删除 ${deleted} 个上游`);
       } else {
-        const checks = r.checks ?? [];
-        const ok = checks.filter((c) => c.ok).length;
-        const fail = checks.filter((c) => !c.ok).length;
-        if (fail > 0) toast.warning(`检测完成：正常 ${ok}，失败 ${fail}`);
-        else toast.success(`检测完成：${ok} 个上游全部正常`);
+        toast.success(`已删除 ${deleted} 个上游`);
       }
       sel.clear();
       await refreshAll();
@@ -472,13 +535,20 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 aria-label="搜索上游"
               />
             </div>
-            <Button variant="outline" size="sm" onClick={checkAll} disabled={checkingAll}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={checkAll}
+              disabled={checkingAll || bulkBusy}
+            >
               {checkingAll ? (
                 <Loader2 className="size-4 animate-spin" aria-hidden="true" />
               ) : (
                 <RefreshCw className="size-4" aria-hidden="true" />
               )}
-              {checkingAll ? "检测中…" : "检测全部"}
+              <span className="inline-block min-w-20 text-center tabular-nums">
+                {checkingAll ? `检测中 ${checkProgress.done}/${checkProgress.total}` : "检测全部"}
+              </span>
             </Button>
             <Button
               variant="outline"
@@ -500,10 +570,14 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
               className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2"
               role="status"
             >
-              <span className="text-sm tabular-nums">已选 {sel.selected.size} 项 ·</span>
+              <span className="text-sm tabular-nums">
+                {checkingAll
+                  ? `检测中 ${checkProgress.done}/${checkProgress.total} ·`
+                  : `已选 ${sel.selected.size} 项 ·`}
+              </span>
               <Button size="sm" variant="outline" onClick={() => askBulk("check")} disabled={bulkBusy}>
                 {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                检测
+                <span className="inline-block min-w-8 text-center">检测</span>
               </Button>
               <Button size="sm" variant="destructive" onClick={() => askBulk("delete")} disabled={bulkBusy}>
                 删除
@@ -596,7 +670,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                           ) : null}
                         </TableCell>
                         <TableCell>
-                          <HealthCell u={u} />
+                          <HealthCell u={u} checking={!!checking[u.id]} />
                         </TableCell>
                         <TableCell>
                           {u.exit_ip ? (

@@ -178,12 +178,79 @@ func TestParseVlessURI(t *testing.T) {
 	}
 }
 
-func TestParseVlessRealityMapsToTLS(t *testing.T) {
-	r := Parse("vless://b831381d-6324-4d53-ad4f-8cda48b30811@r.example.com:443" +
-		"?security=reality&type=tcp&sni=www.microsoft.com&pbk=x&sid=y#reality")
+func TestParseVlessRejectsRealityAndVision(t *testing.T) {
+	r := Parse(strings.Join([]string{
+		"vless://b831381d-6324-4d53-ad4f-8cda48b30811@r.example.com:443" +
+			"?security=reality&type=tcp&sni=www.microsoft.com&pbk=x&sid=y#reality",
+		"vless://b831381d-6324-4d53-ad4f-8cda48b30811@v.example.com:443" +
+			"?security=tls&type=tcp&flow=xtls-rprx-vision#vision",
+	}, "\n"))
+	if len(r.Proxies) != 0 {
+		t.Fatalf("reality/vision must not be imported: %+v", r.Proxies)
+	}
+	joined := strings.Join(r.Problems, "\n")
+	if !strings.Contains(joined, "REALITY") {
+		t.Fatalf("missing REALITY problem: %v", r.Problems)
+	}
+	if !strings.Contains(joined, "flow") {
+		t.Fatalf("missing flow problem: %v", r.Problems)
+	}
+}
+
+func TestParseClashRejectsReality(t *testing.T) {
+	text := `proxies:
+  - name: "R1"
+    type: vless
+    server: 1.1.1.1
+    port: 443
+    uuid: b831381d-6324-4d53-ad4f-8cda48b30811
+    network: tcp
+    tls: true
+    reality-opts:
+      public-key: pk
+      short-id: sid
+  - name: "V1"
+    type: vless
+    server: 1.1.1.2
+    port: 443
+    uuid: b831381d-6324-4d53-ad4f-8cda48b30811
+    network: tcp
+    tls: true
+    flow: xtls-rprx-vision
+  - name: "OK"
+    type: vless
+    server: 1.1.1.3
+    port: 443
+    uuid: b831381d-6324-4d53-ad4f-8cda48b30811
+    network: tcp
+    tls: true
+`
+	r := Parse(text)
 	check(t, r, 1)
-	if !r.Proxies[0].TLS || r.Proxies[0].SNI != "www.microsoft.com" {
-		t.Fatalf("reality should map to TLS: %+v", r.Proxies[0])
+	if r.Proxies[0].Name != "OK" {
+		t.Fatalf("only the plain TLS node should survive: %+v", r.Proxies)
+	}
+	joined := strings.Join(r.Problems, "\n")
+	if !strings.Contains(joined, "REALITY") || !strings.Contains(joined, "flow") {
+		t.Fatalf("expected reality + flow problems, got %v", r.Problems)
+	}
+}
+
+func TestParseSingBoxRejectsReality(t *testing.T) {
+	text := `{"outbounds":[
+      {"type":"vless","tag":"R","server":"1.1.1.1","server_port":443,"uuid":"u-1",
+       "tls":{"enabled":true,"server_name":"a.example.com","reality":{"enabled":true,"public_key":"pk","short_id":"sid"}},
+       "transport":{"type":"tcp"}},
+      {"type":"vless","tag":"OK","server":"2.2.2.2","server_port":443,"uuid":"u-2",
+       "tls":{"enabled":true,"server_name":"b.example.com"},"transport":{"type":"tcp"}}
+    ]}`
+	r := Parse(text)
+	check(t, r, 1)
+	if r.Proxies[0].Name != "OK" {
+		t.Fatalf("only the plain TLS node should survive: %+v", r.Proxies)
+	}
+	if len(r.Problems) != 1 || !strings.Contains(r.Problems[0], "REALITY") {
+		t.Fatalf("expected REALITY problem, got %v", r.Problems)
 	}
 }
 

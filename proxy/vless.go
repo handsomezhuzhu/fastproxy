@@ -71,7 +71,7 @@ func dialVless(up config.Upstream, addr string, timeout time.Duration) (net.Conn
 	head := make([]byte, 2)
 	if _, err := io.ReadFull(conn, head); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("VLESS 读取响应头失败（节点可能不可达或 UUID 错误）: %w", err)
+		return nil, fmt.Errorf("VLESS 读取响应头失败（节点可能是 REALITY/XTLS Vision、UUID 错误或已离线）: %w", err)
 	}
 	if head[0] != vlessVersion {
 		conn.Close()

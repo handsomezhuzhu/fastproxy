@@ -427,12 +427,20 @@ func parseVlessURI(rest string) (Proxy, error) {
 		(q.Get("encryption") != "" && !strings.EqualFold(q.Get("encryption"), "none")) {
 		return Proxy{}, fmt.Errorf("vless 暂不支持加密 %q（应使用 encryption=none）", q.Get("encryption"))
 	}
-	// security=tls or reality means TLS on the wire. Note that reality needs
-	// reality-specific key material which this client does not support: the
-	// node is kept as plain TLS and fails at handshake if the server really
-	// is a reality endpoint (honest failure recorded by the prober).
+	// REALITY needs the server public key + short id and a uTLS handshake; a
+	// plain TLS client silently falls back to the real SNI site and hangs.
+	// Reject loudly instead of storing a node that can never work.
 	security := strings.ToLower(q.Get("security"))
-	tls := security == "tls" || security == "reality"
+	if security == "reality" {
+		return Proxy{}, errors.New("vless 暂不支持 REALITY（需要 pbk/sid），请改用普通 TLS 节点，或用本地客户端转成 socks5 上游")
+	}
+	if flow := strings.ToLower(q.Get("flow")); flow != "" {
+		return Proxy{}, fmt.Errorf("vless 暂不支持 flow=%s（XTLS Vision），请改用普通 TCP 节点", flow)
+	}
+	if security != "" && security != "tls" && security != "none" {
+		return Proxy{}, fmt.Errorf("暂不支持 security=%s", security)
+	}
+	tls := security == "tls"
 	sni := q.Get("sni")
 	if sni == "" {
 		sni = q.Get("peer")
@@ -616,17 +624,31 @@ func proxyFromJSON(m map[string]any) (*Proxy, error) {
 			if security == "xtls" {
 				return nil, fmt.Errorf("%s (%s): vless 暂不支持 security=xtls", name, hp)
 			}
+			if security == "reality" {
+				return nil, fmt.Errorf("%s (%s): vless 暂不支持 REALITY（需要 pbk/sid）", name, hp)
+			}
+			if flow := strings.ToLower(str(m["flow"])); flow != "" {
+				return nil, fmt.Errorf("%s (%s): vless 暂不支持 flow=%s（XTLS Vision）", name, hp, flow)
+			}
 			if enc := strings.ToLower(str(m["encryption"])); enc != "" && enc != "none" {
 				return nil, fmt.Errorf("%s (%s): vless 暂不支持加密 %q", name, hp, enc)
 			}
+		}
+		// Clash omits security=reality and uses reality-opts instead.
+		if opts, ok := m["reality-opts"].(map[string]any); ok && len(opts) > 0 {
+			return nil, fmt.Errorf("%s (%s): 暂不支持 REALITY", name, hp)
 		}
 		sni := str(m["servername"])
 		if sni == "" {
 			sni = str(m["sni"])
 		}
-		tls := parseBool(m["tls"]) || security == "tls" || security == "reality"
-		// sing-box: "tls":{"enabled":true,"server_name":"..."}
+		tls := parseBool(m["tls"]) || security == "tls"
+		// sing-box: "tls":{"enabled":true,"server_name":"...","reality":{...}}
 		if obj, ok := m["tls"].(map[string]any); ok {
+			if realObj, ok := obj["reality"].(map[string]any); ok &&
+				(parseBool(realObj["enabled"]) || str(realObj["public_key"]) != "") {
+				return nil, fmt.Errorf("%s (%s): 暂不支持 REALITY", name, hp)
+			}
 			tls = parseBool(obj["enabled"])
 			if sni == "" {
 				sni = str(obj["server_name"])
@@ -790,6 +812,17 @@ func appendClashItem(res *Result, m map[string]string) {
 		}
 		if m["uuid"] == "" {
 			res.Problems = append(res.Problems, fmt.Sprintf("%s (%s:%s): 缺少 uuid", m["name"], server, port))
+			return
+		}
+		// Clash YAML stores nested blocks as flat keys, so presence is enough.
+		if _, ok := m["reality-opts"]; ok || strings.EqualFold(m["security"], "reality") {
+			res.Problems = append(res.Problems,
+				fmt.Sprintf("%s (%s:%s): vless 暂不支持 REALITY（需要 pbk/sid）", m["name"], server, port))
+			return
+		}
+		if flow := strings.ToLower(m["flow"]); flow != "" {
+			res.Problems = append(res.Problems,
+				fmt.Sprintf("%s (%s:%s): vless 暂不支持 flow=%s（XTLS Vision）", m["name"], server, port, flow))
 			return
 		}
 		sni := m["servername"]

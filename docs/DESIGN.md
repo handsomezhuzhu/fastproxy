@@ -93,7 +93,9 @@ Account（账户，必须绑定一个端口）
 
 - 支持 http/socks5/shadowsocks/vless/vmess 节点；以下情况**跳过并给出 problem**：
   非 tcp 传输（`ws`/`grpc`/`h2`/`quic`）、VLESS `encryption` 非 `none`、
-  非 AEAD 的 Shadowsocks 加密方式（`rc4-md5`、`*-cfb`、`2022-*`）、Reality 节点按 TLS 导入（握手会失败，探测如实记录）
+  非 AEAD 的 Shadowsocks 加密方式（`rc4-md5`、`*-cfb`、`2022-*`）、
+  VLESS 的 REALITY（需要 pbk/sid 与 uTLS 握手）与 `flow=xtls-rprx-vision`（前者会伪装成真实
+  SNI 网站、握手后无响应，因此直接拒绝而不是存成永远失败的上游）
 - 去重键：`type|host|method|uuid|username|password`，与现有上游及同批次节点比较
 - 返回 `{added, total, duplicates[], problems[]}`，面板展示明细；`ImportUpstreams` 入库前再校验一次，
   不合格节点以 problem 返回而不入库

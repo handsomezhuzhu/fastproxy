@@ -25,7 +25,7 @@ export function PageHeader({
   return (
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="min-w-0">
-        <h1 className="text-xl font-semibold tracking-tight text-balance">{title}</h1>
+        <h1 className="text-balance text-xl font-semibold tracking-tight md:text-2xl">{title}</h1>
         {description ? (
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground text-pretty">{description}</p>
         ) : null}
@@ -49,7 +49,7 @@ export function EmptyState({
   return (
     <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
       {icon ? (
-        <div className="flex size-11 items-center justify-center rounded-full bg-muted text-muted-foreground">
+        <div className="flex size-11 items-center justify-center rounded-md bg-muted text-muted-foreground">
           {icon}
         </div>
       ) : null}
@@ -76,10 +76,10 @@ export function StatCard({
   icon?: React.ReactNode;
 }) {
   return (
-    <Card className="py-0">
-      <CardContent className="p-4">
+    <Card className="border-l-4 border-l-neutral-900 py-0 shadow-sm transition-shadow duration-200 hover:shadow-md dark:border-l-neutral-100">
+      <CardContent className="p-4 md:p-6">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-medium text-muted-foreground">{label}</span>
+          <span className="text-xs text-muted-foreground">{label}</span>
           {icon ? <span className="text-muted-foreground" aria-hidden="true">{icon}</span> : null}
         </div>
         <div className="mt-2 text-2xl font-semibold tabular-nums tracking-tight">{value}</div>
@@ -93,7 +93,7 @@ export function Mono({ children, className }: { children: React.ReactNode; class
   return <span className={cn("font-mono text-xs text-muted-foreground", className)}>{children}</span>;
 }
 
-/** Status badge with a small leading dot, consistent across all tables. */
+/** Status badge with a small leading dot, consistent across all tables (monochrome mapping). */
 export function DotBadge({
   tone = "ok",
   children,
@@ -106,15 +106,15 @@ export function DotBadge({
   title?: string;
 }) {
   const tones = {
-    ok: { badge: "bg-emerald-500/15 text-emerald-400", dot: "bg-emerald-400" },
-    warn: { badge: "bg-amber-500/15 text-amber-400", dot: "bg-amber-400" },
-    fail: { badge: "bg-destructive/15 text-destructive", dot: "bg-destructive" },
+    ok: { badge: "bg-foreground text-background", dot: "bg-background" },
+    warn: { badge: "bg-muted text-foreground", dot: "bg-foreground/50" },
+    fail: { badge: "border border-foreground/40 font-medium text-foreground", dot: "bg-foreground" },
     muted: { badge: "text-muted-foreground", dot: "bg-muted-foreground/60" },
   } as const;
   const t = tones[tone];
   return (
     <Badge variant="secondary" className={cn("gap-1.5", t.badge, className)} title={title}>
-      <span className={cn("size-1.5 shrink-0 rounded-full", t.dot)} aria-hidden="true" />
+      <span className={cn("size-1.5 shrink-0 rounded-sm", t.dot)} aria-hidden="true" />
       {children}
     </Badge>
   );

@@ -25,15 +25,11 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden p-6">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(60rem_60rem_at_50%_-20%,color-mix(in_oklch,var(--primary),transparent_80%),transparent)]"
-      />
-      <Card className="relative w-full max-w-sm ring-1 ring-foreground/5">
+    <div className="flex min-h-screen items-center justify-center bg-background p-6">
+      <Card className="w-full max-w-sm rounded-xl border shadow-sm">
         <CardContent className="p-6">
           <div className="mb-6 flex flex-col items-center gap-3 text-center">
-            <div className="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-lg">
+            <div className="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
               <Zap className="size-6" aria-hidden="true" />
             </div>
             <div>

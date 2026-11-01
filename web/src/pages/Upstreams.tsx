@@ -1,5 +1,6 @@
 import * as React from "react";
 import {
+  AlertTriangle,
   Ellipsis,
   Import,
   Layers,
@@ -83,6 +84,7 @@ function HealthCell({ u }: { u: Upstream }) {
   return (
     <div className="space-y-0.5">
       <DotBadge tone="fail" title={u.last_error || "探测失败"}>
+        <AlertTriangle className="size-3" aria-hidden="true" />
         失败
       </DotBadge>
       <p className="max-w-[180px] truncate text-xs text-muted-foreground" title={u.last_error}>
@@ -423,7 +425,8 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             />
           ) : (
             <>
-              <Table>
+              <div className="overflow-hidden rounded-xl border">
+                <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-10">
@@ -517,7 +520,8 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                     );
                   })}
                 </TableBody>
-              </Table>
+                </Table>
+              </div>
               <PaginationControls
                 page={page}
                 pageSize={pageSize}
@@ -642,13 +646,15 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
           {result ? (
             <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-xs" aria-live="polite">
               <div className="flex flex-wrap gap-2">
-                <Badge className="bg-emerald-500/15 text-emerald-400" variant="secondary">
+                <Badge variant="secondary" className="bg-foreground text-background">
                   新增 {result.added}
                 </Badge>
-                <Badge className="bg-amber-500/15 text-amber-400" variant="secondary">
+                <Badge variant="secondary" className="bg-muted text-foreground">
                   重复 {result.duplicates.length}
                 </Badge>
-                <Badge variant="destructive">跳过 {result.problems.length}</Badge>
+                <Badge variant="secondary" className="border border-foreground/40 font-medium text-foreground">
+                  跳过 {result.problems.length}
+                </Badge>
                 <Badge variant="outline">识别 {result.total}</Badge>
               </div>
               {result.duplicates.length > 0 ? (

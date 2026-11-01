@@ -255,7 +255,8 @@ export function AccountsPage({
             </div>
           ) : null}
 
-          <Table>
+          <div className="overflow-hidden rounded-xl border">
+            <Table>
             <TableHeader>
               <TableRow>
                 <TableHead className="w-10">
@@ -378,7 +379,8 @@ export function AccountsPage({
                 );
               })}
             </TableBody>
-          </Table>
+            </Table>
+          </div>
 
           <PaginationControls
             page={pag.page}

@@ -29,9 +29,9 @@ import { bytes, clock } from "@/lib/utils";
 
 function statusVariant(status?: string) {
   const s = status || "ok";
-  if (s === "ok") return { label: s, className: "bg-emerald-500/15 text-emerald-400" };
-  if (s === "auth-failed") return { label: s, className: "bg-amber-500/15 text-amber-400" };
-  return { label: s, className: "" };
+  if (s === "ok") return { label: s, className: "bg-foreground text-background" };
+  if (s === "auth-failed") return { label: s, className: "bg-muted text-foreground" };
+  return { label: s, className: "border border-foreground/40 font-medium text-foreground" };
 }
 
 export function LogsPage({ data }: { data: Data }) {
@@ -198,7 +198,8 @@ export function LogsPage({ data }: { data: Data }) {
             />
           ) : (
             <>
-              <Table>
+              <div className="overflow-hidden rounded-xl border">
+                <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>时间</TableHead>
@@ -217,14 +218,20 @@ export function LogsPage({ data }: { data: Data }) {
                   {entries.map((e, i) => {
                     const st = statusVariant(e.status);
                     return (
-                      <TableRow key={`${e.time}-${i}`} className={e.level === "warn" || e.level === "error" ? "bg-destructive/5" : ""}>
+                      <TableRow key={`${e.time}-${i}`} className={e.level === "warn" || e.level === "error" ? "bg-muted/40" : ""}>
                         <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums text-muted-foreground">
                           {clock(e.time)}
                         </TableCell>
                         <TableCell>
                           <Badge
-                            variant={e.level === "error" ? "destructive" : "outline"}
-                            className={e.level === "warn" ? "bg-amber-500/15 text-amber-400" : ""}
+                            variant={e.level === "error" ? "secondary" : "outline"}
+                            className={
+                              e.level === "error"
+                                ? "border border-foreground/40 font-medium text-foreground"
+                                : e.level === "warn"
+                                  ? "bg-muted text-foreground"
+                                  : ""
+                            }
                           >
                             {e.level}
                           </Badge>
@@ -255,7 +262,8 @@ export function LogsPage({ data }: { data: Data }) {
                     );
                   })}
                 </TableBody>
-              </Table>
+                </Table>
+              </div>
               <PaginationControls
                 page={page}
                 pageSize={pageSize}

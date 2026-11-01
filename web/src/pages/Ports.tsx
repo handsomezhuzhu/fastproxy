@@ -257,7 +257,8 @@ export function PortsPage({
             </div>
           ) : null}
 
-          <Table>
+          <div className="overflow-hidden rounded-xl border">
+            <Table>
             <TableHeader>
               <TableRow>
                 <TableHead className="w-10">
@@ -360,7 +361,8 @@ export function PortsPage({
                 );
               })}
             </TableBody>
-          </Table>
+            </Table>
+          </div>
 
           <PaginationControls
             page={pag.page}

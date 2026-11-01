@@ -46,9 +46,11 @@ function readHash(): Page {
 function useTheme() {
   const [theme, setTheme] = React.useState<"dark" | "light">(() => {
     try {
-      return localStorage.getItem("fp-theme") === "light" ? "light" : "dark";
+      // 显式走 window.localStorage：jsdom（smoke 冒烟）环境下裸 localStorage 会触发
+      // Node 实验性 --localstorage-file 告警并被错误捕获。
+      return window.localStorage.getItem("fp-theme") === "dark" ? "dark" : "light";
     } catch {
-      return "dark";
+      return "light";
     }
   });
   React.useEffect(() => {
@@ -59,7 +61,7 @@ function useTheme() {
       .querySelector('meta[name="theme-color"]')
       ?.setAttribute("content", theme === "dark" ? "#171717" : "#ffffff");
     try {
-      localStorage.setItem("fp-theme", theme);
+      window.localStorage.setItem("fp-theme", theme);
     } catch {
       /* storage unavailable */
     }
@@ -164,7 +166,7 @@ export default function App() {
         <div className="flex min-h-screen items-center justify-center p-6">
           <Card className="w-full max-w-md">
             <CardContent className="space-y-4 p-6 text-center">
-              <div className="mx-auto flex size-11 items-center justify-center rounded-full bg-destructive/15 text-destructive">
+              <div className="mx-auto flex size-11 items-center justify-center rounded-md bg-destructive/15 text-destructive">
                 <RefreshCw className="size-5" aria-hidden="true" />
               </div>
               <div className="space-y-1">
@@ -191,8 +193,8 @@ export default function App() {
   return (
     <TooltipProvider>
       <div className="flex min-h-screen bg-background">
-        {/* Desktop sidebar */}
-        <aside className="sticky top-0 hidden h-screen w-60 shrink-0 border-r bg-sidebar text-sidebar-foreground md:block">
+        {/* Desktop sidebar（恒定深色，品牌一致性） */}
+        <aside className="sticky top-0 hidden h-screen w-64 shrink-0 border-r border-neutral-800 bg-neutral-950 text-neutral-100 md:block">
           <SidebarContent
             version={data.version}
             page={page}
@@ -203,7 +205,7 @@ export default function App() {
 
         {/* Mobile drawer */}
         <Sheet open={navOpen} onOpenChange={setNavOpen}>
-          <SheetContent side="left" className="w-60 gap-0 p-0">
+          <SheetContent side="left" className="w-64 gap-0 border-neutral-800 bg-neutral-950 p-0 text-neutral-100">
             <SheetTitle className="sr-only">导航菜单</SheetTitle>
             <SidebarContent
               version={data.version}
@@ -215,7 +217,7 @@ export default function App() {
         </Sheet>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background/90 px-4 backdrop-blur md:px-6">
+          <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background/85 px-4 backdrop-blur md:px-6">
             <Button
               variant="ghost"
               size="icon-sm"
@@ -265,7 +267,7 @@ export default function App() {
             </Button>
           </header>
 
-          <main className="mx-auto w-full max-w-7xl flex-1 space-y-6 px-4 py-6 md:px-6">
+          <main className="mx-auto w-full max-w-[1440px] flex-1 space-y-4 px-4 py-4 md:space-y-6 md:px-6 md:py-6">
             <ErrorBoundary key={page}>
               {page === "dashboard" && (
                 <DashboardPage data={data} onCopy={openCopy} onNavigate={navigate} />

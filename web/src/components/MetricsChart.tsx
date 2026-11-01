@@ -54,12 +54,14 @@ export function MetricsChart({ points }: { points: MetricPoint[] }) {
         preserveAspectRatio="none"
       >
         <defs>
-          {series.map((s) => (
-            <linearGradient key={s.key} id={`grad-${s.key}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={s.color} stopOpacity="0.28" />
-              <stop offset="100%" stopColor={s.color} stopOpacity="0.02" />
-            </linearGradient>
-          ))}
+          <linearGradient id="grad-conns" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--chart-1)" stopOpacity="0.22" />
+            <stop offset="100%" stopColor="var(--chart-1)" stopOpacity="0.02" />
+          </linearGradient>
+          <linearGradient id="grad-traffic" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--chart-2)" stopOpacity="0.10" />
+            <stop offset="100%" stopColor="var(--chart-2)" stopOpacity="0" />
+          </linearGradient>
         </defs>
         {[0.25, 0.5, 0.75].map((f) => (
           <line
@@ -77,12 +79,12 @@ export function MetricsChart({ points }: { points: MetricPoint[] }) {
           <path key={`a-${i}`} d={p.area} fill={`url(#grad-${series[i].key})`} />
         ))}
         {paths.map((p, i) => (
-          <path
-            key={`l-${i}`}
+          <path key={`l-${i}`}
             d={p.line}
             fill="none"
             stroke={series[i].color}
             strokeWidth="2"
+            strokeDasharray={series[i].key === "traffic" ? "6 4" : undefined}
             vectorEffect="non-scaling-stroke"
             strokeLinejoin="round"
             strokeLinecap="round"

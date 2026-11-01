@@ -1,0 +1,150 @@
+/* Dashboard Layout 全局样式 */
+
+/* 仪表盘容器 */
+.dashboard {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* 侧边导航 */
+.dashboard-sidebar {
+  width: 256px;
+  background: #111827;
+  color: white;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 主区域 */
+.dashboard-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* 顶部工具栏 */
+.dashboard-toolbar {
+  background: white;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 0.75rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* 内容区 */
+.dashboard-content {
+  flex: 1;
+  padding: 1.5rem;
+  background: #f9fafb;
+}
+
+/* KPI 卡片网格 */
+.dashboard-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+/* 图表网格 */
+.dashboard-chart-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 1rem;
+}
+
+/* KPI 卡片 */
+.dashboard-kpi {
+  background: white;
+  border-radius: 12px;
+  padding: 1rem;
+  border: 1px solid #f3f4f6;
+}
+
+/* 状态颜色 */
+.dashboard-up { color: #10b981; }
+.dashboard-down { color: #ef4444; }
+.dashboard-neutral { color: #f59e0b; }
+
+/* 响应式 */
+@media (max-width: 1024px) {
+  .dashboard-kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .dashboard-chart-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .dashboard-sidebar {
+    display: none;
+  }
+  .dashboard-kpi-grid {
+    grid-template-columns: 1fr;
+  }
+}
+/* Dashboard Layout Design Tokens */
+:root {
+  --dashboard-layout-primary: #111827;
+  --dashboard-layout-secondary: #f9fafb;
+  --dashboard-layout-accent: #6366f1;
+  --dashboard-layout-glow: rgba(17, 24, 39, 0.3);
+}
+
+@keyframes dashboard-layout-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes dashboard-layout-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.dashboard-layout-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.dashboard-layout-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  background: linear-gradient(135deg, rgba(17, 24, 39, 0.05), transparent);
+  pointer-events: none;
+}
+
+.dashboard-layout-card:hover::before {
+  opacity: 1;
+}
+
+.dashboard-layout-gradient {
+  background: linear-gradient(135deg, #111827, #6366f1);
+}
+
+.dashboard-layout-gradient-text {
+  background: linear-gradient(135deg, #111827, #6366f1);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.dashboard-layout-frosted {
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  background: rgba(17, 24, 39, 0.08);
+}
+
+.dashboard-layout-accent-corner {
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 2rem), calc(100% - 2rem) 100%, 0 100%);
+}
+
+.dashboard-layout-animate-in {
+  animation: dashboard-layout-fade-in 0.5s ease-out both;
+}

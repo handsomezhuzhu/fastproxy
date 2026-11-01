@@ -159,11 +159,11 @@ export function DashboardPage({
             </div>
             <div className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground">
               <span className="flex items-center gap-1.5">
-                <span className="size-2 rounded-full bg-chart-1" aria-hidden="true" />
+                <span className="size-2 rounded-sm bg-chart-1" aria-hidden="true" />
                 连接数
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="size-2 rounded-full bg-chart-2" aria-hidden="true" />
+                <span className="h-0.5 w-3 border-t-2 border-dashed border-chart-2" aria-hidden="true" />
                 流量
               </span>
             </div>
@@ -226,8 +226,8 @@ export function DashboardPage({
                 >
                   <span
                     className={cn(
-                      "flex size-6 shrink-0 items-center justify-center rounded-full border text-xs tabular-nums",
-                      step.done ? "border-emerald-500/60 text-emerald-400" : "text-muted-foreground"
+                      "flex size-6 shrink-0 items-center justify-center rounded-md border text-xs tabular-nums",
+                      step.done ? "border-foreground/60 font-medium text-foreground" : "text-muted-foreground"
                     )}
                     aria-hidden="true"
                   >

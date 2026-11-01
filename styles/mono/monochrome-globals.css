@@ -1,0 +1,62 @@
+/* Monochrome */
+:root {
+  --monochrome-bg: #fafafa;
+  --monochrome-text: #111111;
+  --monochrome-muted: #666666;
+  --monochrome-subtle: #999999;
+  --monochrome-border: #e5e5e5;
+  --monochrome-surface: #f5f5f5;
+}
+@keyframes monochrome-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes monochrome-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.monochrome-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.monochrome-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  background: linear-gradient(135deg, rgba(17, 17, 17, 0.05), transparent);
+  pointer-events: none;
+}
+
+.monochrome-card:hover::before {
+  opacity: 1;
+}
+
+.monochrome-gradient {
+  background: linear-gradient(135deg, #111111, #666666);
+}
+
+.monochrome-gradient-text {
+  background: linear-gradient(135deg, #111111, #666666);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.monochrome-frosted {
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  background: rgba(17, 17, 17, 0.08);
+}
+
+.monochrome-accent-corner {
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 2rem), calc(100% - 2rem) 100%, 0 100%);
+}
+
+.monochrome-animate-in {
+  animation: monochrome-fade-in 0.5s ease-out both;
+}

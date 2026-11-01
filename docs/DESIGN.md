@@ -16,6 +16,10 @@ Upstream（上游代理池）
   username, password,          # http/socks5 账号密码；ss 用 password
   method,                      # ss 加密方式
   uuid, tls, sni,              # vless/vmess 用户 ID 与 TLS 参数
+  security, pbk, sid, flow,    # REALITY 公钥/短 ID、XTLS Vision
+  fingerprint, transport,      # uTLS 指纹、tcp/ws/grpc
+  path, host_header, service_name,
+  vmess_security,              # vmess auto/none/zero/aes-128-gcm/...
   remark
 
 Port（纯入口端口，不再绑定上游）
@@ -91,13 +95,13 @@ Account（账户，必须绑定一个端口）
 | sing-box JSON | `{"outbounds":[{type:"http",server,server_port,username,password,tag}]}` |
 | Clash JSON/YAML | `proxies:` 列表，流式与块式均支持（`type: ss/vmess/vless` 字段 `cipher/password/uuid/servername/sni/tls/network`） |
 
-- 支持 http/socks5/shadowsocks/vless/vmess 节点；以下情况**跳过并给出 problem**：
-  非 tcp 传输（`ws`/`grpc`/`h2`/`quic`）、VLESS `encryption` 非 `none`、
-  非 AEAD 的 Shadowsocks 加密方式（`rc4-md5`、`*-cfb`、`2022-*`）、
-  VLESS 的 REALITY（需要 pbk/sid 与 uTLS 握手）与 `flow=xtls-rprx-vision`（前者会伪装成真实
-  SNI 网站、握手后无响应，因此直接拒绝而不是存成永远失败的上游）
-- 去重键：`type|host|method|uuid|username|password`，与现有上游及同批次节点比较
-- 返回 `{added, total, duplicates[], problems[]}`，面板展示明细；`ImportUpstreams` 入库前再校验一次，
+- 支持 http/socks5/shadowsocks/vless（含 REALITY / Vision / WS / gRPC）/vmess 节点；以下情况**跳过并给出 problem**：
+  非 tcp/ws/grpc 传输（`h2`/`quic`）、VLESS `encryption` 非 `none`、
+  非 AEAD 的 Shadowsocks 加密方式（`rc4-md5`、`*-cfb`、`2022-*`）。
+  REALITY 必须带 32 字节的 `pbk`（`sid` 可空），入库前会校验格式
+- 去重键：`type|host|method|uuid|username|password|pbk|sid|flow|transport|path|host_header|service_name`，
+  与现有上游及同批次节点比较
+- 返回 `{added, total, duplicates[], problems[], warning?}`，面板展示明细；`ImportUpstreams` 入库前再校验一次，
   不合格节点以 problem 返回而不入库
 
 ## 上游出站协议
@@ -110,10 +114,11 @@ Account（账户，必须绑定一个端口）
 | http | CONNECT | 明文 HTTP 请求走标准 Transport | 支持 |
 | socks5 | TCP | 用户名/密码认证可选 | 支持 |
 | shadowsocks | AEAD TCP | `aes-128-gcm` / `aes-256-gcm` / `chacha20-ietf-poly1305`，`go-shadowsocks2/core` 实现；不支持 UDP 与 `2022-*` | 支持 |
-| vless | TCP（可选 TLS） | 标准请求头，uuid + addonsLen + cmd=TCP + port + ATYP 地址；TLS 严格校验系统根证书，SNI 取 `sni`，为空则取地址 hostname（IP 不发送 SNI） | 支持（不支持 ws/grpc、Reality、flow） |
-| vmess | — | 无小巧可靠的纯 Go 客户端可引（现代服务端仅接受 VMess AEAD，引入 xray-core/sing-box 等于嵌入整套代理引擎），因此只保存配置，隧道返回明确错误 | **未支持** |
+| vless | TCP / WS / gRPC（可选 TLS/REALITY） | 普通 TCP+TLS 走原生实现（严格校验证书）；REALITY、`flow=xtls-rprx-vision`、WS、gRPC 走**内置 sing-box**：每个上游在 `127.0.0.1:20000+` 起一个 SOCKS 入口，`DialTunnel` 经本地 SOCKS 转发 | 支持 |
+| vmess | TCP / WS / gRPC（可选 TLS） | 内置 sing-box 出站（VMess AEAD），支持 `security=auto/none/zero/aes-128-gcm/chacha20-poly1305` | 支持 |
 
-VMess 的配置可以正常保存与导入，健康探测会把 `vmess 暂未支持` 记为失败原因，不会伪装成可用。
+内置 sing-box 只在存在 VMess / 高级 VLESS 上游时启动；普通 VLESS、http/socks5/ss 不依赖它，sing-box 启动失败也不影响这些协议。
+REALITY / uTLS 需要 `-tags with_utls` 构建（Dockerfile、CI、`make build-utls` 已带）。上游增删改后服务端会重建内置实例。
 
 ## 探测与出口 IP
 

@@ -84,13 +84,13 @@ export function CopyWizard({
   const [copied, setCopied] = React.useState(false);
 
   const eligibleAccounts = React.useCallback(
-    (port?: Port) =>
-      port ? accounts.filter((a) => a.port_id === "" || a.port_id === port.id) : [],
+    // 账户必绑定端口；默认账号（is_default）同样作为候选出现。
+    (port?: Port) => (port ? accounts.filter((a) => a.port_id === port.id) : []),
     [accounts]
   );
   const eligiblePorts = React.useCallback(
-    (account?: Account) =>
-      account ? ports.filter((p) => account.port_id === "" || account.port_id === p.id) : [],
+    // 按账户维度仅其绑定的那一个端口可用。
+    (account?: Account) => (account ? ports.filter((p) => p.id === account.port_id) : []),
     [ports]
   );
 

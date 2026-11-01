@@ -249,9 +249,9 @@ func (env *env) addUpstream(t *testing.T, typ, host, user, pass string) *config.
 	return u
 }
 
-func (env *env) addPort(t *testing.T, port int, upstreamID string) *config.Port {
+func (env *env) addPort(t *testing.T, port int) *config.Port {
 	t.Helper()
-	p, err := env.store.UpsertPort("", &config.Port{Port: port, DefaultUpstream: upstreamID, Enabled: true})
+	p, err := env.store.UpsertPort("", &config.Port{Port: port, Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,8 +317,8 @@ func TestHTTPConnectTunnelViaHTTPUpstream(t *testing.T) {
 	up := newFakeHTTPUpstream(t, "upuser", "uppass")
 	env := newEnv(t)
 	u := env.addUpstream(t, config.UpstreamHTTP, up.ln.Addr().String(), "upuser", "uppass")
-	p := env.addPort(t, freePort(t), u.ID)
-	env.addAccount(t, "alice", "wonder", p.ID, "")
+	p := env.addPort(t, freePort(t))
+	env.addAccount(t, "alice", "wonder", p.ID, u.ID)
 	env.sync(t)
 
 	conn, br := connectTunnel(t, p.Port, proxyAuthHeader("alice", "wonder"), tAddr)
@@ -333,8 +333,8 @@ func TestPlainHTTPViaHTTPUpstream(t *testing.T) {
 	up := newFakeHTTPUpstream(t, "", "")
 	env := newEnv(t)
 	u := env.addUpstream(t, config.UpstreamHTTP, up.ln.Addr().String(), "", "")
-	p := env.addPort(t, freePort(t), u.ID)
-	env.addAccount(t, "alice", "wonder", p.ID, "")
+	p := env.addPort(t, freePort(t))
+	env.addAccount(t, "alice", "wonder", p.ID, u.ID)
 	env.sync(t)
 
 	proxyURL := &url.URL{
@@ -361,8 +361,8 @@ func TestSocks5InboundViaHTTPUpstream(t *testing.T) {
 	up := newFakeHTTPUpstream(t, "upuser", "uppass")
 	env := newEnv(t)
 	u := env.addUpstream(t, config.UpstreamHTTP, up.ln.Addr().String(), "upuser", "uppass")
-	p := env.addPort(t, freePort(t), u.ID)
-	env.addAccount(t, "alice", "wonder", "", "") // global account
+	p := env.addPort(t, freePort(t))
+	env.addAccount(t, "alice", "wonder", p.ID, u.ID) // port-scoped account on its bound upstream
 	env.sync(t)
 
 	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p.Port)))
@@ -392,8 +392,8 @@ func TestConnectViaSocks5Upstream(t *testing.T) {
 
 	env := newEnv(t)
 	u := env.addUpstream(t, config.UpstreamSocks5, upLn.Addr().String(), "su", "sp")
-	p := env.addPort(t, freePort(t), u.ID)
-	env.addAccount(t, "alice", "wonder", p.ID, "")
+	p := env.addPort(t, freePort(t))
+	env.addAccount(t, "alice", "wonder", p.ID, u.ID)
 	env.sync(t)
 
 	conn, br := connectTunnel(t, p.Port, proxyAuthHeader("alice", "wonder"), tAddr)
@@ -403,9 +403,9 @@ func TestConnectViaSocks5Upstream(t *testing.T) {
 	}
 }
 
-// TestAccountOverridesUpstream proves user-based routing: the port default is
-// a dead upstream, but the account's override works.
-func TestAccountOverridesUpstream(t *testing.T) {
+// TestAccountRoutesViaBoundUpstream proves user-based routing: the port is a
+// pure ingress (no default upstream); the account's own upstream wins.
+func TestAccountRoutesViaBoundUpstream(t *testing.T) {
 	tAddr := newTarget(t, "hello-from-target")
 	upSocks := freePort(t)
 	upLn, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(upSocks)))
@@ -416,16 +416,15 @@ func TestAccountOverridesUpstream(t *testing.T) {
 	t.Cleanup(func() { upLn.Close() })
 
 	env := newEnv(t)
-	dead := env.addUpstream(t, config.UpstreamHTTP, "127.0.0.1:1", "", "")
 	good := env.addUpstream(t, config.UpstreamSocks5, upLn.Addr().String(), "su", "sp")
-	p := env.addPort(t, freePort(t), dead.ID) // default = dead upstream
+	p := env.addPort(t, freePort(t))
 	env.addAccount(t, "alice", "wonder", p.ID, good.ID)
 	env.sync(t)
 
 	conn, br := connectTunnel(t, p.Port, proxyAuthHeader("alice", "wonder"), tAddr)
 	defer conn.Close()
 	if body := tunnelGet(t, conn, br, tAddr); !strings.Contains(body, "hello-from-target") {
-		t.Fatalf("account override did not route to the good upstream: %q", body)
+		t.Fatalf("account's bound upstream was not used: %q", body)
 	}
 }
 
@@ -434,8 +433,8 @@ func TestHotReload(t *testing.T) {
 	up := newFakeHTTPUpstream(t, "", "")
 	env := newEnv(t)
 	u := env.addUpstream(t, config.UpstreamHTTP, up.ln.Addr().String(), "", "")
-	p := env.addPort(t, freePort(t), u.ID)
-	env.addAccount(t, "alice", "wonder", p.ID, "")
+	p := env.addPort(t, freePort(t))
+	env.addAccount(t, "alice", "wonder", p.ID, u.ID)
 	env.sync(t)
 
 	env.mgr.mu.Lock()
@@ -456,8 +455,16 @@ func TestHotReload(t *testing.T) {
 	}
 
 	// bob can now authenticate; a disabled account fails.
-	if _, err := env.store.SetAccountEnabled(
-		env.store.Accounts()[1].ID, false); err != nil {
+	bobID := ""
+	for _, a := range env.store.Accounts() {
+		if a.Username == "bob" {
+			bobID = a.ID
+		}
+	}
+	if bobID == "" {
+		t.Fatal("bob account missing")
+	}
+	if _, err := env.store.SetAccountEnabled(bobID, false); err != nil {
 		t.Fatal(err)
 	}
 	env.sync(t)
@@ -482,8 +489,8 @@ func TestWrongHTTPAuthRejected(t *testing.T) {
 	up := newFakeHTTPUpstream(t, "", "")
 	env := newEnv(t)
 	u := env.addUpstream(t, config.UpstreamHTTP, up.ln.Addr().String(), "", "")
-	p := env.addPort(t, freePort(t), u.ID)
-	env.addAccount(t, "alice", "wonder", p.ID, "")
+	p := env.addPort(t, freePort(t))
+	env.addAccount(t, "alice", "wonder", p.ID, u.ID)
 	env.sync(t)
 
 	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p.Port)))
@@ -506,8 +513,8 @@ func TestUnknownUserRejected(t *testing.T) {
 	up := newFakeHTTPUpstream(t, "", "")
 	env := newEnv(t)
 	u := env.addUpstream(t, config.UpstreamHTTP, up.ln.Addr().String(), "", "")
-	p := env.addPort(t, freePort(t), u.ID)
-	env.addAccount(t, "alice", "wonder", p.ID, "")
+	p := env.addPort(t, freePort(t))
+	env.addAccount(t, "alice", "wonder", p.ID, u.ID)
 	env.sync(t)
 
 	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p.Port)))
@@ -530,8 +537,8 @@ func TestSocks5WrongPasswordRejected(t *testing.T) {
 	up := newFakeHTTPUpstream(t, "", "")
 	env := newEnv(t)
 	u := env.addUpstream(t, config.UpstreamHTTP, up.ln.Addr().String(), "", "")
-	p := env.addPort(t, freePort(t), u.ID)
-	env.addAccount(t, "alice", "wonder", p.ID, "")
+	p := env.addPort(t, freePort(t))
+	env.addAccount(t, "alice", "wonder", p.ID, u.ID)
 	env.sync(t)
 
 	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p.Port)))
@@ -550,8 +557,8 @@ func TestSocks5RequiresAuth(t *testing.T) {
 	up := newFakeHTTPUpstream(t, "", "")
 	env := newEnv(t)
 	u := env.addUpstream(t, config.UpstreamHTTP, up.ln.Addr().String(), "", "")
-	p := env.addPort(t, freePort(t), u.ID)
-	env.addAccount(t, "alice", "wonder", p.ID, "")
+	p := env.addPort(t, freePort(t))
+	env.addAccount(t, "alice", "wonder", p.ID, u.ID)
 	env.sync(t)
 
 	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p.Port)))
@@ -575,8 +582,8 @@ func TestPortDisableStopsListener(t *testing.T) {
 	up := newFakeHTTPUpstream(t, "", "")
 	env := newEnv(t)
 	u := env.addUpstream(t, config.UpstreamHTTP, up.ln.Addr().String(), "", "")
-	p := env.addPort(t, freePort(t), u.ID)
-	env.addAccount(t, "alice", "wonder", p.ID, "")
+	p := env.addPort(t, freePort(t))
+	env.addAccount(t, "alice", "wonder", p.ID, u.ID)
 	env.sync(t)
 
 	if _, err := env.store.SetPortEnabled(p.ID, false); err != nil {
@@ -589,5 +596,40 @@ func TestPortDisableStopsListener(t *testing.T) {
 	if err == nil {
 		conn.Close()
 		t.Fatal("listener should be closed after disable")
+	}
+}
+
+// TestAccountDoesNotAuthOnOtherPorts ensures an account bound to port B can
+// never authenticate on port A (ports are hard credentials boundaries).
+func TestAccountDoesNotAuthOnOtherPorts(t *testing.T) {
+	up := newFakeHTTPUpstream(t, "", "")
+	env := newEnv(t)
+	u := env.addUpstream(t, config.UpstreamHTTP, up.ln.Addr().String(), "", "")
+	pA := env.addPort(t, freePort(t))
+	pB := env.addPort(t, freePort(t))
+	env.addAccount(t, "alice", "wonder", pB.ID, u.ID) // alice belongs to port B only
+	env.sync(t)
+
+	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(pA.Port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: %s\r\n\r\n",
+		proxyAuthHeader("alice", "wonder"))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusProxyAuthRequired {
+		t.Fatalf("expected 407 on the wrong port, got %s", resp.Status)
+	}
+
+	// And the same credentials work on their own port.
+	tAddr := newTarget(t, "hello-from-target")
+	conn2, br2 := connectTunnel(t, pB.Port, proxyAuthHeader("alice", "wonder"), tAddr)
+	defer conn2.Close()
+	if body := tunnelGet(t, conn2, br2, tAddr); !strings.Contains(body, "hello-from-target") {
+		t.Fatalf("own port did not work: %q", body)
 	}
 }

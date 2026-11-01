@@ -73,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/data", s.auth(s.handleData))
 	mux.HandleFunc("GET /api/stats", s.auth(s.handleStats))
 	mux.HandleFunc("GET /api/logs", s.auth(s.handleLogs))
+	mux.HandleFunc("GET /api/metrics/hours", s.auth(s.handleMetrics))
 	mux.HandleFunc("GET /api/settings", s.auth(s.handleGetSettings))
 	mux.HandleFunc("PUT /api/settings", s.auth(s.handleUpdateSettings))
 
@@ -328,6 +329,28 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"entries": s.log.Recent(f)})
 }
 
+// handleMetrics returns 24 hourly buckets of connections and traffic for the
+// dashboard chart.
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	type point struct {
+		T        string `json:"t"`
+		Conns    int64  `json:"conns"`
+		BytesIn  int64  `json:"bytes_in"`
+		BytesOut int64  `json:"bytes_out"`
+	}
+	raw := s.store.QueryHourlyMetrics(24)
+	points := make([]point, 0, 24)
+	for _, p := range raw {
+		points = append(points, point{
+			T:        time.Unix(p.TS, 0).Format("15:04"),
+			Conns:    p.Conns,
+			BytesIn:  p.BytesIn,
+			BytesOut: p.BytesOut,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"points": points})
+}
+
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"settings": s.store.Settings()})
 }
@@ -495,15 +518,12 @@ func (s *Server) handleCheckAllUpstreams(w http.ResponseWriter, r *http.Request)
 // --- ports ---
 
 type portInput struct {
-	Port            int    `json:"port"`
-	DefaultUpstream string `json:"default_upstream"`
-	Remark          string `json:"remark"`
+	Port   int    `json:"port"`
+	Remark string `json:"remark"`
 }
 
 func (in *portInput) toEntity() *config.Port {
-	return &config.Port{
-		Port: in.Port, DefaultUpstream: in.DefaultUpstream, Remark: in.Remark, Enabled: true,
-	}
+	return &config.Port{Port: in.Port, Remark: in.Remark, Enabled: true}
 }
 
 func (s *Server) handleCreatePort(w http.ResponseWriter, r *http.Request) {
@@ -516,7 +536,18 @@ func (s *Server) handleCreatePort(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.syncRespond(w, saved)
+	var warning string
+	if serr := s.mgr.Sync(); serr != nil {
+		warning = serr.Error()
+	}
+	resp := map[string]any{"ok": true, "saved": map[string]any{
+		"port":            saved,
+		"default_account": s.store.GetDefaultAccount(saved.ID),
+	}}
+	if warning != "" {
+		resp["warning"] = warning
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleUpdatePort(w http.ResponseWriter, r *http.Request) {

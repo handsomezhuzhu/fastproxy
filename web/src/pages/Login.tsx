@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Zap } from "lucide-react";
+import { Loader2, Zap } from "lucide-react";
 import { api } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -66,6 +66,7 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
               </p>
             ) : null}
             <Button className="w-full" type="submit" disabled={busy || !password}>
+              {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
               {busy ? "登录中…" : "登录"}
             </Button>
           </form>

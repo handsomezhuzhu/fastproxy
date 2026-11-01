@@ -1,7 +1,7 @@
 import * as React from "react";
+import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Data, type Settings } from "@/api";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -75,7 +75,7 @@ export function SettingsPage({
 
   return (
     <div className="space-y-5">
-      <PageHeader title="系统设置" description="全局配置：日志、超时、直连策略与管理密码。" />
+      <PageHeader title="系统设置" description="全局配置：日志、超时、直连策略、探测与管理密码。" />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
@@ -215,6 +215,7 @@ export function SettingsPage({
               </div>
 
               <Button type="submit" className="w-full" disabled={saving}>
+                {saving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
                 {saving ? "保存中…" : "保存系统设置"}
               </Button>
             </form>
@@ -257,34 +258,10 @@ export function SettingsPage({
                   />
                 </Field>
                 <Button type="submit" variant="secondary" className="w-full" disabled={pwdBusy || !newPassword}>
+                  {pwdBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
                   {pwdBusy ? "处理中…" : "修改密码"}
                 </Button>
               </form>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>关于</CardTitle>
-              <CardDescription>FastProxy · 多端口多账户转发中转</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-2 text-xs text-muted-foreground">
-              <div className="flex items-center justify-between">
-                <span>版本</span>
-                <Badge variant="outline" translate="no">v{data.version}</Badge>
-              </div>
-              <div className="flex items-center justify-between gap-4">
-                <span>面板地址</span>
-                <span className="truncate font-mono">{window.location.host}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>数据存储</span>
-                <span className="font-mono">SQLite (WAL)</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>入站协议</span>
-                <span>HTTP / SOCKS5（同端口自动识别）</span>
-              </div>
             </CardContent>
           </Card>
         </div>

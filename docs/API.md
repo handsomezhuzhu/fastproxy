@@ -44,18 +44,23 @@ last_check_at(秒), last_error`；另有 `probe:{server_ip,last_check_at}`。
 
 | 方法 | 路径 | Body |
 |---|---|---|
-| POST | `/api/ports` | `{port, default_upstream, remark}` |
-| PUT | `/api/ports/{id}` | 同上 |
+| POST | `/api/ports` | `{port, remark}` → `{ok, saved:{port, default_account}}`，端口创建时自动生成其默认账号（`default-<port>`） |
+| PUT | `/api/ports/{id}` | 同上（仅端口与备注） |
 | PATCH | `/api/ports/{id}` | `{enabled}` |
-| DELETE | `/api/ports/{id}` | 绑定账户自动解绑为全局 |
+| DELETE | `/api/ports/{id}` | 连带删除默认账号；若还有其他绑定账户则返回 `{error:"请先删除绑定账户 N 个"}` |
 
 ## 账户
 
 | 方法 | 路径 | Body |
 |---|---|---|
-| POST | `/api/accounts` | `{username, password, port_id, upstream_id, remark}` |
-| PUT | `/api/accounts/{id}` | 同上 |
+| POST | `/api/accounts` | `{username, password, port_id, upstream_id, remark}`，`port_id` 必填 |
+| PUT | `/api/accounts/{id}` | 同上（默认账号禁止更换端口；其余字段可改） |
 | PATCH | `/api/accounts/{id}` | `{enabled}` |
-| DELETE | `/api/accounts/{id}` | |
+| DELETE | `/api/accounts/{id}` | 默认账号返回 `{error:"默认账户不可删除，删除端口连带删除"}` |
 
-`username` 全局唯一；`password` 支持 `${VAR}` 环境变量引用。
+`username` 全局唯一；`port_id` 必须指向已存在的端口；`upstream_id` 选填（空=直连）。
+密码支持 `${VAR}` 环境变量引用，明文不落盘。账户的 `is_default` 由系统自动维护，无法在 POST/PUT 中伪造。
+
+## 指标
+
+| GET | `/api/metrics/hours` | `{points:[{t:"HH:04", conns, bytes_in, bytes_out}, ... 24 个}` | 近 24 小时按小时聚合的连接与流量（仪表盘面积图数据源） |

@@ -1,4 +1,4 @@
-﻿# FastProxy 容器端到端联调脚本（Windows / PowerShell）
+# FastProxy 容器端到端联调脚本（Windows / PowerShell）
 # 用法: .\scripts\e2e.ps1
 $ErrorActionPreference = 'Stop'
 $PASS = 'admin123'
@@ -41,10 +41,17 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:${ADMIN_PORT}/api/login" `
 
 $up = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:${ADMIN_PORT}/api/upstreams" -WebSession $web `
   -ContentType 'application/json' -Body (@{ name = 'devserver-upstream'; upstream = 'http://host.docker.internal:18180' } | ConvertTo-Json)
-$port = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:${ADMIN_PORT}/api/ports" -WebSession $web `
-  -ContentType 'application/json' -Body (@{ port = $PROXY_PORT; default_upstream = $up.upstream.id } | ConvertTo-Json)
+$portResp = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:${ADMIN_PORT}/api/ports" -WebSession $web `
+  -ContentType 'application/json' -Body (@{ port = $PROXY_PORT; remark = 'e2e' } | ConvertTo-Json)
+$port = @{ id = $portResp.saved.port.id; port = $portResp.saved.port.port }
+if ($portResp.saved.default_account) {
+  $d = $portResp.saved.default_account
+  Invoke-RestMethod -Method Put -Uri "http://127.0.0.1:${ADMIN_PORT}/api/accounts/$($d.id)" -WebSession $web `
+    -ContentType 'application/json' -Body (@{ username = $d.username; password = $d.password; port_id = $d.port_id; upstream_id = $up.upstream.id } | ConvertTo-Json) | Out-Null
+  Write-Host ("   默认账号: {0} 已绑定上游" -f $d.username)
+}
 $acc = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:${ADMIN_PORT}/api/accounts" -WebSession $web `
-  -ContentType 'application/json' -Body (@{ username = 'alice'; password = 'wonder'; port_id = $port.port.id } | ConvertTo-Json)
+  -ContentType 'application/json' -Body (@{ username = 'alice'; password = 'wonder'; port_id = $port.id; upstream_id = $up.upstream.id } | ConvertTo-Json)
 Write-Host ("   upstream={0} port={1} account={2}" -f $up.upstream.id, $port.port.port, $acc.account.username) -ForegroundColor Green
 
 # 容器 -> 宿主机：先试 host.docker.internal，失败则热切换到 bridge 网关 IP

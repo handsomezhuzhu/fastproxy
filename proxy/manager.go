@@ -137,7 +137,7 @@ func (m *Manager) Sync() error {
 		m.entries[id] = e
 		delete(m.listenErr, id)
 		go e.serve()
-		m.log.Infof("线路启动: 端口 %d -> %s", p.Port, upstreamDesc(m.defaultUpstream(p)))
+		m.log.Infof("线路启动: 端口 %d", p.Port)
 	}
 	return errors.Join(errs...)
 }
@@ -302,11 +302,13 @@ func remoteIP(addr net.Addr) string {
 // --- auth and upstream resolution (live from store, hot-reload friendly) ---
 
 // auth authenticates (user, pass) for this port and returns the account.
-// It also attaches the account meter to the connection counters.
+// Accounts are scoped to exactly one port nowadays, so a credential that is
+// valid on another port is never accepted here. It also attaches the account
+// meter to the connection counters.
 func (e *entry) auth(ctr *countedConn, user, pass string) (*config.Account, bool) {
 	var acc *config.Account
 	for _, a := range e.m.store.Accounts() {
-		if a.Enabled && a.Username == user && (a.PortID == "" || a.PortID == e.port.ID) {
+		if a.Enabled && a.Username == user && a.PortID == e.port.ID {
 			acc = a
 			break
 		}
@@ -328,35 +330,13 @@ func (e *entry) releaseAcc(ctr *countedConn) {
 	}
 }
 
-// upstreamFor resolves the effective upstream for an account:
-// account override first, then the port default; nil means dial direct.
+// upstreamFor resolves the account's bound upstream; nil means dial direct.
 func (e *entry) upstreamFor(acc *config.Account) *config.Upstream {
-	if acc.UpstreamID != "" {
-		for _, u := range e.m.store.Upstreams() {
-			if u.ID == acc.UpstreamID {
-				c := *u
-				return &c
-			}
-		}
+	if acc.UpstreamID == "" {
 		return nil
 	}
-	if e.port.DefaultUpstream != "" {
-		for _, u := range e.m.store.Upstreams() {
-			if u.ID == e.port.DefaultUpstream {
-				c := *u
-				return &c
-			}
-		}
-	}
-	return nil
-}
-
-func (m *Manager) defaultUpstream(p *config.Port) *config.Upstream {
-	if p.DefaultUpstream == "" {
-		return nil
-	}
-	for _, u := range m.store.Upstreams() {
-		if u.ID == p.DefaultUpstream {
+	for _, u := range e.m.store.Upstreams() {
+		if u.ID == acc.UpstreamID {
 			c := *u
 			return &c
 		}
@@ -419,10 +399,3 @@ func fillMeter(mt *meter, total, cur, in, out *int64) {
 }
 
 func samePort(a, b config.Port) bool { return a == b }
-
-func upstreamDesc(u *config.Upstream) string {
-	if u == nil {
-		return "直连"
-	}
-	return fmt.Sprintf("%s 上游 %s", u.Type, u.Host)
-}

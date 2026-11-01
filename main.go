@@ -124,7 +124,7 @@ func main() {
 	}
 	for _, p := range store.Ports() {
 		if p.Enabled {
-			log.Printf("线路: 端口 %d -> 上游 %s（备注: %s）", p.Port, orDirect(p.DefaultUpstream), remarkOrDash(p.Remark))
+			log.Printf("线路: 端口 %d（备注: %s）", p.Port, remarkOrDash(p.Remark))
 		}
 	}
 	log.Printf("账户共 %d 个，上游共 %d 个", len(store.Accounts()), len(store.Upstreams()))
@@ -166,13 +166,6 @@ func randomPassword(n int) string {
 		b[i] = pool[int(b[i])%len(pool)]
 	}
 	return string(b)
-}
-
-func orDirect(id string) string {
-	if id == "" {
-		return "直连"
-	}
-	return id
 }
 
 func remarkOrDash(s string) string {

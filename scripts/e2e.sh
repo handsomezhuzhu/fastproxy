@@ -52,11 +52,22 @@ print(d)' "$1"; }
 
 UP_ID=$(api -d '{"name":"devserver-upstream","upstream":"http://host.docker.internal:18180"}' \
   "http://127.0.0.1:${ADMIN_PORT}/api/upstreams" | extract 'saved.id') || exit 1
-PORT_ID=$(api -d "{\"port\":${PROXY_PORT},\"default_upstream\":\"${UP_ID}\"}" \
-  "http://127.0.0.1:${ADMIN_PORT}/api/ports" | extract 'saved.id') || exit 1
-api -d "{\"username\":\"alice\",\"password\":\"wonder\",\"port_id\":\"${PORT_ID}\"}" \
+PORT_RESP=$(api -d "{\"port\":${PROXY_PORT},\"remark\":\"e2e\"}" \
+  "http://127.0.0.1:${ADMIN_PORT}/api/ports")
+PORT_ID=$(echo "$PORT_RESP" | extract 'saved.port.id') || exit 1
+DEF_ID=$(echo "$PORT_RESP" | extract 'saved.default_account.id') || exit 1
+DEF_USER=$(echo "$PORT_RESP" | extract 'saved.default_account.username') || exit 1
+DEF_PASS=$(echo "$PORT_RESP" | extract 'saved.default_account.password') || exit 1
+echo "[PASS] 端口创建，默认账号自动生成: ${DEF_USER} / ${DEF_PASS}"
+
+# 默认账号绑定上游（新模型：端口纯入口，账户决定分流）
+api -X PUT -d "{\"username\":\"${DEF_USER}\",\"password\":\"${DEF_PASS}\",\"port_id\":\"${PORT_ID}\",\"upstream_id\":\"${UP_ID}\",\"remark\":\"\"}" \
+  "http://127.0.0.1:${ADMIN_PORT}/api/accounts/${DEF_ID}" | extract 'saved.id' >/dev/null || exit 1
+echo "[PASS] 默认账号已绑定上游 $UP_ID"
+# 另建一个普通账号验证普通路径
+api -d "{\"username\":\"alice\",\"password\":\"wonder\",\"port_id\":\"${PORT_ID}\",\"upstream_id\":\"${UP_ID}\"}" \
   "http://127.0.0.1:${ADMIN_PORT}/api/accounts" | extract 'saved.id' >/dev/null || exit 1
-echo "[PASS] upstream=$UP_ID port=$PROXY_PORT account=alice"
+echo "[PASS] account=alice"
 
 # 容器 -> 宿主机: 先试 host.docker.internal, 不通则热切换 bridge 网关 (Linux Docker)
 probe() { curl -s --max-time 8 -x "http://alice:wonder@127.0.0.1:${PROXY_PORT}" "http://127.0.0.1:18181/" 2>/dev/null; }

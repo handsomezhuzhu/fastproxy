@@ -50,21 +50,19 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { EmptyState, Field, PageHeader } from "@/components/page";
+import { DotBadge, EmptyState, Field, PageHeader, Toolbar } from "@/components/page";
 import { timeAgo } from "@/lib/utils";
 
 function HealthCell({ u }: { u: Upstream }) {
   if (!u.last_check_at) {
-    return <Badge variant="outline">未检测</Badge>;
+    return <DotBadge tone="muted">未检测</DotBadge>;
   }
   const checkedAt = new Date(u.last_check_at * 1000).toISOString();
   if (u.health === "ok") {
     return (
       <div className="space-y-0.5">
         <div className="flex items-center gap-1.5">
-          <Badge className="bg-emerald-500/15 text-emerald-400" variant="secondary">
-            正常
-          </Badge>
+          <DotBadge tone="ok">正常</DotBadge>
           <span className="text-xs tabular-nums text-muted-foreground">{u.latency_ms ?? 0} ms</span>
         </div>
         <p className="text-xs text-muted-foreground">{timeAgo(checkedAt)}检测</p>
@@ -73,9 +71,9 @@ function HealthCell({ u }: { u: Upstream }) {
   }
   return (
     <div className="space-y-0.5">
-      <Badge variant="destructive" title={u.last_error || "探测失败"}>
+      <DotBadge tone="fail" title={u.last_error || "探测失败"}>
         失败
-      </Badge>
+      </DotBadge>
       <p className="max-w-[180px] truncate text-xs text-muted-foreground" title={u.last_error}>
         {u.last_error || "探测失败"} · {timeAgo(checkedAt)}
       </p>
@@ -199,39 +197,14 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     }
   }
 
-  const refs = (id: string) =>
-    data.ports.filter((p) => p.default_upstream === id).length +
-    data.accounts.filter((a) => a.upstream_id === id).length;
+  const refs = (id: string) => data.accounts.filter((a) => a.upstream_id === id).length;
+  const healthy = data.upstreams.filter((u) => u.health === "ok").length;
 
   return (
     <div className="space-y-5">
       <PageHeader
         title="上游代理"
-        description="支持 http / socks5；密码可用 ${VAR} 引用环境变量。健康检查与出口 IP 由定时探测维护，可在系统设置调整间隔。"
-        actions={
-          <>
-            <Button variant="outline" onClick={checkAll} disabled={checkingAll}>
-              {checkingAll ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <RefreshCw className="size-4" aria-hidden="true" />
-              )}
-              {checkingAll ? "检测中…" : "检测全部"}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setImportOpen(true);
-                setResult(null);
-              }}
-            >
-              <Import className="size-4" aria-hidden="true" /> 批量导入
-            </Button>
-            <Button onClick={openCreate}>
-              <Plus className="size-4" aria-hidden="true" /> 添加上游
-            </Button>
-          </>
-        }
+        description="支持 http / socks5；健康检查由定时探测维护。"
       />
 
       {data.upstreams.length === 0 ? (
@@ -246,7 +219,31 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
           }
         />
       ) : (
-        <Table>
+        <>
+          <Toolbar count={`${data.upstreams.length} 个上游`} detail={`正常 ${healthy}`}>
+            <Button variant="outline" size="sm" onClick={checkAll} disabled={checkingAll}>
+              {checkingAll ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <RefreshCw className="size-4" aria-hidden="true" />
+              )}
+              {checkingAll ? "检测中…" : "检测全部"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setImportOpen(true);
+                setResult(null);
+              }}
+            >
+              <Import className="size-4" aria-hidden="true" /> 批量导入
+            </Button>
+            <Button size="sm" onClick={openCreate}>
+              <Plus className="size-4" aria-hidden="true" /> 添加上游
+            </Button>
+          </Toolbar>
+          <Table>
           <TableHeader>
             <TableRow>
               <TableHead>名称</TableHead>
@@ -320,7 +317,8 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
               </TableRow>
             ))}
           </TableBody>
-        </Table>
+          </Table>
+        </>
       )}
 
       <Dialog open={open} onOpenChange={setOpen}>
@@ -472,7 +470,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>删除上游「{deleting?.name}」？</AlertDialogTitle>
-            <AlertDialogDescription>仍被端口或账户引用时无法删除。</AlertDialogDescription>
+            <AlertDialogDescription>仍被账户引用时无法删除。</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>

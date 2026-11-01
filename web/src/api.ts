@@ -23,7 +23,6 @@ export type ProbeResult = {
 export type Port = {
   id: string;
   port: number;
-  default_upstream: string;
   enabled: boolean;
   remark?: string;
 };
@@ -36,6 +35,17 @@ export type Account = {
   upstream_id: string;
   enabled: boolean;
   remark?: string;
+  is_default?: boolean;
+};
+
+/** POST /api/ports response: creating a port also generates its default account. */
+export type CreatePortResult = {
+  ok?: boolean;
+  saved?: {
+    port?: number;
+    default_account?: Account;
+  };
+  warning?: string;
 };
 
 export type Settings = {
@@ -99,6 +109,13 @@ export type Data = {
   status: { ports: PortStatus[]; accounts: AccountStatus[] };
   settings: Settings;
   probe?: { server_ip: string; last_check_at: number };
+};
+
+export type MetricPoint = {
+  t: string;
+  conns: number;
+  bytes_in: number;
+  bytes_out: number;
 };
 
 export type ImportResult = {
@@ -185,7 +202,7 @@ export const api = {
     req<{ settings: Settings }>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),
 
   createPort: (body: Partial<Port>) =>
-    req<{ saved?: Port; warning?: string }>("/api/ports", { method: "POST", body: JSON.stringify(body) }),
+    req<CreatePortResult>("/api/ports", { method: "POST", body: JSON.stringify(body) }),
   updatePort: (id: string, body: Partial<Port>) =>
     req<{ saved?: Port; warning?: string }>(`/api/ports/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   togglePort: (id: string, enabled: boolean) =>
@@ -233,6 +250,10 @@ export const api = {
     const r = await req<{ status: { ports: PortStatus[]; accounts: AccountStatus[] } }>("/api/stats");
     return { status: { ports: r.status?.ports ?? [], accounts: r.status?.accounts ?? [] } };
   },
+
+  /** Hourly metrics for the last 24 hours (may be empty before the first bucket). */
+  metricsHours: () =>
+    req<{ points: MetricPoint[] }>("/api/metrics/hours").then((r) => ({ points: r.points ?? [] })),
 
   changePassword: (oldpwd: string, newpwd: string) =>
     req<{ ok: true }>("/api/password", {

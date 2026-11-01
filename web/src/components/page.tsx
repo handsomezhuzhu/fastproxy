@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -90,6 +91,54 @@ export function Mono({ children, className }: { children: React.ReactNode; class
   return <span className={cn("font-mono text-xs text-muted-foreground", className)}>{children}</span>;
 }
 
+/** Status badge with a small leading dot, consistent across all tables. */
+export function DotBadge({
+  tone = "ok",
+  children,
+  className,
+  title,
+}: {
+  tone?: "ok" | "warn" | "fail" | "muted";
+  children: React.ReactNode;
+  className?: string;
+  title?: string;
+}) {
+  const tones = {
+    ok: { badge: "bg-emerald-500/15 text-emerald-400", dot: "bg-emerald-400" },
+    warn: { badge: "bg-amber-500/15 text-amber-400", dot: "bg-amber-400" },
+    fail: { badge: "bg-destructive/15 text-destructive", dot: "bg-destructive" },
+    muted: { badge: "text-muted-foreground", dot: "bg-muted-foreground/60" },
+  } as const;
+  const t = tones[tone];
+  return (
+    <Badge variant="secondary" className={cn("gap-1.5", t.badge, className)} title={title}>
+      <span className={cn("size-1.5 shrink-0 rounded-full", t.dot)} aria-hidden="true" />
+      {children}
+    </Badge>
+  );
+}
+
+/** Uniform list-page toolbar: count summary on the left, filters/actions on the right. */
+export function Toolbar({
+  count,
+  detail,
+  children,
+}: {
+  count: React.ReactNode;
+  detail?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex items-baseline gap-2 text-sm">
+        <span className="font-medium tabular-nums">{count}</span>
+        {detail ? <span className="text-xs text-muted-foreground">{detail}</span> : null}
+      </div>
+      {children ? <div className="flex flex-wrap items-center gap-2">{children}</div> : null}
+    </div>
+  );
+}
+
 /** Labelled form field with a consistent vertical rhythm. */
 export function Field({
   label,
@@ -120,6 +169,7 @@ export function FormSelect({
   onValueChange,
   items,
   className,
+  disabled,
   "aria-label": ariaLabel,
 }: {
   id?: string;
@@ -127,12 +177,14 @@ export function FormSelect({
   onValueChange: (value: string) => void;
   items: SelectOption[];
   className?: string;
+  disabled?: boolean;
   "aria-label"?: string;
 }) {
   return (
     <Select
       items={items}
       value={value}
+      disabled={disabled}
       onValueChange={(v) => onValueChange((v as string | null) ?? "")}
     >
       <SelectTrigger id={id} className={cn("w-full", className)} aria-label={ariaLabel}>

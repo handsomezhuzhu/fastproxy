@@ -2,22 +2,27 @@ import * as React from "react";
 import {
   Activity,
   Gauge,
-  LayoutDashboard,
-  Layers,
   Loader2,
   LogOut,
-  Network,
+  PanelLeft,
   RefreshCw,
-  ScrollText,
-  Settings as SettingsIcon,
-  Users,
   Zap,
 } from "lucide-react";
 import { api, type Data } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
+import { Separator } from "@/components/ui/separator";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { SidebarContent, NAV_ITEMS } from "@/components/AppSidebar";
 import { CopyWizard, type CopyPreset } from "@/components/CopyWizard";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { LoginPage } from "@/pages/Login";
@@ -27,22 +32,12 @@ import { AccountsPage } from "@/pages/Accounts";
 import { UpstreamsPage } from "@/pages/Upstreams";
 import { LogsPage } from "@/pages/Logs";
 import { SettingsPage } from "@/pages/Settings";
-import { cn } from "@/lib/utils";
 
 export type Page = "dashboard" | "ports" | "accounts" | "upstreams" | "logs" | "settings";
 
-const NAV: { id: Page; label: string; icon: React.ReactNode }[] = [
-  { id: "dashboard", label: "仪表盘", icon: <LayoutDashboard className="size-4" aria-hidden="true" /> },
-  { id: "ports", label: "端口线路", icon: <Network className="size-4" aria-hidden="true" /> },
-  { id: "accounts", label: "账户", icon: <Users className="size-4" aria-hidden="true" /> },
-  { id: "upstreams", label: "上游代理", icon: <Layers className="size-4" aria-hidden="true" /> },
-  { id: "logs", label: "连接日志", icon: <ScrollText className="size-4" aria-hidden="true" /> },
-  { id: "settings", label: "系统设置", icon: <SettingsIcon className="size-4" aria-hidden="true" /> },
-];
-
 function readHash(): Page {
   const h = window.location.hash.replace(/^#\/?/, "");
-  return (NAV.some((n) => n.id === h) ? h : "dashboard") as Page;
+  return (NAV_ITEMS.some((n) => n.id === h) ? h : "dashboard") as Page;
 }
 
 export default function App() {
@@ -52,6 +47,7 @@ export default function App() {
   const [page, setPage] = React.useState<Page>(readHash);
   const [copyOpen, setCopyOpen] = React.useState(false);
   const [copyPreset, setCopyPreset] = React.useState<CopyPreset>(null);
+  const [navOpen, setNavOpen] = React.useState(false);
 
   const reload = React.useCallback(async () => {
     try {
@@ -104,6 +100,7 @@ export default function App() {
   function navigate(next: Page) {
     window.location.hash = `#/${next}`;
     setPage(next);
+    setNavOpen(false);
   }
 
   function openCopy(preset: CopyPreset) {
@@ -118,9 +115,7 @@ export default function App() {
   }
 
   if (!session) {
-    return (
-      <BootScreen text="正在连接控制台…" />
-    );
+    return <BootScreen text="正在连接控制台…" />;
   }
 
   if (!session.auth) {
@@ -143,7 +138,7 @@ export default function App() {
               </div>
               <div className="space-y-1">
                 <h1 className="text-base font-semibold">加载配置失败</h1>
-                <p className="text-xs text-muted-foreground break-all">{loadError}</p>
+                <p className="break-all text-xs text-muted-foreground">{loadError}</p>
               </div>
               <div className="flex justify-center gap-2">
                 <Button onClick={() => reload()}>重试</Button>
@@ -159,72 +154,67 @@ export default function App() {
     return <BootScreen text="正在加载配置…" />;
   }
 
-  const title = NAV.find((n) => n.id === page)?.label ?? "";
+  const title = NAV_ITEMS.find((n) => n.id === page)?.label ?? "";
+  const activeConns = data.status.ports.reduce((sum, p) => sum + p.conns_cur, 0);
 
   return (
     <TooltipProvider>
-      <div className="flex min-h-screen flex-col bg-background md:flex-row">
-        <aside className="flex shrink-0 flex-col border-b md:w-60 md:border-b-0 md:border-r">
-          <div className="flex items-center gap-2.5 px-4 py-4">
-            <div className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <Zap className="size-4" aria-hidden="true" />
-            </div>
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold leading-tight">FastProxy</div>
-              <div className="text-xs text-muted-foreground" translate="no">v{data.version}</div>
-            </div>
-          </div>
-
-          <nav aria-label="主导航" className="flex gap-1 overflow-x-auto px-2 pb-2 md:flex-1 md:flex-col md:overflow-visible">
-            {NAV.map((item) => {
-              const active = page === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => navigate(item.id)}
-                  aria-current={active ? "page" : undefined}
-                  className={cn(
-                    "flex shrink-0 items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-                    active
-                      ? "bg-secondary font-medium text-foreground"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                  )}
-                >
-                  {item.icon}
-                  <span className="whitespace-nowrap">{item.label}</span>
-                </button>
-              );
-            })}
-          </nav>
-
-          <div className="hidden border-t p-3 md:block">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="w-full justify-start text-muted-foreground"
-              onClick={logout}
-            >
-              <LogOut className="size-4" aria-hidden="true" />
-              退出登录
-            </Button>
-          </div>
+      <div className="flex min-h-screen bg-background">
+        {/* Desktop sidebar */}
+        <aside className="sticky top-0 hidden h-screen w-60 shrink-0 border-r bg-sidebar text-sidebar-foreground md:block">
+          <SidebarContent
+            version={data.version}
+            page={page}
+            onNavigate={navigate}
+            onLogout={logout}
+          />
         </aside>
 
+        {/* Mobile drawer */}
+        <Sheet open={navOpen} onOpenChange={setNavOpen}>
+          <SheetContent side="left" className="w-60 gap-0 p-0">
+            <SheetTitle className="sr-only">导航菜单</SheetTitle>
+            <SidebarContent
+              version={data.version}
+              page={page}
+              onNavigate={navigate}
+              onLogout={logout}
+            />
+          </SheetContent>
+        </Sheet>
+
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="sticky top-0 z-10 flex h-14 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur md:px-6">
-            <div className="flex min-w-0 items-center gap-2 text-sm">
-              <span className="text-muted-foreground">控制台</span>
-              <span className="text-muted-foreground/60" aria-hidden="true">/</span>
-              <span className="truncate font-medium">{title}</span>
-            </div>
+          <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background/90 px-4 backdrop-blur md:px-6">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="md:hidden"
+              aria-label="打开导航菜单"
+              onClick={() => setNavOpen(true)}
+            >
+              <PanelLeft className="size-4" aria-hidden="true" />
+            </Button>
+            <Separator
+              orientation="vertical"
+              className="mx-1 hidden h-5! md:block data-vertical:self-auto!"
+            />
+            <Breadcrumb className="min-w-0">
+              <BreadcrumbList className="flex-nowrap">
+                <BreadcrumbItem className="hidden sm:inline-flex">
+                  <span className="text-muted-foreground">控制台</span>
+                </BreadcrumbItem>
+                <BreadcrumbSeparator className="hidden sm:list-item" />
+                <BreadcrumbItem>
+                  <BreadcrumbPage className="truncate font-medium">{title}</BreadcrumbPage>
+                </BreadcrumbItem>
+              </BreadcrumbList>
+            </Breadcrumb>
+
             <div className="flex-1" />
+
             <div className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
               <Activity className="size-3.5" aria-hidden="true" />
-              <span className="tabular-nums">
-                {data.status.ports.reduce((sum, p) => sum + p.conns_cur, 0)} 个活跃连接
-              </span>
+              <span className="tabular-nums">{activeConns} 个活跃连接</span>
             </div>
             <Button variant="outline" size="sm" onClick={() => openCopy(null)} className="hidden sm:inline-flex">
               <Gauge className="size-4" aria-hidden="true" />

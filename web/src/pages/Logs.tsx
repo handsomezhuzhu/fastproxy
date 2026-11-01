@@ -14,7 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { EmptyState, FormSelect, PageHeader } from "@/components/page";
+import { EmptyState, FormSelect, PageHeader, Toolbar } from "@/components/page";
 import { bytes, clock } from "@/lib/utils";
 
 function statusVariant(status?: string) {
@@ -62,22 +62,7 @@ export function LogsPage({ data }: { data: Data }) {
 
   return (
     <div className="space-y-5">
-      <PageHeader
-        title="连接日志"
-        description="每次连接一条结构化记录，写入 SQLite 并可查询；默认保留 7 天（可在系统设置调整）。"
-        actions={
-          <div className="flex items-center gap-3">
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Switch checked={auto} onCheckedChange={setAuto} aria-label="自动刷新日志" size="sm" />
-              自动刷新
-            </label>
-            <Button variant="outline" size="sm" onClick={load} disabled={loading}>
-              <RefreshCw className={loading ? "size-4 animate-spin" : "size-4"} aria-hidden="true" />
-              刷新
-            </Button>
-          </div>
-        }
-      />
+      <PageHeader title="连接日志" description="每次连接一条结构化记录，默认保留 7 天。" />
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <FormSelect
@@ -124,6 +109,20 @@ export function LogsPage({ data }: { data: Data }) {
           ]}
         />
       </div>
+
+      <Toolbar
+        count={entries === null ? "加载中…" : `${entries.length} 条记录`}
+        detail={auto ? "每 4 秒自动刷新" : undefined}
+      >
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Switch checked={auto} onCheckedChange={setAuto} aria-label="自动刷新日志" size="sm" />
+          自动刷新
+        </label>
+        <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+          <RefreshCw className={loading ? "size-4 animate-spin" : "size-4"} aria-hidden="true" />
+          刷新
+        </Button>
+      </Toolbar>
 
       {entries === null ? (
         <Card>

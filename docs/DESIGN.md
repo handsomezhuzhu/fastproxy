@@ -8,26 +8,36 @@
 - **专业配置**：上游池 / 端口线路 / 账户 三层模型，字段显式、可绑定、可覆盖
 - **完备记录**：每次连接一条结构化日志，落库可查询、可筛选、按天保留
 
-## 数据模型
+## 数据模型（每端口自带默认账号，账户是唯一分流键）
 
 ```
 Upstream（上游代理池）
   id, name, type(http|socks5), host, username, password, remark
-       ▲ default_upstream            ▲ upstream_id (override)
-       │                             │
-Port（接入端口）               Account（账户）
-  id, port, default_upstream,   id, username(全局唯一), password,
-  enabled, remark               port_id(空=全部端口), upstream_id(空=跟随端口), enabled, remark
+
+Port（纯入口端口，不再绑定上游）
+  id, port, enabled, remark
+        └── 自动生成 1 个默认账号（is_default=1）
+
+Account（账户，必须绑定一个端口）
+  id, username(全局唯一), password,
+  port_id(必选), upstream_id(可空=直连),
+  enabled, remark, is_default
 ```
 
-认证与路由：
+认证与路由（一行读懂）：
 
 ```
 客户端 → 端口（0x05 首字节=SOCKS5，否则 HTTP）
-      → 账户（用户名 + 密码，绑定端口或全局）
-      → 上游 = 账户.upstream_id ?? 端口.default_upstream（均空 = 直连）
-      → 上游类型：http → CONNECT + Proxy-Authorization；socks5 → RFC1929 认证
+      → 账户（用户名+密码，且 port_id 必须等于本端口；跨端口一律 407）
+      → 上游 = 账户绑定的上游（可空 = 直连）
 ```
+
+约束（新模型，无全局账户概念）：
+
+- 每个端口自动带一名默认账号（用户名 `default-<port>`，随机密码），初始直连
+- 默认账号可改用户名/密码/上游/备注，**不可删除、不可更换绑定端口**
+- 删除端口时连带删除其默认账号；**若还有普通账号绑定则拒绝删除**（"请先删除绑定账户 N 个"）
+- `is_default` 标识用于面板展示与删除保护
 
 ## 存储（SQLite）
 

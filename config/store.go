@@ -58,26 +58,31 @@ type Upstream struct {
 	LastError   string `json:"last_error,omitempty"`
 }
 
-// Port is one inbound listening port bound to a default upstream.
+// Port is one inbound listening endpoint. It carries no upstream: routing is
+// decided entirely by the authenticated account.
 type Port struct {
-	ID              string `json:"id"`
-	Port            int    `json:"port"`
-	DefaultUpstream string `json:"default_upstream"` // upstream id, "" = 直连
-	Enabled         bool   `json:"enabled"`
-	Remark          string `json:"remark,omitempty"`
+	ID      string `json:"id"`
+	Port    int    `json:"port"`
+	Enabled bool   `json:"enabled"`
+	Remark  string `json:"remark,omitempty"`
 }
 
-// Account is one inbound credential. Username is globally unique; the account
-// may be bound to one port or valid on all ports, and may override the port's
-// default upstream.
+// Account is one inbound credential. Username is globally unique. Accounts are
+// always bound to exactly one port (there is no global account concept) and
+// decide the destination via their optional upstream binding; an empty
+// UpstreamID means direct egress.
+//
+// Every port owns one default account (is_default=true) which may not be
+// deleted or moved to another port; deleting the port cascades it.
 type Account struct {
 	ID         string `json:"id"`
 	Username   string `json:"username"`
 	Password   string `json:"password"`
-	PortID     string `json:"port_id"`     // "" = 所有端口可用
-	UpstreamID string `json:"upstream_id"` // "" = 跟随端口默认上游
+	PortID     string `json:"port_id"`     // required, port scoping
+	UpstreamID string `json:"upstream_id"` // "" = 直连；否则上游 id
 	Enabled    bool   `json:"enabled"`
 	Remark     string `json:"remark,omitempty"`
+	IsDefault  bool   `json:"is_default"`
 }
 
 // Settings is the global configuration entry exposed in the admin panel.
@@ -141,10 +146,6 @@ func Open(path string, adminPort int) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if err := s.importLegacyLocked(); err != nil {
-		db.Close()
-		return nil, err
-	}
 	if err := s.loadSettingsLocked(); err != nil {
 		db.Close()
 		return nil, err
@@ -199,6 +200,7 @@ func (s *Store) migrate() error {
 			upstream_id TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
 			remark TEXT NOT NULL DEFAULT '',
+			is_default INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS logs (
@@ -244,6 +246,17 @@ func (s *Store) migrate() error {
 			}
 		}
 	}
+
+	// The default-account marker arrived in v0.5.
+	exists, err := s.columnExists("accounts", "is_default")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := s.db.Exec(`ALTER TABLE accounts ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("升级 accounts.is_default 失败: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -270,92 +283,6 @@ func (s *Store) columnExists(table, column string) (bool, error) {
 }
 
 // importLegacyLocked imports a fastproxy JSON config stored next to the
-// database (from v0.2.x) when the database has no entities yet.
-func (s *Store) importLegacyLocked() error {
-	legacy := filepath.Join(filepath.Dir(s.path), "config.json")
-	if _, err := os.Stat(legacy); err != nil {
-		return nil
-	}
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM upstreams`).Scan(&n); err != nil {
-		return err
-	}
-	var m int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM accounts`).Scan(&m); err != nil {
-		return err
-	}
-	if n+m > 0 {
-		return nil // database already holds data; keep the legacy file untouched
-	}
-
-	raw, err := os.ReadFile(legacy)
-	if err != nil {
-		return nil
-	}
-	var doc struct {
-		AdminPasswordHash string            `json:"admin_password_hash"`
-		SessionSecret     string            `json:"session_secret"`
-		Settings          *Settings         `json:"settings"`
-		Upstreams         []*Upstream       `json:"upstreams"`
-		Ports             []*Port           `json:"ports"`
-		Accounts          []*Account        `json:"accounts"`
-		Rules             []json.RawMessage `json:"rules"` // v0.1 flat layout
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return fmt.Errorf("旧配置文件 %s 解析失败: %w", legacy, err)
-	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	now := time.Now().Unix()
-
-	if doc.AdminPasswordHash != "" {
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO settings(key, value) VALUES('admin_password_hash', ?)`, doc.AdminPasswordHash); err != nil {
-			return err
-		}
-	}
-	if doc.SessionSecret == "" {
-		doc.SessionSecret = randomHex(32)
-	}
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO settings(key, value) VALUES('session_secret', ?)`, doc.SessionSecret); err != nil {
-		return err
-	}
-
-	for _, u := range doc.Upstreams {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO upstreams
-			(id, name, type, host, username, password, remark, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?)`,
-			u.ID, u.Name, u.Type, u.Host, u.Username, u.Password, u.Remark, now, now); err != nil {
-			return err
-		}
-	}
-	for _, p := range doc.Ports {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO ports
-			(id, port, default_upstream, enabled, remark, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?)`,
-			p.ID, p.Port, p.DefaultUpstream, boolInt(p.Enabled), p.Remark, now, now); err != nil {
-			return err
-		}
-	}
-	for _, a := range doc.Accounts {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO accounts
-			(id, username, password, port_id, upstream_id, enabled, remark, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?)`,
-			a.ID, a.Username, a.Password, a.PortID, a.UpstreamID, boolInt(a.Enabled), a.Remark, now, now); err != nil {
-			return err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	// Keep the legacy file for reference but stop reading it.
-	_ = os.Rename(legacy, legacy+".migrated")
-	return nil
-}
-
 func boolInt(v bool) int {
 	if v {
 		return 1
@@ -588,17 +515,12 @@ func (s *Store) RecordUpstreamCheck(id, health string, latencyMS int64, exitIP, 
 	return err
 }
 
-// DeleteUpstream removes an upstream unless it is still referenced.
+// DeleteUpstream removes an upstream unless it is still referenced by an account.
 func (s *Store) DeleteUpstream(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var port int
-	err := s.db.QueryRow(`SELECT port FROM ports WHERE default_upstream=? LIMIT 1`, id).Scan(&port)
-	if err == nil {
-		return fmt.Errorf("上游仍被端口 %d 引用，请先修改端口绑定", port)
-	}
 	var user string
-	err = s.db.QueryRow(`SELECT username FROM accounts WHERE upstream_id=? LIMIT 1`, id).Scan(&user)
+	err := s.db.QueryRow(`SELECT username FROM accounts WHERE upstream_id=? LIMIT 1`, id).Scan(&user)
 	if err == nil {
 		return fmt.Errorf("上游仍被账户 %s 引用，请先修改账户绑定", user)
 	}
@@ -666,7 +588,7 @@ func (s *Store) Ports() []*Port {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]*Port, 0, 4)
-	rows, err := s.db.Query(`SELECT id, port, default_upstream, enabled, remark FROM ports ORDER BY port`)
+	rows, err := s.db.Query(`SELECT id, port, enabled, remark FROM ports ORDER BY port`)
 	if err != nil {
 		return nil
 	}
@@ -674,7 +596,7 @@ func (s *Store) Ports() []*Port {
 	for rows.Next() {
 		var p Port
 		var enabled int
-		if err := rows.Scan(&p.ID, &p.Port, &p.DefaultUpstream, &enabled, &p.Remark); err != nil {
+		if err := rows.Scan(&p.ID, &p.Port, &enabled, &p.Remark); err != nil {
 			continue
 		}
 		p.Enabled = enabled == 1
@@ -686,8 +608,8 @@ func (s *Store) Ports() []*Port {
 func (s *Store) getPortLocked(id string) *Port {
 	var p Port
 	var enabled int
-	err := s.db.QueryRow(`SELECT id, port, default_upstream, enabled, remark FROM ports WHERE id=?`, id).
-		Scan(&p.ID, &p.Port, &p.DefaultUpstream, &enabled, &p.Remark)
+	err := s.db.QueryRow(`SELECT id, port, enabled, remark FROM ports WHERE id=?`, id).
+		Scan(&p.ID, &p.Port, &enabled, &p.Remark)
 	if err != nil {
 		return nil
 	}
@@ -696,6 +618,8 @@ func (s *Store) getPortLocked(id string) *Port {
 }
 
 // UpsertPort validates and inserts (id == "") or updates an inbound port.
+// Inserting a new port auto-creates its default account (direct egress).
+// Call GetDefaultAccount afterwards to read its credentials.
 func (s *Store) UpsertPort(id string, in *Port) (*Port, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -706,12 +630,6 @@ func (s *Store) UpsertPort(id string, in *Port) (*Port, error) {
 	}
 	if in.Port == s.adminPort {
 		return nil, fmt.Errorf("端口 %d 与管理面板端口冲突", s.adminPort)
-	}
-	if in.DefaultUpstream == "" && !s.settings.AllowDirect {
-		return nil, errors.New("当前设置不允许直连端口，请先绑定默认上游")
-	}
-	if in.DefaultUpstream != "" && s.getUpstreamLocked(in.DefaultUpstream) == nil {
-		return nil, errors.New("默认上游不存在")
 	}
 
 	var n int
@@ -724,14 +642,20 @@ func (s *Store) UpsertPort(id string, in *Port) (*Port, error) {
 	if id == "" {
 		in.ID = randomHex(4)
 		if _, err := s.db.Exec(`INSERT INTO ports
-			(id, port, default_upstream, enabled, remark, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?)`,
-			in.ID, in.Port, in.DefaultUpstream, boolInt(in.Enabled), in.Remark, now, now); err != nil {
+			(id, port, enabled, remark, created_at, updated_at)
+			VALUES(?,?,?,?,?,?)`,
+			in.ID, in.Port, boolInt(in.Enabled), in.Remark, now, now); err != nil {
+			return nil, err
+		}
+		if err := s.ensureDefaultAccountLocked(*in, ""); err != nil {
+			if _, derr := s.db.Exec(`DELETE FROM ports WHERE id=?`, in.ID); derr != nil {
+				return nil, derr
+			}
 			return nil, err
 		}
 	} else {
-		res, err := s.db.Exec(`UPDATE ports SET port=?, default_upstream=?, enabled=?, remark=?, updated_at=? WHERE id=?`,
-			in.Port, in.DefaultUpstream, boolInt(in.Enabled), in.Remark, now, id)
+		res, err := s.db.Exec(`UPDATE ports SET port=?, enabled=?, remark=?, updated_at=? WHERE id=?`,
+			in.Port, boolInt(in.Enabled), in.Remark, now, id)
 		if err != nil {
 			return nil, err
 		}
@@ -743,16 +667,68 @@ func (s *Store) UpsertPort(id string, in *Port) (*Port, error) {
 	return s.getPortLocked(in.ID), nil
 }
 
-// DeletePort removes an inbound port; accounts bound to it become global.
+// ensureDefaultAccountLocked inserts the port's default account when absent.
+// upstreamID may be "" (direct) or a migrated upstream id.
+func (s *Store) ensureDefaultAccountLocked(p Port, upstreamID string) error {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE port_id=? AND is_default=1`, p.ID).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	username := fmt.Sprintf("default-%d", p.Port)
+	for i := 2; ; i++ {
+		var n int
+		_ = s.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE username=?`, username).Scan(&n)
+		if n == 0 {
+			break
+		}
+		username = fmt.Sprintf("default-%d-%d", p.Port, i)
+	}
+	now := time.Now().Unix()
+	_, err := s.db.Exec(`INSERT INTO accounts
+		(id, username, password, port_id, upstream_id, enabled, remark, is_default, created_at, updated_at)
+		VALUES(?,?,?,?,?,1,'',1,?,?)`,
+		randomHex(4), username, randomHex(6), p.ID, upstreamID, now, now)
+	return err
+}
+
+// GetDefaultAccount returns the port's default account (is_default=1), if any.
+func (s *Store) GetDefaultAccount(portID string) *Account {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var a Account
+	var enabled, def int
+	err := s.db.QueryRow(`SELECT id, username, password, port_id, upstream_id, enabled, remark, is_default
+		FROM accounts WHERE port_id=? AND is_default=1`, portID).
+		Scan(&a.ID, &a.Username, &a.Password, &a.PortID, &a.UpstreamID, &enabled, &a.Remark, &def)
+	if err != nil {
+		return nil
+	}
+	a.Enabled = enabled == 1
+	a.IsDefault = def == 1
+	c := resolveAccount(a)
+	return &c
+}
+
+// DeletePort removes an inbound port together with its default account.
+// It fails with a clear error while other accounts are still bound.
 func (s *Store) DeletePort(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	var others int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE port_id=? AND is_default=0`, id).Scan(&others)
+	if others > 0 {
+		return fmt.Errorf("请先删除绑定账户 %d 个", others)
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE accounts SET port_id='' WHERE port_id=?`, id); err != nil {
+	if _, err := tx.Exec(`DELETE FROM accounts WHERE port_id=?`, id); err != nil {
 		return err
 	}
 	res, err := tx.Exec(`DELETE FROM ports WHERE id=?`, id)
@@ -785,18 +761,19 @@ func (s *Store) Accounts() []*Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]*Account, 0, 4)
-	rows, err := s.db.Query(`SELECT id, username, password, port_id, upstream_id, enabled, remark FROM accounts ORDER BY created_at`)
+	rows, err := s.db.Query(`SELECT id, username, password, port_id, upstream_id, enabled, remark, is_default FROM accounts ORDER BY created_at`)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var a Account
-		var enabled int
-		if err := rows.Scan(&a.ID, &a.Username, &a.Password, &a.PortID, &a.UpstreamID, &enabled, &a.Remark); err != nil {
+		var enabled, def int
+		if err := rows.Scan(&a.ID, &a.Username, &a.Password, &a.PortID, &a.UpstreamID, &enabled, &a.Remark, &def); err != nil {
 			continue
 		}
 		a.Enabled = enabled == 1
+		a.IsDefault = def == 1
 		c := resolveAccount(a)
 		out = append(out, &c)
 	}
@@ -811,19 +788,22 @@ func resolveAccount(a Account) Account {
 
 func (s *Store) getAccountLocked(id string) *Account {
 	var a Account
-	var enabled int
-	err := s.db.QueryRow(`SELECT id, username, password, port_id, upstream_id, enabled, remark FROM accounts WHERE id=?`, id).
-		Scan(&a.ID, &a.Username, &a.Password, &a.PortID, &a.UpstreamID, &enabled, &a.Remark)
+	var enabled, def int
+	err := s.db.QueryRow(`SELECT id, username, password, port_id, upstream_id, enabled, remark, is_default FROM accounts WHERE id=?`, id).
+		Scan(&a.ID, &a.Username, &a.Password, &a.PortID, &a.UpstreamID, &enabled, &a.Remark, &def)
 	if err != nil {
 		return nil
 	}
 	a.Enabled = enabled == 1
+	a.IsDefault = def == 1
 	c := resolveAccount(a)
 	return &c
 }
 
 // UpsertAccount validates and inserts (id == "") or updates an account.
-// Usernames are globally unique to keep auth lookup unambiguous.
+// Usernames are globally unique. Every account must be bound to a port; the
+// upstream binding is optional ("" = direct). Default accounts keep their port
+// binding and is_default flag (they cannot be created through this path).
 func (s *Store) UpsertAccount(id string, in *Account) (*Account, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -837,10 +817,17 @@ func (s *Store) UpsertAccount(id string, in *Account) (*Account, error) {
 	if strings.ContainsAny(in.Username, " \t:") {
 		return nil, errors.New("用户名不能包含空格或冒号")
 	}
-	if in.PortID != "" && s.getPortLocked(in.PortID) == nil {
+	if in.PortID == "" {
+		return nil, errors.New("账户必须绑定端口（端口为必填项）")
+	}
+	if s.getPortLocked(in.PortID) == nil {
 		return nil, errors.New("绑定的端口不存在")
 	}
-	if in.UpstreamID != "" && s.getUpstreamLocked(in.UpstreamID) == nil {
+	if in.UpstreamID == "" {
+		if !s.settings.AllowDirect {
+			return nil, errors.New("当前设置不允许直连，请为账户绑定上游")
+		}
+	} else if s.getUpstreamLocked(in.UpstreamID) == nil {
 		return nil, errors.New("绑定的上游不存在")
 	}
 	if missing := mustRef("账户密码", in.Password); len(missing) > 0 {
@@ -857,12 +844,20 @@ func (s *Store) UpsertAccount(id string, in *Account) (*Account, error) {
 	if id == "" {
 		in.ID = randomHex(4)
 		if _, err := s.db.Exec(`INSERT INTO accounts
-			(id, username, password, port_id, upstream_id, enabled, remark, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?)`,
+			(id, username, password, port_id, upstream_id, enabled, remark, is_default, created_at, updated_at)
+			VALUES(?,?,?,?,?,?,?,0,?,?)`,
 			in.ID, in.Username, in.Password, in.PortID, in.UpstreamID, boolInt(in.Enabled), in.Remark, now, now); err != nil {
 			return nil, err
 		}
 	} else {
+		existing := s.getAccountLocked(id)
+		if existing == nil {
+			return nil, ErrNotFound
+		}
+		if existing.IsDefault && in.PortID != existing.PortID {
+			return nil, errors.New("默认账户不可更换绑定端口，请为其所在端口设置新账号")
+		}
+		in.IsDefault = existing.IsDefault
 		res, err := s.db.Exec(`UPDATE accounts SET username=?, password=?, port_id=?, upstream_id=?, enabled=?, remark=?, updated_at=? WHERE id=?`,
 			in.Username, in.Password, in.PortID, in.UpstreamID, boolInt(in.Enabled), in.Remark, now, id)
 		if err != nil {
@@ -876,10 +871,19 @@ func (s *Store) UpsertAccount(id string, in *Account) (*Account, error) {
 	return s.getAccountLocked(in.ID), nil
 }
 
-// DeleteAccount removes an account by id.
+// DeleteAccount removes an account by id. Default accounts cannot be deleted;
+// they disappear together with their port.
 func (s *Store) DeleteAccount(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var def int
+	err := s.db.QueryRow(`SELECT is_default FROM accounts WHERE id=?`, id).Scan(&def)
+	if err != nil {
+		return ErrNotFound
+	}
+	if def == 1 {
+		return errors.New("默认账户不可删除，删除端口连带删除")
+	}
 	res, err := s.db.Exec(`DELETE FROM accounts WHERE id=?`, id)
 	if err != nil {
 		return err
@@ -957,6 +961,57 @@ func (s *Store) InsertLog(e logx.Entry) error {
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		ts, e.Level, e.Port, e.Account, e.Client, e.Proto, e.Target, e.Status, e.BytesIn, e.BytesOut, e.DurationMS, e.Msg)
 	return err
+}
+
+// MetricPoint is one hour bucket for the dashboard chart.
+type MetricPoint struct {
+	TS       int64 `json:"ts"`
+	Conns    int64 `json:"conns"`
+	BytesIn  int64 `json:"bytes_in"`
+	BytesOut int64 `json:"bytes_out"`
+}
+
+// QueryHourlyMetrics aggregates connection counts and bytes per hour for the
+// last N hours, returned oldest-first (zero-filled).
+func (s *Store) QueryHourlyMetrics(hours int) []MetricPoint {
+	if hours <= 0 || hours > 24*30 {
+		hours = 24
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	const bucketSec = 3600
+	nowBucket := time.Now().Unix() / bucketSec * bucketSec
+	sinceMS := (nowBucket - int64(hours-1)*bucketSec) * 1000
+
+	rows, err := s.db.Query(`SELECT (ts/3600000) AS b, COUNT(*), COALESCE(SUM(bytes_in),0), COALESCE(SUM(bytes_out),0)
+		FROM logs WHERE ts >= ? GROUP BY b ORDER BY b`, sinceMS)
+	if err != nil {
+		return []MetricPoint{}
+	}
+	defer rows.Close()
+
+	byBucket := map[int64]MetricPoint{}
+	for rows.Next() {
+		var b int64
+		var p MetricPoint
+		if err := rows.Scan(&b, &p.Conns, &p.BytesIn, &p.BytesOut); err != nil {
+			continue
+		}
+		byBucket[b*bucketSec] = p
+	}
+
+	out := make([]MetricPoint, 0, hours)
+	for b := nowBucket - int64(hours-1)*bucketSec; b <= nowBucket; b += bucketSec {
+		p := MetricPoint{TS: b}
+		if found, ok := byBucket[b]; ok {
+			p.Conns = found.Conns
+			p.BytesIn = found.BytesIn
+			p.BytesOut = found.BytesOut
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // QueryLogs returns access logs newest-first.

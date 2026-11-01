@@ -12,7 +12,11 @@
 
 ```
 Upstream（上游代理池）
-  id, name, type(http|socks5), host, username, password, remark
+  id, name, type(http|socks5|shadowsocks|vless|vmess), host,
+  username, password,          # http/socks5 账号密码；ss 用 password
+  method,                      # ss 加密方式
+  uuid, tls, sni,              # vless/vmess 用户 ID 与 TLS 参数
+  remark
 
 Port（纯入口端口，不再绑定上游）
   id, port, enabled, remark
@@ -79,14 +83,35 @@ Account（账户，必须绑定一个端口）
 | 格式 | 示例 |
 |---|---|
 | URI 行 | `http://user:pass@1.2.3.4:8080#名称`、`socks5://...` |
+| Shadowsocks URI | `ss://BASE64(method:pass)@host:port#名称`（SIP002）、`ss://method:pass@host:port`（百分号编码）、`ss://BASE64(method:pass@host:port)`（旧版整体 base64） |
+| VLESS URI | `vless://uuid@host:port?encryption=none&security=tls&type=tcp&sni=xx#名称` |
+| VMess URI | `vmess://BASE64(JSON)`，JSON 字段 `v/ps/add/port/id/scy/net/tls/sni/host/path` |
 | 纯文本行 | `1.2.3.4:8080`、`1.2.3.4:8080:user:pass`（默认 http） |
 | base64 订阅 | 整段 base64 编码的文本订阅 |
 | sing-box JSON | `{"outbounds":[{type:"http",server,server_port,username,password,tag}]}` |
-| Clash JSON/YAML | `proxies:` 列表，流式与块式均支持 |
+| Clash JSON/YAML | `proxies:` 列表，流式与块式均支持（`type: ss/vmess/vless` 字段 `cipher/password/uuid/servername/sni/tls/network`） |
 
-- 仅导入 http/socks5 节点，其余类型计入"跳过"
-- 去重键：`type|host|username|password`，与现有上游比较后追加
-- 返回 `{added, total, duplicates[], problems[]}`，面板展示明细
+- 支持 http/socks5/shadowsocks/vless/vmess 节点；以下情况**跳过并给出 problem**：
+  非 tcp 传输（`ws`/`grpc`/`h2`/`quic`）、VLESS `encryption` 非 `none`、
+  非 AEAD 的 Shadowsocks 加密方式（`rc4-md5`、`*-cfb`、`2022-*`）、Reality 节点按 TLS 导入（握手会失败，探测如实记录）
+- 去重键：`type|host|method|uuid|username|password`，与现有上游及同批次节点比较
+- 返回 `{added, total, duplicates[], problems[]}`，面板展示明细；`ImportUpstreams` 入库前再校验一次，
+  不合格节点以 problem 返回而不入库
+
+## 上游出站协议
+
+所有出站统一走 `proxy.DialTunnel(up, addr, timeout)`，入站 CONNECT / SOCKS5 / 明文 HTTP / 健康探测共用，
+因此新增协议自动对全链路（含探测）生效。
+
+| 协议 | 传输 | 说明 | 状态 |
+|---|---|---|---|
+| http | CONNECT | 明文 HTTP 请求走标准 Transport | 支持 |
+| socks5 | TCP | 用户名/密码认证可选 | 支持 |
+| shadowsocks | AEAD TCP | `aes-128-gcm` / `aes-256-gcm` / `chacha20-ietf-poly1305`，`go-shadowsocks2/core` 实现；不支持 UDP 与 `2022-*` | 支持 |
+| vless | TCP（可选 TLS） | 标准请求头，uuid + addonsLen + cmd=TCP + port + ATYP 地址；TLS 严格校验系统根证书，SNI 取 `sni`，为空则取地址 hostname（IP 不发送 SNI） | 支持（不支持 ws/grpc、Reality、flow） |
+| vmess | — | 无小巧可靠的纯 Go 客户端可引（现代服务端仅接受 VMess AEAD，引入 xray-core/sing-box 等于嵌入整套代理引擎），因此只保存配置，隧道返回明确错误 | **未支持** |
+
+VMess 的配置可以正常保存与导入，健康探测会把 `vmess 暂未支持` 记为失败原因，不会伪装成可用。
 
 ## 探测与出口 IP
 

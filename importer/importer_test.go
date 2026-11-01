@@ -1,6 +1,9 @@
 package importer
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func check(t *testing.T, got Result, wantN int) {
 	t.Helper()
@@ -58,6 +61,7 @@ func TestParseSingBoxJSON(t *testing.T) {
       {"type":"vmess","server":"x","server_port":443,"tag":"V"}
     ]}`
 	r := Parse(text)
+	// vmess without a uuid cannot work: skipped with an explicit problem.
 	check(t, r, 2)
 	if r.Proxies[0].Name != "US" || r.Proxies[0].Type != "http" || r.Proxies[0].Host != "1.2.3.4:8080" {
 		t.Fatalf("sing-box mismatch: %+v", r.Proxies[0])
@@ -65,8 +69,8 @@ func TestParseSingBoxJSON(t *testing.T) {
 	if r.Proxies[1].Type != "socks5" {
 		t.Fatalf("socks mapping mismatch: %+v", r.Proxies[1])
 	}
-	if len(r.Problems) == 0 {
-		t.Fatal("expected skipped vmess problem")
+	if len(r.Problems) != 1 || !strings.Contains(r.Problems[0], "uuid") {
+		t.Fatalf("expected skipped vmess (no uuid) problem, got %v", r.Problems)
 	}
 }
 
@@ -79,6 +83,7 @@ proxy-groups:
   - name: PROXY
 `
 	r := Parse(text)
+	// Bare ss with an unknown cipher is still skipped (with a problem).
 	check(t, r, 2)
 	if r.Proxies[0].Name != "HK-01" || r.Proxies[0].User != "u" {
 		t.Fatalf("clash flow mismatch: %+v", r.Proxies[0])

@@ -29,7 +29,7 @@ probe_enabled, probe_interval_sec(30-3600), probe_timeout_sec(3-30), probe_targe
 
 | 方法 | 路径 | Body |
 |---|---|---|
-| POST | `/api/upstreams` | `{name, upstream:"http://user:pass@host:port"}` |
+| POST | `/api/upstreams` | 见下方两种请求形状 |
 | PUT | `/api/upstreams/{id}` | 同上 |
 | DELETE | `/api/upstreams/{id}` | 被引用时返回错误 |
 | POST | `/api/upstreams/{id}/test` | 立即探测该上游（健康 + 延迟 + 出口 IP），返回 `{ok, latency_ms, exit_ip, error?}` |
@@ -37,8 +37,33 @@ probe_enabled, probe_interval_sec(30-3600), probe_timeout_sec(3-30), probe_targe
 | POST | `/api/upstreams/check-all` | 检测全部上游与本机出口，返回 `{ok, failed, checked, server_ip}` |
 | POST | `/api/upstreams/import` | `{url}` 或 `{text}` → `{added,total,duplicates[],problems[]}` |
 
-`/api/data` 的 `upstreams[]` 含探测字段：`health(ok|fail|unknown), latency_ms, exit_ip,
-last_check_at(秒), last_error`；另有 `probe:{server_ip,last_check_at}`。
+`/api/data` 与 `GET /api/upstreams` 的 `upstreams[]` 字段：
+`id, name, type, host, username?, password?, remark?, method?, uuid?, tls?, sni?`，
+以及探测字段 `health(ok|fail|unknown), latency_ms, exit_ip, last_check_at(秒), last_error`；
+另有 `probe:{server_ip,last_check_at}`。
+
+### 上游创建/更新的两种请求形状
+
+1. **地址形式**（http / socks5，兼容旧前端）
+   ```json
+   {"name":"US-01","type":"http","upstream":"http://user:pass@1.2.3.4:8080","remark":""}
+   ```
+   `upstream` 以 `ss://` / `vmess://` / `vless://` 开头时会自动用导入器解析为字段。
+
+2. **字段形式**（推荐，所有类型）
+   ```json
+   {"name":"HK-SS","type":"shadowsocks","host":"1.2.3.4:8388",
+    "method":"aes-256-gcm","password":"secret","remark":""}
+   ```
+   ```json
+   {"name":"JP-VLESS","type":"vless","host":"j.example.com:443",
+    "uuid":"b831381d-6324-4d53-ad4f-8cda48b30811","tls":true,"sni":"cdn.example.com"}
+   ```
+
+`type` 取值：`http` | `socks5` | `shadowsocks` | `vless` | `vmess`（空值视为 `http`）。
+校验规则：ss 必填 `method`（`aes-128-gcm`/`aes-256-gcm`/`chacha20-ietf-poly1305`）与 `password`；
+vless/vmess 必填 `uuid`；`tls` 仅对 vless/vmess 生效；`host` 必须是 `host:port`。
+`vmess` 可保存但出站隧道返回 `vmess 暂未支持`（探测显示为失败）。
 
 ## 端口线路
 

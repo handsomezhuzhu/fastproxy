@@ -30,7 +30,19 @@ func dialTarget(up *config.Upstream, addr string, timeout time.Duration) (net.Co
 
 // DialTunnel opens a tunnel to addr ("host:port", usually the origin server)
 // through the upstream proxy, authenticating against it when needed.
+//
+// The tunnel protocol is chosen by up.Type: http (CONNECT), socks5,
+// shadowsocks (AEAD TCP), vless (TCP, optional TLS) or vmess (rejected with a
+// clear error until a client is implemented).
 func DialTunnel(up config.Upstream, addr string, timeout time.Duration) (net.Conn, error) {
+	switch up.Type {
+	case config.UpstreamShadowsocks:
+		return dialShadowsocks(up, addr, timeout)
+	case config.UpstreamVless:
+		return dialVless(up, addr, timeout)
+	case config.UpstreamVmess:
+		return dialVmess(up, addr, timeout)
+	}
 	conn, err := net.DialTimeout("tcp", up.Host, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("连接上游代理 %s 失败: %w", up.Host, err)

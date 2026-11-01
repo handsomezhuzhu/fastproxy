@@ -4,7 +4,8 @@
 // Layout (created on first open):
 //
 //	settings(key, value)            -- admin hash, session secret, JSON settings
-//	upstreams(id, name, type, host, username, password, remark, created_at, updated_at)
+//	upstreams(id, name, type, host, username, password, method, uuid, tls, sni,
+//	          remark, created_at, updated_at)
 //	ports(id, port UNIQUE, default_upstream, enabled, remark, created_at, updated_at)
 //	accounts(id, username UNIQUE, password, port_id, upstream_id, enabled, remark, ...)
 //	logs(ts, level, port, account, client, proto, target, status, bytes..., msg)
@@ -33,21 +34,40 @@ import (
 
 // Supported upstream proxy types.
 const (
-	UpstreamHTTP   = "http"
-	UpstreamSocks5 = "socks5"
+	UpstreamHTTP        = "http"
+	UpstreamSocks5      = "socks5"
+	UpstreamShadowsocks = "shadowsocks"
+	UpstreamVless       = "vless"
+	UpstreamVmess       = "vmess"
 )
+
+// UpstreamTypes lists every accepted Upstream.Type value (panel order).
+var UpstreamTypes = []string{UpstreamHTTP, UpstreamSocks5, UpstreamShadowsocks, UpstreamVless, UpstreamVmess}
+
+// ShadowsocksMethods lists the AEAD ciphers the Shadowsocks client accepts.
+var ShadowsocksMethods = []string{"aes-128-gcm", "aes-256-gcm", "chacha20-ietf-poly1305"}
 
 // ErrNotFound is returned when an entity id does not exist.
 var ErrNotFound = errors.New("不存在")
 
 // Upstream is one upstream proxy in the pool.
+//
+// Type selects the egress protocol:
+//
+//	http / socks5  -> Username + Password
+//	shadowsocks    -> Method + Password
+//	vless / vmess  -> UUID (+ TLS, SNI)
 type Upstream struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
-	Type     string `json:"type"` // "http" or "socks5"
+	Type     string `json:"type"` // http | socks5 | shadowsocks | vless | vmess
 	Host     string `json:"host"` // host:port
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
+	Method   string `json:"method,omitempty"` // shadowsocks cipher
+	UUID     string `json:"uuid,omitempty"`   // vless / vmess user id
+	TLS      bool   `json:"tls,omitempty"`    // vless / vmess: TLS on top of TCP
+	SNI      string `json:"sni,omitempty"`    // vless / vmess: TLS server name ("" = host)
 	Remark   string `json:"remark,omitempty"`
 
 	// Probe state (maintained by the prober and passive failure tracking).
@@ -181,6 +201,10 @@ func (s *Store) migrate() error {
 			host TEXT NOT NULL,
 			username TEXT NOT NULL DEFAULT '',
 			password TEXT NOT NULL DEFAULT '',
+			method TEXT NOT NULL DEFAULT '',
+			uuid TEXT NOT NULL DEFAULT '',
+			tls INTEGER NOT NULL DEFAULT 0,
+			sni TEXT NOT NULL DEFAULT '',
 			remark TEXT NOT NULL DEFAULT '',
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL)`,
@@ -227,13 +251,18 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("初始化数据库失败: %w", err)
 		}
 	}
-	// Probe columns were added in v0.4; ALTER existing databases in place.
+	// Probe columns were added in v0.4, protocol columns (shadowsocks/vless/
+	// vmess) later on; ALTER existing databases in place.
 	cols := map[string]string{
 		"health":        "TEXT NOT NULL DEFAULT 'unknown'",
 		"latency_ms":    "INTEGER NOT NULL DEFAULT 0",
 		"exit_ip":       "TEXT NOT NULL DEFAULT ''",
 		"last_check_at": "INTEGER NOT NULL DEFAULT 0",
 		"last_error":    "TEXT NOT NULL DEFAULT ''",
+		"method":        "TEXT NOT NULL DEFAULT ''",
+		"uuid":          "TEXT NOT NULL DEFAULT ''",
+		"tls":           "INTEGER NOT NULL DEFAULT 0",
+		"sni":           "TEXT NOT NULL DEFAULT ''",
 	}
 	for name, def := range cols {
 		exists, err := s.columnExists("upstreams", name)
@@ -383,39 +412,51 @@ func (s *Store) UpdateSettings(in Settings) (Settings, error) {
 
 // --- upstreams ---
 
+// upstreamColumns is the column list shared by every upstream read; the
+// matching scanUpstream keeps SELECT and Scan in lockstep.
+const upstreamColumns = `id, name, type, host, username, password, method, uuid, tls, sni, remark,
+	health, latency_ms, exit_ip, last_check_at, last_error`
+
+// upstreamScanner is satisfied by both *sql.Row and *sql.Rows.
+type upstreamScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanUpstream(sc upstreamScanner) (Upstream, error) {
+	var u Upstream
+	var tls int
+	if err := sc.Scan(&u.ID, &u.Name, &u.Type, &u.Host, &u.Username, &u.Password,
+		&u.Method, &u.UUID, &tls, &u.SNI, &u.Remark,
+		&u.Health, &u.LatencyMS, &u.ExitIP, &u.LastCheckAt, &u.LastError); err != nil {
+		return Upstream{}, err
+	}
+	u.TLS = tls != 0
+	return resolveUpstream(u), nil
+}
+
 func (s *Store) Upstreams() []*Upstream {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]*Upstream, 0, 4)
-	rows, err := s.db.Query(`SELECT id, name, type, host, username, password, remark,
-		health, latency_ms, exit_ip, last_check_at, last_error FROM upstreams ORDER BY created_at`)
+	rows, err := s.db.Query(`SELECT ` + upstreamColumns + ` FROM upstreams ORDER BY created_at`)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var u Upstream
-		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.Host, &u.Username, &u.Password, &u.Remark,
-			&u.Health, &u.LatencyMS, &u.ExitIP, &u.LastCheckAt, &u.LastError); err != nil {
-			continue
+		if u, err := scanUpstream(rows); err == nil {
+			out = append(out, &u)
 		}
-		c := resolveUpstream(u)
-		out = append(out, &c)
 	}
 	return out
 }
 
 func (s *Store) getUpstreamLocked(id string) *Upstream {
-	var u Upstream
-	err := s.db.QueryRow(`SELECT id, name, type, host, username, password, remark,
-		health, latency_ms, exit_ip, last_check_at, last_error FROM upstreams WHERE id=?`, id).
-		Scan(&u.ID, &u.Name, &u.Type, &u.Host, &u.Username, &u.Password, &u.Remark,
-			&u.Health, &u.LatencyMS, &u.ExitIP, &u.LastCheckAt, &u.LastError)
+	u, err := scanUpstream(s.db.QueryRow(`SELECT `+upstreamColumns+` FROM upstreams WHERE id=?`, id))
 	if err != nil {
 		return nil
 	}
-	c := resolveUpstream(u)
-	return &c
+	return &u
 }
 
 // resolveUpstream expands secret references in a copy of the upstream.
@@ -423,6 +464,72 @@ func resolveUpstream(u Upstream) Upstream {
 	u.Username, _ = expandEnv(u.Username)
 	u.Password, _ = expandEnv(u.Password)
 	return u
+}
+
+// normalizeUpstreamType maps the accepted spellings of upstream types onto
+// the canonical constants. An empty type means http (legacy clients).
+func normalizeUpstreamType(t string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "":
+		return UpstreamHTTP, true
+	case UpstreamHTTP:
+		return UpstreamHTTP, true
+	case UpstreamSocks5:
+		return UpstreamSocks5, true
+	case UpstreamShadowsocks:
+		return UpstreamShadowsocks, true
+	case UpstreamVless:
+		return UpstreamVless, true
+	case UpstreamVmess:
+		return UpstreamVmess, true
+	}
+	return "", false
+}
+
+// NormalizeUpstream applies per-type normalization and validation to in
+// (mutating it in place). The returned error message is user-facing.
+func NormalizeUpstream(in *Upstream) error {
+	typ, ok := normalizeUpstreamType(in.Type)
+	if !ok {
+		return fmt.Errorf("上游类型 %q 无效（仅支持 %s）", in.Type, strings.Join(UpstreamTypes, "/"))
+	}
+	in.Type = typ
+	in.Host = strings.TrimSpace(in.Host)
+	in.Method = strings.ToLower(strings.TrimSpace(in.Method))
+	in.UUID = strings.TrimSpace(in.UUID)
+	in.SNI = strings.TrimSpace(in.SNI)
+	in.TLS = in.TLS && (typ == UpstreamVless || typ == UpstreamVmess)
+	switch typ {
+	case UpstreamShadowsocks:
+		if in.Method == "" {
+			return errors.New("Shadowsocks 上游必须填写加密方式（method）")
+		}
+		supported := false
+		for _, m := range ShadowsocksMethods {
+			if m == in.Method {
+				supported = true
+			}
+		}
+		if !supported {
+			return fmt.Errorf("暂不支持的 Shadowsocks 加密方式 %q（支持 %s）",
+				in.Method, strings.Join(ShadowsocksMethods, "/"))
+		}
+		if in.Password == "" {
+			return errors.New("Shadowsocks 上游必须填写密码")
+		}
+	case UpstreamVless, UpstreamVmess:
+		if in.UUID == "" {
+			return errors.New("VLESS/VMess 上游必须填写 UUID")
+		}
+		if len(in.UUID) != 36 && len(in.UUID) != 32 {
+			return fmt.Errorf("UUID %q 格式无效", in.UUID)
+		}
+	}
+	return nil
+}
+
+func upstreamDedupKey(u *Upstream) string {
+	return u.Type + "|" + u.Host + "|" + u.Method + "|" + u.UUID + "|" + u.Username + "|" + u.Password
 }
 
 // UpsertUpstream validates and inserts (id == "") or updates an upstream.
@@ -435,12 +542,8 @@ func (s *Store) UpsertUpstream(id string, in *Upstream) (*Upstream, error) {
 	if in.Name == "" {
 		return nil, errors.New("上游名称不能为空")
 	}
-	switch in.Type {
-	case "", UpstreamHTTP:
-		in.Type = UpstreamHTTP
-	case UpstreamSocks5:
-	default:
-		return nil, errors.New("上游类型仅支持 http 或 socks5")
+	if err := NormalizeUpstream(in); err != nil {
+		return nil, err
 	}
 	if _, _, err := net.SplitHostPort(in.Host); err != nil {
 		return nil, errors.New("上游地址格式应为 host:port，如 1.2.3.4:8080")
@@ -453,43 +556,44 @@ func (s *Store) UpsertUpstream(id string, in *Upstream) (*Upstream, error) {
 	if id == "" {
 		in.ID = randomHex(4)
 		_, err := s.db.Exec(`INSERT INTO upstreams
-			(id, name, type, host, username, password, remark, health, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?,'unknown',?,?)`,
-			in.ID, in.Name, in.Type, in.Host, in.Username, in.Password, in.Remark, now, now)
+			(id, name, type, host, username, password, method, uuid, tls, sni, remark, health, created_at, updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,'unknown',?,?)`,
+			in.ID, in.Name, in.Type, in.Host, in.Username, in.Password,
+			in.Method, in.UUID, boolInt(in.TLS), in.SNI, in.Remark, now, now)
 		if err != nil {
 			return nil, err
 		}
 	} else {
 		// Reset probe state when the endpoint identity changes.
 		reset := false
-		var oldType, oldHost, oldUser, oldPass string
-		err := s.db.QueryRow(`SELECT type, host, username, password FROM upstreams WHERE id=?`, id).
-			Scan(&oldType, &oldHost, &oldUser, &oldPass)
+		var oldType, oldHost, oldUser, oldPass, oldMethod, oldUUID string
+		var oldTLS int
+		err := s.db.QueryRow(`SELECT type, host, username, password, method, uuid, tls FROM upstreams WHERE id=?`, id).
+			Scan(&oldType, &oldHost, &oldUser, &oldPass, &oldMethod, &oldUUID, &oldTLS)
 		if err != nil {
 			return nil, ErrNotFound
 		}
-		if oldType != in.Type || oldHost != in.Host || oldUser != in.Username || oldPass != in.Password {
+		if oldType != in.Type || oldHost != in.Host || oldUser != in.Username || oldPass != in.Password ||
+			oldMethod != in.Method || oldUUID != in.UUID || (oldTLS != 0) != in.TLS {
 			reset = true
 		}
+		const setCols = `name=?, type=?, host=?, username=?, password=?, method=?, uuid=?, tls=?, sni=?, remark=?`
+		args := []any{in.Name, in.Type, in.Host, in.Username, in.Password,
+			in.Method, in.UUID, boolInt(in.TLS), in.SNI, in.Remark}
+		var res sql.Result
 		if reset {
-			res, err := s.db.Exec(`UPDATE upstreams SET name=?, type=?, host=?, username=?, password=?, remark=?,
+			res, err = s.db.Exec(`UPDATE upstreams SET `+setCols+`,
 				health='unknown', latency_ms=0, exit_ip='', last_check_at=0, last_error='', updated_at=? WHERE id=?`,
-				in.Name, in.Type, in.Host, in.Username, in.Password, in.Remark, now, id)
-			if err != nil {
-				return nil, err
-			}
-			if n, _ := res.RowsAffected(); n == 0 {
-				return nil, ErrNotFound
-			}
+				append(args, now, id)...)
 		} else {
-			res, err := s.db.Exec(`UPDATE upstreams SET name=?, type=?, host=?, username=?, password=?, remark=?, updated_at=? WHERE id=?`,
-				in.Name, in.Type, in.Host, in.Username, in.Password, in.Remark, now, id)
-			if err != nil {
-				return nil, err
-			}
-			if n, _ := res.RowsAffected(); n == 0 {
-				return nil, ErrNotFound
-			}
+			res, err = s.db.Exec(`UPDATE upstreams SET `+setCols+`, updated_at=? WHERE id=?`,
+				append(args, now, id)...)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil, ErrNotFound
 		}
 		in.ID = id
 	}
@@ -535,18 +639,20 @@ func (s *Store) DeleteUpstream(id string) error {
 }
 
 // ImportUpstreams appends candidates in one transaction, skipping exact
-// duplicates (type+host+user+password). Returns added count and dup names.
-func (s *Store) ImportUpstreams(candidates []*Upstream) (int, []string) {
+// duplicates (see upstreamDedupKey) and candidates that fail validation.
+// It returns the added count, the duplicate names and one problem per
+// rejected candidate.
+func (s *Store) ImportUpstreams(candidates []*Upstream) (int, []string, []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	seen := map[string]bool{}
-	rows, err := s.db.Query(`SELECT type, host, username, password FROM upstreams`)
+	rows, err := s.db.Query(`SELECT type, host, username, password, method, uuid FROM upstreams`)
 	if err == nil {
 		for rows.Next() {
-			var typ, host, user, pass string
-			if rows.Scan(&typ, &host, &user, &pass) == nil {
-				seen[typ+"|"+host+"|"+user+"|"+pass] = true
+			var typ, host, user, pass, method, uuid string
+			if rows.Scan(&typ, &host, &user, &pass, &method, &uuid) == nil {
+				seen[typ+"|"+host+"|"+method+"|"+uuid+"|"+user+"|"+pass] = true
 			}
 		}
 		rows.Close()
@@ -554,32 +660,41 @@ func (s *Store) ImportUpstreams(candidates []*Upstream) (int, []string) {
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, nil
+		return 0, nil, []string{"打开数据库事务失败: " + err.Error()}
 	}
 	defer tx.Rollback()
 	now := time.Now().Unix()
 	added := 0
-	var duplicates []string
+	var duplicates, problems []string
 	for _, u := range candidates {
-		key := u.Type + "|" + u.Host + "|" + u.Username + "|" + u.Password
+		name := u.Name
+		if name == "" {
+			name = u.Host
+		}
+		if err := NormalizeUpstream(u); err != nil {
+			problems = append(problems, name+" ("+u.Host+"): "+err.Error())
+			continue
+		}
+		key := upstreamDedupKey(u)
 		if seen[key] {
-			duplicates = append(duplicates, u.Name+" ("+u.Host+")")
+			duplicates = append(duplicates, name+" ("+u.Host+")")
 			continue
 		}
 		seen[key] = true
 		u.ID = randomHex(4)
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO upstreams
-			(id, name, type, host, username, password, remark, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?)`,
-			u.ID, u.Name, u.Type, u.Host, u.Username, u.Password, u.Remark, now, now); err != nil {
-			return added, duplicates
+			(id, name, type, host, username, password, method, uuid, tls, sni, remark, created_at, updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			u.ID, name, u.Type, u.Host, u.Username, u.Password,
+			u.Method, u.UUID, boolInt(u.TLS), u.SNI, u.Remark, now, now); err != nil {
+			return added, duplicates, problems
 		}
 		added++
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, duplicates
+		return 0, duplicates, append(problems, "提交导入失败: "+err.Error())
 	}
-	return added, duplicates
+	return added, duplicates, problems
 }
 
 // --- ports ---
@@ -1128,8 +1243,9 @@ func (s *Store) ListUpstreams(limit, offset int, q string) ([]*Upstream, int64, 
 	if q = strings.TrimSpace(q); q != "" {
 		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
 		pat := "%" + esc + "%"
-		where = ` WHERE (name LIKE ? ESCAPE '\' OR host LIKE ? ESCAPE '\' OR username LIKE ? ESCAPE '\')`
-		args = append(args, pat, pat, pat)
+		where = ` WHERE (name LIKE ? ESCAPE '\' OR host LIKE ? ESCAPE '\' OR username LIKE ? ESCAPE '\'
+			OR type LIKE ? ESCAPE '\')`
+		args = append(args, pat, pat, pat, pat)
 	}
 	if limit <= 0 || limit > 1000 {
 		limit = 100
@@ -1143,8 +1259,7 @@ func (s *Store) ListUpstreams(limit, offset int, q string) ([]*Upstream, int64, 
 		return nil, 0, err
 	}
 
-	qAll := `SELECT id, name, type, host, username, password, remark,
-		health, latency_ms, exit_ip, last_check_at, last_error FROM upstreams` + where +
+	qAll := `SELECT ` + upstreamColumns + ` FROM upstreams` + where +
 		` ORDER BY created_at LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
 	rows, err := s.db.Query(qAll, args...)
@@ -1154,13 +1269,9 @@ func (s *Store) ListUpstreams(limit, offset int, q string) ([]*Upstream, int64, 
 	defer rows.Close()
 	items := make([]*Upstream, 0, limit)
 	for rows.Next() {
-		var u Upstream
-		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.Host, &u.Username, &u.Password, &u.Remark,
-			&u.Health, &u.LatencyMS, &u.ExitIP, &u.LastCheckAt, &u.LastError); err != nil {
-			continue
+		if u, err := scanUpstream(rows); err == nil {
+			items = append(items, &u)
 		}
-		c := resolveUpstream(u)
-		items = append(items, &c)
 	}
 	return items, total, nil
 }
@@ -1312,6 +1423,10 @@ func ParseUpstream(raw string) (typ, host, user, pass string, err error) {
 		typ = UpstreamHTTP
 	case "socks5", "socks5h", "socks":
 		typ = UpstreamSocks5
+	case "ss", "shadowsocks", "vless", "vmess":
+		// Full share-link forms are parsed by the importer and submitted as
+		// fields; ParseUpstream only handles http/socks5 address strings.
+		return "", "", "", "", fmt.Errorf("%s:// 节点请在面板选择对应类型并按字段填写（或使用订阅导入）", scheme)
 	default:
 		return "", "", "", "", fmt.Errorf("不支持的协议 %q（支持 http:// 或 socks5://）", scheme)
 	}

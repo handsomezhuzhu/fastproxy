@@ -16,6 +16,9 @@ data/
 web/node_modules/
 web/scripts/fixture.json
 web/.vite/
+web/test-results/
+web/playwright-report/
+web/blob-report/
 .box-password
 .server-panel-password
 .askpass.cmd

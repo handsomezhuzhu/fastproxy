@@ -30,6 +30,40 @@ jobs:
       - name: Test
         run: go test ./... -count=1 -timeout 300s
 
+  ui-e2e:
+    name: UI e2e (Playwright)
+    needs: test
+    runs-on: instabox-medium
+    env:
+      ADMIN_PASSWORD: e2e-admin-pass
+      ADMIN_ADDR: 127.0.0.1:7788
+      BASE_URL: http://127.0.0.1:7788
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      # Build web -> admin/dist (go:embed), build binary, boot it on a fresh DB,
+      # install chromium, run web/e2e against the real backend. Same script we
+      # run locally via instabox, so CI and local verification cannot drift.
+      - name: Build, boot and run Playwright
+        run: bash scripts/ui-e2e-ci.sh
+
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: |
+            web/test-results
+            web/playwright-report
+          retention-days: 7
+          if-no-files-found: ignore
+
   docker:
     name: Build & push image
     needs: test

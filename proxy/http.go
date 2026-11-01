@@ -104,8 +104,15 @@ func (e *entry) handlePlainHTTP(cc *clientConn, req *http.Request, acc *config.A
 	out.Close = true
 
 	up := e.upstreamFor(acc)
-	if up != nil && up.Type == config.UpstreamSocks5 {
-		return e.plainViaSocks5(cc, out, up, tr)
+	if up != nil && up.Type != config.UpstreamHTTP {
+		tunnel, err := openHTTPTunnel(up, out.Host, e.dialTimeout())
+		if err != nil {
+			e.m.markUpstreamFail(up.ID, err.Error())
+			tr.fail("dial-error", err.Error())
+			writePlainResponse(conn, http.StatusBadGateway)
+			return err
+		}
+		return e.plainViaTunnel(cc, out, tunnel, tr)
 	}
 	tr2 := e.transportFor(up) // nil upstream = direct
 	resp, err := tr2.RoundTrip(out)
@@ -122,27 +129,35 @@ func (e *entry) handlePlainHTTP(cc *clientConn, req *http.Request, acc *config.A
 	return resp.Write(conn)
 }
 
-// plainViaSocks5 sends an origin-form request through a SOCKS5 tunnel to the
-// origin server (SOCKS5 upstreams only support tunnelling).
-func (e *entry) plainViaSocks5(cc *clientConn, out *http.Request, up *config.Upstream, tr *trace) error {
-	conn := cc.Conn
-	addr := out.Host
+// openHTTPTunnel opens a raw TCP tunnel to the origin of a plain HTTP request
+// as required by tunnel-only upstreams (socks5/shadowsocks/vless). A request
+// deadline is preset so reading the response cannot hang forever.
+func openHTTPTunnel(up *config.Upstream, hostHeader string, timeout time.Duration) (net.Conn, error) {
+	addr := hostHeader
 	if _, _, err := net.SplitHostPort(addr); err != nil {
 		addr = net.JoinHostPort(addr, "80")
 	}
-	tunnel, err := dialTarget(up, addr, e.dialTimeout())
+	tunnel, err := dialTarget(up, addr, timeout)
 	if err != nil {
-		if up != nil {
-			e.m.markUpstreamFail(up.ID, err.Error())
-		}
-		tr.fail("dial-error", err.Error())
-		writePlainResponse(conn, http.StatusBadGateway)
-		return err
+		return nil, err
 	}
+	tunnel.SetDeadline(time.Now().Add(timeout))
+	return tunnel, nil
+}
+
+// plainViaTunnel sends an origin-form request through a tunnel to the origin
+// server (tunnel-only upstreams).
+func (e *entry) plainViaTunnel(cc *clientConn, out *http.Request, tunnel net.Conn, tr *trace) error {
+	conn := cc.Conn
 	defer tunnel.Close()
 
+	// origin-form: the origin server must not receive the absolute URL.
+	fwd := *out
+	fwd.RequestURI = ""
+	fwd.URL.Scheme = ""
+	fwd.URL.Host = ""
 	bw := bufio.NewWriter(tunnel)
-	if err := out.Write(bw); err != nil {
+	if err := fwd.Write(bw); err != nil {
 		tr.fail("upstream-error", err.Error())
 		writePlainResponse(conn, http.StatusBadGateway)
 		return err

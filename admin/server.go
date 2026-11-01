@@ -413,22 +413,72 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 // --- upstreams ---
 
+// upstreamInput is the panel payload for create/update. Two shapes are
+// accepted:
+//
+//   - Address form (http/socks5): {name, type?, upstream:"http://user:pass@h:p"}
+//   - Field form (all types):    {name, type, host:"h:p", username, password,
+//     method, uuid, tls, sni}
+//
+// When "upstream" carries an ss:// vmess:// or vless:// share link it is parsed
+// by the importer and the resulting fields win over the explicit ones.
 type upstreamInput struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
 	Upstream string `json:"upstream"`
+	Host     string `json:"host"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Method   string `json:"method"`
+	UUID     string `json:"uuid"`
+	TLS      bool   `json:"tls"`
+	SNI      string `json:"sni"`
 	Remark   string `json:"remark"`
 }
 
 func (in *upstreamInput) toEntity() (*config.Upstream, error) {
-	typ, host, user, pass, err := config.ParseUpstream(in.Upstream)
-	if err != nil {
-		return nil, err
+	u := &config.Upstream{
+		Name: in.Name, Type: in.Type, Host: in.Host,
+		Username: in.Username, Password: in.Password,
+		Method: in.Method, UUID: in.UUID, TLS: in.TLS, SNI: in.SNI,
+		Remark: in.Remark,
 	}
-	return &config.Upstream{
-		Name: in.Name, Type: typ, Host: host,
-		Username: user, Password: pass, Remark: in.Remark,
-	}, nil
+	raw := strings.TrimSpace(in.Upstream)
+	if raw == "" {
+		if strings.TrimSpace(u.Host) == "" {
+			return nil, errors.New("上游地址不能为空")
+		}
+		return u, nil
+	}
+	switch {
+	case strings.HasPrefix(raw, "ss://"), strings.HasPrefix(raw, "shadowsocks://"),
+		strings.HasPrefix(raw, "vmess://"), strings.HasPrefix(raw, "vless://"):
+		// Share link: parse it into fields with the subscription importer.
+		res := importer.Parse(raw)
+		if len(res.Proxies) != 1 {
+			msg := "无法解析节点链接"
+			if len(res.Problems) > 0 {
+				msg = res.Problems[0]
+			}
+			return nil, errors.New(msg)
+		}
+		p := res.Proxies[0]
+		u.Type, u.Host = p.Type, p.Host
+		u.Username, u.Password = p.User, p.Pass
+		u.Method, u.UUID, u.TLS, u.SNI = p.Method, p.UUID, p.TLS, p.SNI
+		if strings.TrimSpace(u.Name) == "" {
+			u.Name = p.Name
+		}
+		return u, nil
+	default:
+		// Address form: http://user:pass@host:port or socks5://host:port.
+		typ, host, user, pass, err := config.ParseUpstream(raw)
+		if err != nil {
+			return nil, err
+		}
+		u.Type, u.Host, u.Username, u.Password = typ, host, user, pass
+		return u, nil
+	}
 }
 
 func (s *Server) handleCreateUpstream(w http.ResponseWriter, r *http.Request) {
@@ -506,13 +556,14 @@ func (s *Server) handleImportUpstreams(w http.ResponseWriter, r *http.Request) {
 		candidates = append(candidates, &config.Upstream{
 			Name: p.Name, Type: p.Type, Host: p.Host,
 			Username: p.User, Password: p.Pass,
+			Method: p.Method, UUID: p.UUID, TLS: p.TLS, SNI: p.SNI,
 		})
 	}
-	added, duplicates := s.store.ImportUpstreams(candidates)
+	added, duplicates, rejected := s.store.ImportUpstreams(candidates)
 	if duplicates == nil {
 		duplicates = []string{}
 	}
-	problems := res.Problems
+	problems := append(append([]string{}, res.Problems...), rejected...)
 	if problems == nil {
 		problems = []string{}
 	}

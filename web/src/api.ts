@@ -6,11 +6,30 @@ export type Upstream = {
   username?: string;
   password?: string;
   remark?: string;
+  method?: string;
+  uuid?: string;
+  tls?: boolean;
+  sni?: string;
   health?: "ok" | "fail" | "unknown";
   latency_ms?: number;
   exit_ip?: string;
   last_check_at?: number;
   last_error?: string;
+};
+
+// UpstreamInput: http/socks5 走 upstream 地址；shadowsocks/vless/vmess 走字段。
+export type UpstreamInput = {
+  name: string;
+  type?: string;
+  upstream?: string;
+  host?: string;
+  username?: string;
+  password?: string;
+  method?: string;
+  uuid?: string;
+  tls?: boolean;
+  sni?: string;
+  remark?: string;
 };
 
 export type ProbeResult = {
@@ -228,9 +247,9 @@ export const api = {
     req<{ saved?: Account; warning?: string }>(`/api/accounts/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
   deleteAccount: (id: string) => req<{ ok: true }>(`/api/accounts/${id}`, { method: "DELETE" }),
 
-  createUpstream: (body: { name: string; upstream: string; remark?: string }) =>
+  createUpstream: (body: UpstreamInput) =>
     req<{ saved?: Upstream; warning?: string }>("/api/upstreams", { method: "POST", body: JSON.stringify(body) }),
-  updateUpstream: (id: string, body: { name: string; upstream: string; remark?: string }) =>
+  updateUpstream: (id: string, body: UpstreamInput) =>
     req<{ saved?: Upstream; warning?: string }>(`/api/upstreams/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteUpstream: (id: string) => req<{ ok: true }>(`/api/upstreams/${id}`, { method: "DELETE" }),
   checkUpstream: (id: string) =>
@@ -248,14 +267,23 @@ export const api = {
     return { ...r, duplicates: r.duplicates ?? [], problems: r.problems ?? [] };
   },
 
-  /** Server-paged upstream list; q fuzzy-matches name/host. Falls back to a single item payload if the backend is older. */
+  /**
+   * Server-paged upstream list; q fuzzy-matches name/host.
+   *
+   * The backend answers `{items, total, limit, offset}` (admin/server.go
+   * handleListUpstreams). This used to read `r.entries`, so the list was always
+   * empty and the page claimed "还没有上游代理". Keep the internal
+   * `{entries, total}` shape for callers, and tolerate older/other payloads.
+   */
   upstreamsList: async (params: { limit?: number; offset?: number; q?: string }) => {
     const q = new URLSearchParams();
     if (params.limit) q.set("limit", String(params.limit));
     if (params.offset) q.set("offset", String(params.offset));
     if (params.q) q.set("q", params.q);
-    const r = await req<{ entries?: Upstream[]; total?: number }>(`/api/upstreams?${q.toString()}`);
-    const entries = r.entries ?? [];
+    const r = await req<{ items?: Upstream[]; entries?: Upstream[]; total?: number }>(
+      `/api/upstreams?${q.toString()}`
+    );
+    const entries = r.items ?? r.entries ?? [];
     return { entries, total: r.total ?? entries.length };
   },
 

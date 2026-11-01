@@ -13,7 +13,13 @@ import {
   Zap,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api, type Data, type ImportResult, type Upstream } from "@/api";
+import {
+  api,
+  type Data,
+  type ImportResult,
+  type Upstream,
+  type UpstreamInput,
+} from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -51,12 +57,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
   DotBadge,
   EmptyState,
   Field,
+  FormSelect,
   PageHeader,
   PaginationControls,
   SelectAllCheckbox,
@@ -96,6 +104,60 @@ function HealthCell({ u }: { u: Upstream }) {
 
 type BulkAction = "delete" | "check";
 
+type UpstreamFormType = "http" | "socks5" | "shadowsocks" | "vless" | "vmess";
+
+const TYPE_OPTIONS = [
+  { value: "http", label: "HTTP" },
+  { value: "socks5", label: "SOCKS5" },
+  { value: "shadowsocks", label: "Shadowsocks" },
+  { value: "vless", label: "VLESS" },
+  { value: "vmess", label: "VMess（暂未支持）" },
+];
+
+const TYPE_LABEL: Record<string, string> = {
+  http: "HTTP",
+  socks5: "SOCKS5",
+  shadowsocks: "SS",
+  vless: "VLESS",
+  vmess: "VMess",
+};
+
+const SS_METHODS = [
+  { value: "aes-256-gcm", label: "aes-256-gcm" },
+  { value: "aes-128-gcm", label: "aes-128-gcm" },
+  { value: "chacha20-ietf-poly1305", label: "chacha20-ietf-poly1305" },
+];
+
+type UpstreamForm = {
+  name: string;
+  type: UpstreamFormType;
+  upstream: string;
+  host: string;
+  username: string;
+  password: string;
+  method: string;
+  uuid: string;
+  tls: boolean;
+  sni: string;
+  remark: string;
+};
+
+const EMPTY_FORM: UpstreamForm = {
+  name: "",
+  type: "http",
+  upstream: "",
+  host: "",
+  username: "",
+  password: "",
+  method: "aes-256-gcm",
+  uuid: "",
+  tls: true,
+  sni: "",
+  remark: "",
+};
+
+const isTunnelForm = (t: UpstreamFormType) => t === "shadowsocks" || t === "vless" || t === "vmess";
+
 export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Promise<void> }) {
   // Server-side pagination state
   const [list, setList] = React.useState<Upstream[] | null>(null);
@@ -108,7 +170,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
 
   const [open, setOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<Upstream | null>(null);
-  const [form, setForm] = React.useState({ name: "", upstream: "", remark: "" });
+  const [form, setForm] = React.useState<UpstreamForm>(EMPTY_FORM);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [deleting, setDeleting] = React.useState<Upstream | null>(null);
@@ -144,10 +206,10 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
           offset: (page - 1) * pageSize,
           q: q || undefined,
         });
-        setList(r.entries);
-        setTotal(r.total);
+        setList(r.entries ?? []);
+        setTotal(r.total ?? r.entries?.length ?? 0);
       } catch (err: any) {
-        // 后端分页接口未上线时不要整页崩溃
+        // 后端分页接口未上线/网络错误时不要整页崩溃，也保留已有列表（不清空）
         setList((prev) => prev ?? []);
         toast.error(err?.message || "加载上游列表失败");
       } finally {
@@ -168,16 +230,31 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
 
   function openCreate() {
     setEditing(null);
-    setForm({ name: "", upstream: "", remark: "" });
+    setForm(EMPTY_FORM);
     setError("");
     setOpen(true);
   }
   function openEdit(u: Upstream) {
     setEditing(u);
+    const type = (["http", "socks5", "shadowsocks", "vless", "vmess"] as const).includes(
+      u.type as UpstreamFormType
+    )
+      ? (u.type as UpstreamFormType)
+      : "http";
     const creds = u.username || u.password ? `${u.username}:${u.password}@` : "";
     setForm({
+      ...EMPTY_FORM,
       name: u.name,
-      upstream: `${u.type === "socks5" ? "socks5" : "http"}://${creds}${u.host}`,
+      type,
+      upstream:
+        type === "http" || type === "socks5" ? `${type}://${creds}${u.host}` : "",
+      host: u.host || "",
+      username: u.username || "",
+      password: u.password || "",
+      method: u.method || "aes-256-gcm",
+      uuid: u.uuid || "",
+      tls: Boolean(u.tls),
+      sni: u.sni || "",
       remark: u.remark || "",
     });
     setError("");
@@ -188,9 +265,26 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     e.preventDefault();
     setBusy(true);
     setError("");
+    const body: UpstreamInput = {
+      name: form.name.trim(),
+      type: form.type,
+      remark: form.remark.trim(),
+    };
+    if (form.type === "http" || form.type === "socks5") {
+      body.upstream = form.upstream.trim();
+    } else if (form.type === "shadowsocks") {
+      body.host = form.host.trim();
+      body.method = form.method;
+      body.password = form.password;
+    } else {
+      body.host = form.host.trim();
+      body.uuid = form.uuid.trim();
+      body.tls = form.tls;
+      body.sni = form.tls ? form.sni.trim() : "";
+    }
     try {
-      if (editing) await api.updateUpstream(editing.id, form);
-      else await api.createUpstream(form);
+      if (editing) await api.updateUpstream(editing.id, body);
+      else await api.createUpstream(body);
       toast.success("上游已保存");
       setOpen(false);
       await refreshAll();
@@ -313,7 +407,10 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
   if (list === null) {
     return (
       <div className="space-y-5">
-        <PageHeader title="上游代理" description="支持 http / socks5；健康检查由定时探测维护。" />
+        <PageHeader
+          title="上游代理"
+          description="支持 HTTP / SOCKS5 / Shadowsocks / VLESS；VMess 仅保存配置，隧道暂未支持。"
+        />
         <div className="flex items-center justify-between gap-3">
           <Skeleton className="h-5 w-32" />
           <div className="flex gap-2">
@@ -337,7 +434,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     <div className="space-y-5">
       <PageHeader
         title="上游代理"
-        description="支持 http / socks5；健康检查由定时探测维护。"
+        description="支持 HTTP / SOCKS5 / Shadowsocks / VLESS；VMess 仅保存配置，隧道暂未支持。"
       />
 
       {showEmpty ? (
@@ -346,9 +443,14 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
           title="还没有上游代理"
           description="可粘贴节点文本或订阅链接批量导入，也支持手动添加。"
           action={
-            <Button variant="outline" onClick={() => setImportOpen(true)}>
-              <Import className="size-4" aria-hidden="true" /> 批量导入
-            </Button>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <Button variant="outline" onClick={() => setImportOpen(true)}>
+                <Import className="size-4" aria-hidden="true" /> 批量导入
+              </Button>
+              <Button onClick={openCreate}>
+                <Plus className="size-4" aria-hidden="true" /> 添加上游
+              </Button>
+            </div>
           }
         />
       ) : (
@@ -469,11 +571,25 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                           ) : null}
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline">{u.type}</Badge>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <Badge variant="outline">{TYPE_LABEL[u.type] ?? u.type}</Badge>
+                            {u.type === "vmess" ? (
+                              <span className="text-xs text-muted-foreground">暂未支持</span>
+                            ) : null}
+                          </div>
                         </TableCell>
                         <TableCell>
                           <div className="font-mono text-xs">{u.host}</div>
-                          {u.username ? (
+                          {u.type === "shadowsocks" ? (
+                            <div className="max-w-[180px] truncate font-mono text-xs text-muted-foreground">
+                              {u.method || "加密方式未设置"}
+                            </div>
+                          ) : u.type === "vless" || u.type === "vmess" ? (
+                            <div className="max-w-[180px] truncate font-mono text-xs text-muted-foreground">
+                              {u.uuid ? `UUID ${u.uuid.slice(0, 8)}…` : "UUID 未设置"}
+                              {u.tls ? " · TLS" : ""}
+                            </div>
+                          ) : u.username ? (
                             <div className="max-w-[180px] truncate font-mono text-xs text-muted-foreground">
                               账号 {u.username}
                             </div>
@@ -537,34 +653,137 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       )}
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{editing ? `编辑上游 ${editing.name}` : "添加上游代理"}</DialogTitle>
-            <DialogDescription>自动识别 http / socks5 协议与账号密码。</DialogDescription>
+            <DialogDescription>
+              支持 HTTP / SOCKS5 / Shadowsocks / VLESS 与 VMess 配置保存。
+            </DialogDescription>
           </DialogHeader>
           <form onSubmit={save} className="space-y-4">
-            <Field label="名称" htmlFor="up-name">
-              <Input
-                id="up-name"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder="美国-家宽-1"
-              />
-            </Field>
-            <Field
-              label="地址"
-              htmlFor="up-address"
-              hint="支持 ${VAR} 或 ${VAR:-默认值} 环境变量引用，密码不落盘。"
-            >
-              <Input
-                id="up-address"
-                className="font-mono"
-                value={form.upstream}
-                onChange={(e) => setForm({ ...form, upstream: e.target.value })}
-                placeholder="http://user:pass@1.2.3.4:8080 或 socks5://1.2.3.4:1080"
-                spellCheck={false}
-              />
-            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="名称" htmlFor="up-name">
+                <Input
+                  id="up-name"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="美国-家宽-1"
+                />
+              </Field>
+              <Field label="协议" htmlFor="up-type">
+                <FormSelect
+                  id="up-type"
+                  value={form.type}
+                  onValueChange={(v) => setForm({ ...form, type: v as UpstreamFormType })}
+                  items={TYPE_OPTIONS}
+                />
+              </Field>
+            </div>
+
+            {form.type === "http" || form.type === "socks5" ? (
+              <>
+                <Field
+                  label="地址"
+                  htmlFor="up-address"
+                  hint="支持 ${VAR} 或 ${VAR:-默认值} 环境变量引用，密码不落盘。"
+                >
+                  <Input
+                    id="up-address"
+                    className="font-mono"
+                    value={form.upstream}
+                    onChange={(e) => setForm({ ...form, upstream: e.target.value })}
+                    placeholder={`${form.type}://user:pass@1.2.3.4:${form.type === "http" ? "8080" : "1080"}`}
+                    spellCheck={false}
+                  />
+                </Field>
+                <p className="text-xs text-muted-foreground">
+                  也可以直接粘贴 `ss://`、`vless://`、`vmess://` 分享链接，保存时自动识别协议并解析字段。
+                </p>
+              </>
+            ) : null}
+
+            {isTunnelForm(form.type) ? (
+              <Field label="服务器地址" htmlFor="up-host" hint="host:port，例如 1.2.3.4:8388。">
+                <Input
+                  id="up-host"
+                  className="font-mono"
+                  value={form.host}
+                  onChange={(e) => setForm({ ...form, host: e.target.value })}
+                  placeholder="1.2.3.4:8388"
+                  spellCheck={false}
+                />
+              </Field>
+            ) : null}
+
+            {form.type === "shadowsocks" ? (
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="加密方式" htmlFor="up-method">
+                  <FormSelect
+                    id="up-method"
+                    value={form.method}
+                    onValueChange={(v) => setForm({ ...form, method: v })}
+                    items={SS_METHODS}
+                  />
+                </Field>
+                <Field label="密码" htmlFor="up-ss-password">
+                  <Input
+                    id="up-ss-password"
+                    type="password"
+                    value={form.password}
+                    onChange={(e) => setForm({ ...form, password: e.target.value })}
+                    autoComplete="new-password"
+                  />
+                </Field>
+              </div>
+            ) : null}
+
+            {form.type === "vless" || form.type === "vmess" ? (
+              <>
+                <Field label="UUID" htmlFor="up-uuid">
+                  <Input
+                    id="up-uuid"
+                    className="font-mono"
+                    value={form.uuid}
+                    onChange={(e) => setForm({ ...form, uuid: e.target.value })}
+                    placeholder="b831381d-6324-4d53-ad4f-8cda48b30811"
+                    spellCheck={false}
+                  />
+                </Field>
+                <div className="flex items-center justify-between rounded-lg border px-3 py-2">
+                  <div>
+                    <div className="text-sm font-medium">启用 TLS</div>
+                    <p className="text-xs text-muted-foreground">
+                      {form.type === "vless"
+                        ? "严格校验服务端证书，SNI 留空时使用服务器主机名。"
+                        : "VMess 暂未支持隧道，仅保存配置。"}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={form.tls}
+                    onCheckedChange={(v) => setForm({ ...form, tls: Boolean(v) })}
+                    aria-label="启用 TLS"
+                  />
+                </div>
+                {form.tls ? (
+                  <Field label="SNI" htmlFor="up-sni" hint="留空则使用服务器主机名；IP 地址不会发送 SNI。">
+                    <Input
+                      id="up-sni"
+                      className="font-mono"
+                      value={form.sni}
+                      onChange={(e) => setForm({ ...form, sni: e.target.value })}
+                      placeholder="cdn.example.com"
+                      spellCheck={false}
+                    />
+                  </Field>
+                ) : null}
+                {form.type === "vmess" ? (
+                  <p className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                    VMess 出站隧道尚未实现：配置可以保存和导入，但健康探测会显示「vmess 暂未支持」。
+                  </p>
+                ) : null}
+              </>
+            ) : null}
+
             <Field label="备注" htmlFor="up-remark">
               <Input
                 id="up-remark"

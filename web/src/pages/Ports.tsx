@@ -108,13 +108,13 @@ export function PortsPage({
         else toast.success("端口线路已保存");
       } else {
         const res = await api.createPort({ port: Number(form.port), remark: form.remark });
-        const acc = res.saved?.default_account;
         // saved.port 可能是完整 Port 对象（React error #31 修复：不得直接渲染对象）
         const savedPort = res.saved?.port;
         const portNum =
           savedPort && typeof savedPort === "object"
             ? savedPort.port
             : Number(savedPort ?? form.port);
+        const acc = res.saved?.default_account;
         if (acc) {
           // 不改变页面状态：保存成功后弹出默认账号提示。
           setCreated({ port: portNum, account: acc });

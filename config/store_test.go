@@ -1,6 +1,7 @@
 package config
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -245,6 +246,161 @@ func TestAccountValidationAndUniqueness(t *testing.T) {
 	}
 }
 
+// TestUpstreamProtocolFieldsPersist covers the protocol columns added for
+// shadowsocks / vless / vmess and their per-type validation.
+func TestUpstreamProtocolFieldsPersist(t *testing.T) {
+	s := tempStore(t, 7788)
+
+	ss, err := s.UpsertUpstream("", &Upstream{
+		Name: "ss-1", Type: UpstreamShadowsocks, Host: "1.1.1.1:8388",
+		Method: "AES-256-GCM", Password: "ss-pass",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ss.Method != "aes-256-gcm" || ss.Password != "ss-pass" || ss.Type != UpstreamShadowsocks {
+		t.Fatalf("ss fields mismatch: %+v", ss)
+	}
+
+	vl, err := s.UpsertUpstream("", &Upstream{
+		Name: "vless-1", Type: UpstreamVless, Host: "2.2.2.2:443",
+		UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", TLS: true, SNI: "cdn.example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !vl.TLS || vl.SNI != "cdn.example.com" || vl.UUID == "" {
+		t.Fatalf("vless fields mismatch: %+v", vl)
+	}
+
+	vm, err := s.UpsertUpstream("", &Upstream{
+		Name: "vmess-1", Type: UpstreamVmess, Host: "3.3.3.3:80",
+		UUID: "b831381d63244d53ad4f8cda48b30811",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vm.TLS || vm.UUID == "" {
+		t.Fatalf("vmess fields mismatch: %+v", vm)
+	}
+
+	// Read back through the list + paged paths (both share scanUpstream).
+	items, total, err := s.ListUpstreams(50, 0, "")
+	if err != nil || total != 3 || len(items) != 3 {
+		t.Fatalf("list: total=%d n=%d err=%v", total, len(items), err)
+	}
+	var found *Upstream
+	for _, u := range s.Upstreams() {
+		if u.ID == vl.ID {
+			found = u
+		}
+	}
+	if found == nil || !found.TLS || found.SNI != "cdn.example.com" {
+		t.Fatalf("vless not persisted: %+v", found)
+	}
+
+	// Validation failures.
+	bad := []struct {
+		name string
+		in   *Upstream
+		want string
+	}{
+		{"ss no method", &Upstream{Name: "x", Type: UpstreamShadowsocks, Host: "h:1", Password: "p"}, "加密方式"},
+		{"ss bad method", &Upstream{Name: "x", Type: UpstreamShadowsocks, Host: "h:1", Method: "rc4-md5", Password: "p"}, "不支持"},
+		{"ss no password", &Upstream{Name: "x", Type: UpstreamShadowsocks, Host: "h:1", Method: "aes-128-gcm"}, "密码"},
+		{"vless no uuid", &Upstream{Name: "x", Type: UpstreamVless, Host: "h:1"}, "UUID"},
+		{"vmess bad uuid", &Upstream{Name: "x", Type: UpstreamVmess, Host: "h:1", UUID: "abc"}, "UUID"},
+		{"bad type", &Upstream{Name: "x", Type: "trojan", Host: "h:1"}, "仅支持"},
+	}
+	for _, c := range bad {
+		if _, err := s.UpsertUpstream("", c.in); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: expected error containing %q, got %v", c.name, c.want, err)
+		}
+	}
+
+	// TLS only survives for vless/vmess.
+	plain, err := s.UpsertUpstream("", &Upstream{Name: "h", Type: UpstreamHTTP, Host: "h:80", TLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.TLS {
+		t.Fatal("TLS flag should be dropped for http upstreams")
+	}
+}
+
+// TestUpstreamImportDedupIncludesProtocolOnly covers the extended dedup key:
+// same host/port with a different cipher or uuid is a distinct upstream.
+func TestUpstreamImportDedupIncludesProtocolOnly(t *testing.T) {
+	s := tempStore(t, 7788)
+	cands := []*Upstream{
+		{Name: "a", Type: UpstreamShadowsocks, Host: "1.1.1.1:8388", Method: "aes-256-gcm", Password: "p"},
+		{Name: "b", Type: UpstreamShadowsocks, Host: "1.1.1.1:8388", Method: "aes-128-gcm", Password: "p"},
+		{Name: "a-dup", Type: UpstreamShadowsocks, Host: "1.1.1.1:8388", Method: "aes-256-gcm", Password: "p"},
+		{Name: "bad", Type: UpstreamShadowsocks, Host: "1.1.1.1:8388", Method: "rc4-md5", Password: "p"},
+	}
+	added, dups, problems := s.ImportUpstreams(cands)
+	if added != 2 || len(dups) != 1 || len(problems) != 1 {
+		t.Fatalf("added=%d dups=%v problems=%v", added, dups, problems)
+	}
+	if !strings.Contains(problems[0], "rc4-md5") {
+		t.Fatalf("unexpected problem: %v", problems)
+	}
+	// Second run adds nothing (db-side dedup key matches).
+	if added, _, _ := s.ImportUpstreams(cands[:2]); added != 0 {
+		t.Fatalf("re-import should be idempotent, added=%d", added)
+	}
+}
+
+// TestMigrationAddsProtocolColumns simulates a pre-upgrade database (no
+// method/uuid/tls/sni columns) and verifies the ALTER migration runs on open.
+func TestMigrationAddsProtocolColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	old, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmts := []string{
+		`CREATE TABLE upstreams (
+			id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL,
+			host TEXT NOT NULL, username TEXT NOT NULL DEFAULT '',
+			password TEXT NOT NULL DEFAULT '', remark TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+		`INSERT INTO upstreams (id, name, type, host, username, password, remark, created_at, updated_at)
+		 VALUES ('old1', 'legacy', 'http', '1.2.3.4:8080', 'u', 'p', '', 1, 1)`,
+	}
+	for _, q := range stmts {
+		if _, err := old.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old.Close()
+
+	for round := 1; round <= 2; round++ {
+		s, err := Open(path, 7788)
+		if err != nil {
+			t.Fatalf("open round %d: %v", round, err)
+		}
+		for _, col := range []string{"method", "uuid", "tls", "sni"} {
+			ok, err := s.columnExists("upstreams", col)
+			if err != nil || !ok {
+				t.Fatalf("round %d: column %s missing (err=%v)", round, col, err)
+			}
+		}
+		ups := s.Upstreams()
+		if len(ups) != 1 || ups[0].Name != "legacy" || ups[0].Method != "" || ups[0].TLS {
+			t.Fatalf("round %d: legacy row mismatch: %+v", round, ups)
+		}
+		// New protocol rows work after the migration.
+		if round == 2 {
+			if _, err := s.UpsertUpstream("", &Upstream{Name: "ss", Type: UpstreamShadowsocks,
+				Host: "5.5.5.5:8388", Method: "chacha20-ietf-poly1305", Password: "pw"}); err != nil {
+				t.Fatalf("insert after migration: %v", err)
+			}
+		}
+		s.Close()
+	}
+}
+
 func TestSecretEnvInterpolation(t *testing.T) {
 	t.Setenv("FP_TEST_UP_PASS", "s3cret")
 	s := tempStore(t, 7788)
@@ -314,6 +470,8 @@ func TestParseUpstream(t *testing.T) {
 		{"http://u@1.2.3.4:8080", "http", "1.2.3.4:8080", "u", "", false},
 		{"socks5://${VAR}:${PW}@host:1080", "socks5", "host:1080", "${VAR}", "${PW}", false},
 		{"ftp://1.2.3.4:21", "", "", "", "", true},
+		{"ss://YWVzLTI1Ni1nY206cGFzcw@1.2.3.4:8388", "", "", "", "", true},
+		{"vless://uuid@1.2.3.4:443", "", "", "", "", true},
 		{"http://1.2.3.4", "", "", "", "", true},
 		{"", "", "", "", "", true},
 	}

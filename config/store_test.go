@@ -14,9 +14,12 @@ import (
 	"github.com/handsomezhuzhu/fastproxy/logx"
 )
 
+// tempStore opens a fresh store whose PORT_RANGE covers the test ports
+// (10201-10203) but excludes the default window's typical ports.
 func tempStore(t *testing.T, adminPort int) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "fastproxy.db"), adminPort)
+	s, err := OpenWithPortRange(filepath.Join(t.TempDir(), "fastproxy.db"), adminPort,
+		PortRange{Min: 10200, Max: 10299})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,12 +268,12 @@ func TestUpstreamProtocolFieldsPersist(t *testing.T) {
 
 	vl, err := s.UpsertUpstream("", &Upstream{
 		Name: "vless-1", Type: UpstreamVless, Host: "2.2.2.2:443",
-		UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", TLS: true, SNI: "cdn.example.com",
+		UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Security: SecurityTLS, SNI: "cdn.example.com",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !vl.TLS || vl.SNI != "cdn.example.com" || vl.UUID == "" {
+	if vl.Security != SecurityTLS || vl.SNI != "cdn.example.com" || vl.UUID == "" {
 		t.Fatalf("vless fields mismatch: %+v", vl)
 	}
 
@@ -281,7 +284,7 @@ func TestUpstreamProtocolFieldsPersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if vm.TLS || vm.UUID == "" {
+	if vm.Security != SecurityNone || vm.UUID == "" {
 		t.Fatalf("vmess fields mismatch: %+v", vm)
 	}
 
@@ -296,7 +299,7 @@ func TestUpstreamProtocolFieldsPersist(t *testing.T) {
 			found = u
 		}
 	}
-	if found == nil || !found.TLS || found.SNI != "cdn.example.com" {
+	if found == nil || found.Security != SecurityTLS || found.SNI != "cdn.example.com" {
 		t.Fatalf("vless not persisted: %+v", found)
 	}
 
@@ -319,13 +322,17 @@ func TestUpstreamProtocolFieldsPersist(t *testing.T) {
 		}
 	}
 
-	// TLS only survives for vless/vmess.
-	plain, err := s.UpsertUpstream("", &Upstream{Name: "h", Type: UpstreamHTTP, Host: "h:80", TLS: true})
+	plain, err := s.UpsertUpstream("", &Upstream{Name: "h", Type: UpstreamHTTP, Host: "h:80"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plain.TLS {
-		t.Fatal("TLS flag should be dropped for http upstreams")
+	// TLS is expressed only through security: no legacy flag is exposed.
+	raw, err := json.Marshal(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"tls"`) {
+		t.Fatalf("upstream JSON must not carry a tls field: %s", raw)
 	}
 }
 
@@ -373,19 +380,16 @@ func TestUpstreamRealityFieldsPersist(t *testing.T) {
 		vl.Path != "/ws" || vl.HostHeader != "cdn.example.com" {
 		t.Fatalf("reality fields not normalised: %+v", vl)
 	}
-	if !vl.TLS {
-		t.Fatal("reality must imply the TLS flag")
-	}
 
 	vm, err := s.UpsertUpstream("", &Upstream{
 		Name: "vmess-grpc", Type: UpstreamVmess, Host: "3.3.3.3:443",
 		UUID: "b831381d-6324-4d53-ad4f-8cda48b30811",
-		Transport: "grpc", ServiceName: "svc", TLS: true,
+		Transport: "grpc", ServiceName: "svc", Security: SecurityTLS,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if vm.VMessSecurity != "auto" || vm.Transport != "grpc" || vm.ServiceName != "svc" || !vm.TLS {
+	if vm.VMessSecurity != "auto" || vm.Transport != "grpc" || vm.ServiceName != "svc" || vm.Security != SecurityTLS {
 		t.Fatalf("vmess fields not normalised: %+v", vm)
 	}
 
@@ -440,7 +444,7 @@ func TestUpstreamRealityFieldsPersist(t *testing.T) {
 		{"bad transport", &Upstream{Name: "x", Type: UpstreamVmess, Host: "h:1",
 			UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Transport: "quic"}, "tcp/ws/grpc"},
 		{"bad flow", &Upstream{Name: "x", Type: UpstreamVless, Host: "h:1",
-			UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", TLS: true, Flow: "xtls-rprx-direct"}, "flow"},
+			UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Security: SecurityTLS, Flow: "xtls-rprx-direct"}, "flow"},
 		{"flow without tls", &Upstream{Name: "x", Type: UpstreamVless, Host: "h:1",
 			UUID: "b831381d-6324-4d53-ad4f-8cda48b30811", Flow: UpstreamFlowVision}, "TLS"},
 		{"bad security", &Upstream{Name: "x", Type: UpstreamVless, Host: "h:1",
@@ -472,10 +476,10 @@ func TestUpstreamImportDedupIncludesTransport(t *testing.T) {
 	s := tempStore(t, 7788)
 	uuid := "b831381d-6324-4d53-ad4f-8cda48b30811"
 	cands := []*Upstream{
-		{Name: "a", Type: UpstreamVless, Host: "1.1.1.1:443", UUID: uuid, TLS: true, Transport: "ws", Path: "/a"},
-		{Name: "b", Type: UpstreamVless, Host: "1.1.1.1:443", UUID: uuid, TLS: true, Transport: "ws", Path: "/b"},
-		{Name: "c", Type: UpstreamVless, Host: "1.1.1.1:443", UUID: uuid, TLS: true, Transport: "grpc", ServiceName: "x"},
-		{Name: "a-dup", Type: UpstreamVless, Host: "1.1.1.1:443", UUID: uuid, TLS: true, Transport: "ws", Path: "/a"},
+		{Name: "a", Type: UpstreamVless, Host: "1.1.1.1:443", UUID: uuid, Security: SecurityTLS, Transport: "ws", Path: "/a"},
+		{Name: "b", Type: UpstreamVless, Host: "1.1.1.1:443", UUID: uuid, Security: SecurityTLS, Transport: "ws", Path: "/b"},
+		{Name: "c", Type: UpstreamVless, Host: "1.1.1.1:443", UUID: uuid, Security: SecurityTLS, Transport: "grpc", ServiceName: "x"},
+		{Name: "a-dup", Type: UpstreamVless, Host: "1.1.1.1:443", UUID: uuid, Security: SecurityTLS, Transport: "ws", Path: "/a"},
 	}
 	added, dups, problems := s.ImportUpstreams(cands)
 	if added != 3 || len(dups) != 1 || len(problems) != 0 {
@@ -492,7 +496,8 @@ func TestUpstreamImportDedupIncludesTransport(t *testing.T) {
 }
 
 // TestMigrationAddsProtocolColumns simulates a pre-upgrade database (no
-// method/uuid/tls/sni columns) and verifies the ALTER migration runs on open.
+// method/uuid/tls/sni columns) and verifies it is brought to the baseline and
+// then to the latest version, repeatedly and idempotently, keeping data.
 func TestMigrationAddsProtocolColumns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	old, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
@@ -506,7 +511,14 @@ func TestMigrationAddsProtocolColumns(t *testing.T) {
 			password TEXT NOT NULL DEFAULT '', remark TEXT NOT NULL DEFAULT '',
 			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
 		`INSERT INTO upstreams (id, name, type, host, username, password, remark, created_at, updated_at)
-		 VALUES ('old1', 'legacy', 'http', '1.2.3.4:8080', 'u', 'p', '', 1, 1)`,
+		 VALUES ('old1', 'legacy', 'http', '1.2.3.4:8080', 'u', 'plain-up', '', 1, 1)`,
+		`CREATE TABLE accounts (
+			id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password TEXT NOT NULL,
+			port_id TEXT NOT NULL DEFAULT '', upstream_id TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+		`INSERT INTO accounts (id, username, password, port_id, upstream_id, enabled, remark, created_at, updated_at)
+		 VALUES ('acc1', 'alice', 'plain-acct', 'p1', '', 1, '', 1, 1)`,
 	}
 	for _, q := range stmts {
 		if _, err := old.Exec(q); err != nil {
@@ -515,22 +527,52 @@ func TestMigrationAddsProtocolColumns(t *testing.T) {
 	}
 	old.Close()
 
-	for round := 1; round <= 2; round++ {
+	for round := 1; round <= 3; round++ {
 		s, err := Open(path, 7788)
 		if err != nil {
 			t.Fatalf("open round %d: %v", round, err)
 		}
+		if v := s.SchemaVersion(); v != latestVersion() {
+			t.Fatalf("round %d: schema version %d, want %d", round, v, latestVersion())
+		}
 		for _, col := range []string{"method", "uuid", "tls", "sni",
 			"security", "pbk", "sid", "flow", "fingerprint", "transport", "path",
 			"host_header", "service_name", "vmess_security"} {
-			ok, err := s.columnExists("upstreams", col)
-			if err != nil || !ok {
-				t.Fatalf("round %d: column %s missing (err=%v)", round, col, err)
+			present := false
+			for _, name := range upstreamColumnsOf(t, s) {
+				if name == col {
+					present = true
+				}
+			}
+			if !present {
+				t.Fatalf("round %d: column %s missing", round, col)
 			}
 		}
 		ups := s.Upstreams()
-		if len(ups) != 1 || ups[0].Name != "legacy" || ups[0].Method != "" || ups[0].TLS {
+		wantUpstreams := 1
+		if round > 2 {
+			// Round 2 inserted one protocol upstream, which must persist.
+			wantUpstreams = 2
+		}
+		if len(ups) != wantUpstreams || ups[0].Name != "legacy" || ups[0].Method != "" || ups[0].Security != SecurityNone {
 			t.Fatalf("round %d: legacy row mismatch: %+v", round, ups)
+		}
+		if ups[0].Password != "plain-up" {
+			t.Fatalf("round %d: legacy upstream password lost: %q", round, ups[0].Password)
+		}
+		accs := s.Accounts()
+		if len(accs) != 1 || accs[0].Username != "alice" || accs[0].Password != "plain-acct" {
+			t.Fatalf("round %d: legacy account mismatch: %+v", round, accs)
+		}
+		// Stored values are sealed, data rows are never duplicated.
+		if raw := rawUpstreamPassword(t, s, "old1"); !IsSealed(raw) {
+			t.Fatalf("round %d: upstream password not encrypted: %q", round, raw)
+		}
+		if raw := rawAccountPassword(t, s, "acc1"); !IsSealed(raw) {
+			t.Fatalf("round %d: account password not encrypted: %q", round, raw)
+		}
+		if n := countMigrations(t, s); n != latestVersion() {
+			t.Fatalf("round %d: %d migration rows, want %d", round, n, latestVersion())
 		}
 		// New protocol rows work after the migration.
 		if round == 2 {

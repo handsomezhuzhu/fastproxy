@@ -1,6 +1,6 @@
 # FastProxy 构建与操作流程
 # 常用: make web build test e2e docker
-.PHONY: help web build test vet e2e docker fmt clean
+.PHONY: help web build build-utls test vet e2e docker fmt clean
 
 help:
 	@echo "make web     构建前端 (web/ -> admin/dist)"
@@ -15,11 +15,13 @@ web:
 	cd web && npm ci --no-audit --no-fund && npm run build
 
 build:
+	@test -f admin/dist/index.html || $(MAKE) web
 	go build -trimpath -ldflags "-s -w" -o fastproxy .
 
 # REQUIRED for the production binary: embedded sing-box only compiles REALITY
 # (and any uTLS fingerprinting) in with the with_utls build tag.
 build-utls:
+	@test -f admin/dist/index.html || $(MAKE) web
 	go build -tags with_utls -trimpath -ldflags "-s -w" -o fastproxy .
 
 test:
@@ -42,4 +44,4 @@ fmt:
 
 clean:
 	rm -f fastproxy fastproxy-e2e-linux devserver-bin
-	rm -rf admin/dist web/dist dist
+	rm -rf admin/dist/assets admin/dist/index.html web/dist dist

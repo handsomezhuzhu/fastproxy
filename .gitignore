@@ -9,7 +9,10 @@ e2e-local.json
 .env
 data/
 /dist/
-!admin/dist/
+deploy/
+# Build artifacts are not committed; only the embed placeholder stays.
+admin/dist/*
+!admin/dist/.gitkeep
 *.log
 *.exe
 .DS_Store

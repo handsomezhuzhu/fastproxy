@@ -83,7 +83,7 @@ func execAll(t *testing.T, db *sql.DB, stmts ...string) {
 // user_version and the migration bookkeeping of a brand-new database.
 func TestFreshDatabaseIsAtLatestVersion(t *testing.T) {
 	s := tempStore(t, 7788)
-	if v := s.SchemaVersion(); v != latestVersion() || v != 3 {
+	if v := s.SchemaVersion(); v != latestVersion() {
 		t.Fatalf("schema version %d, want %d", v, latestVersion())
 	}
 	if v := userVersion(t, s); v != latestVersion() {
@@ -103,7 +103,7 @@ func TestFreshDatabaseIsAtLatestVersion(t *testing.T) {
 		rows.Scan(&n)
 		names = append(names, n)
 	}
-	if len(names) != 3 || !strings.Contains(names[0], "baseline") {
+	if len(names) != len(migrations) || !strings.Contains(names[0], "baseline") {
 		t.Fatalf("unexpected migration names: %v", names)
 	}
 }

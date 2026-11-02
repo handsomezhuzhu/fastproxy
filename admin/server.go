@@ -28,6 +28,7 @@ import (
 	"github.com/handsomezhuzhu/fastproxy/logx"
 	"github.com/handsomezhuzhu/fastproxy/probe"
 	"github.com/handsomezhuzhu/fastproxy/proxy"
+	"github.com/handsomezhuzhu/fastproxy/subscription"
 )
 
 const (
@@ -49,6 +50,9 @@ type Server struct {
 
 	singMu  sync.Mutex
 	singbox SingBoxReloader
+
+	subsMu sync.Mutex
+	subs   *subscription.Manager
 
 	// proxyMu guards the trusted reverse-proxy list installed by main.
 	proxyMu sync.RWMutex
@@ -84,6 +88,19 @@ func (s *Server) singboxReloader() SingBoxReloader {
 	s.singMu.Lock()
 	defer s.singMu.Unlock()
 	return s.singbox
+}
+
+// SetSubscriptions installs the subscription refresher used by the API.
+func (s *Server) SetSubscriptions(m *subscription.Manager) {
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	s.subs = m
+}
+
+func (s *Server) subscriptionManager() *subscription.Manager {
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	return s.subs
 }
 
 // singboxError returns the embedded box's last startup/reload error (nil when
@@ -165,6 +182,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/upstreams/check", s.auth(s.handleCheckUpstreams))
 	mux.HandleFunc("PUT /api/upstreams/{id}", s.auth(s.handleUpdateUpstream))
 	mux.HandleFunc("DELETE /api/upstreams/{id}", s.auth(s.handleDeleteUpstream))
+
+	mux.HandleFunc("GET /api/subscriptions", s.auth(s.handleListSubscriptions))
+	mux.HandleFunc("POST /api/subscriptions", s.auth(s.handleCreateSubscription))
+	mux.HandleFunc("PUT /api/subscriptions/{id}", s.auth(s.handleUpdateSubscription))
+	mux.HandleFunc("DELETE /api/subscriptions/{id}", s.auth(s.handleDeleteSubscription))
+	mux.HandleFunc("POST /api/subscriptions/{id}/refresh", s.auth(s.handleRefreshSubscription))
 
 	mux.HandleFunc("POST /api/ports", s.auth(s.handleCreatePort))
 	mux.HandleFunc("POST /api/ports/bulk", s.auth(s.handleBulkPorts))
@@ -1139,4 +1162,105 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]any{"error": msg})
+}
+
+// --- subscriptions ---
+
+type subscriptionInput struct {
+	Name        string `json:"name"`
+	URL         string `json:"url"`
+	Enabled     *bool  `json:"enabled"`
+	IntervalSec int    `json:"interval_sec"`
+}
+
+func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListSubscriptions()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if items == nil {
+		items = []config.SubscriptionInfo{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+}
+
+func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request) {
+	var in subscriptionInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	enabled := true
+	if in.Enabled != nil {
+		enabled = *in.Enabled
+	}
+	saved, err := s.store.UpsertSubscription("", &config.Subscription{
+		Name: in.Name, URL: in.URL, Enabled: enabled, IntervalSec: in.IntervalSec,
+	})
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if mgr := s.subscriptionManager(); mgr != nil && saved.Enabled {
+		go mgr.Refresh(context.Background(), saved.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"saved": saved})
+}
+
+func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request) {
+	var in subscriptionInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	enabled := true
+	if in.Enabled != nil {
+		enabled = *in.Enabled
+	}
+	saved, err := s.store.UpsertSubscription(r.PathValue("id"), &config.Subscription{
+		Name: in.Name, URL: in.URL, Enabled: enabled, IntervalSec: in.IntervalSec,
+	})
+	if err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, config.ErrNotFound) {
+			code = http.StatusNotFound
+		}
+		writeErr(w, code, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"saved": saved})
+}
+
+func (s *Server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request) {
+	deleteNodes := true
+	if v := strings.TrimSpace(r.URL.Query().Get("delete_nodes")); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			deleteNodes = b
+		}
+	}
+	if err := s.store.DeleteSubscription(r.PathValue("id"), deleteNodes); err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, config.ErrNotFound) {
+			code = http.StatusNotFound
+		}
+		writeErr(w, code, err.Error())
+		return
+	}
+	_ = s.reloadSingBox()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleRefreshSubscription(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	mgr := s.subscriptionManager()
+	if mgr == nil {
+		writeErr(w, http.StatusServiceUnavailable, "订阅刷新器未启动")
+		return
+	}
+	result, err := mgr.Refresh(r.Context(), id)
+	if err != nil && errors.Is(err, config.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	saved, _ := s.store.GetSubscription(id)
+	writeJSON(w, http.StatusOK, map[string]any{"result": result, "saved": saved})
 }

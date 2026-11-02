@@ -21,6 +21,7 @@ import (
 	"github.com/handsomezhuzhu/fastproxy/probe"
 	"github.com/handsomezhuzhu/fastproxy/proxy"
 	"github.com/handsomezhuzhu/fastproxy/singbox"
+	"github.com/handsomezhuzhu/fastproxy/subscription"
 )
 
 // version is overridable at build time: -ldflags "-X main.version=v1.0.0"
@@ -157,6 +158,18 @@ func main() {
 	// Admin panel + API.
 	adm := admin.NewServer(store, mgr, logger, prober, version)
 	adm.SetSingBox(sbMgr)
+
+	// Remote subscriptions: refresh due lists in the background and reconcile
+	// their nodes with the upstream pool (manual upstreams are untouched).
+	subCtx, subCancel := context.WithCancel(context.Background())
+	defer subCancel()
+	subMgr := subscription.NewManager(store, logger, func() {
+		if err := sbMgr.Reload(context.Background()); err != nil {
+			logger.Warnf("订阅更新后重建 sing-box 失败: %v", err)
+		}
+	})
+	adm.SetSubscriptions(subMgr)
+	go subMgr.Start(subCtx)
 	policy, problems := admin.EnvLoginPolicy()
 	for _, p := range problems {
 		logger.Warnf("%v", p)

@@ -34,6 +34,7 @@ var migrations = []migration{
 	{Version: 1, Name: "baseline schema", Apply: migrateBaseline},
 	{Version: 2, Name: "normalise upstream TLS into security", Apply: migrateSecurity},
 	{Version: 3, Name: "encrypt upstream/account passwords", Apply: migrateEncryptPasswords},
+	{Version: 4, Name: "subscriptions and node mappings", Apply: migrateSubscriptions},
 }
 
 // latestVersion is the version a freshly created database reports.

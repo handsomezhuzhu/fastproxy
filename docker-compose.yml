@@ -1,16 +1,29 @@
 services:
   fastproxy:
-    image: ghcr.io/handsomezhuzhu/fastproxy:latest
+    image: ghcr.io/handsomezhuzhu/fastproxy:${IMAGE_TAG:-latest}
     build: .
     container_name: fastproxy
     restart: unless-stopped
     environment:
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD}        # 管理面板密码（必须）
-      - SESSION_SECRET=${SESSION_SECRET:-}     # 可选：固定会话签名密钥
-      - UPSTREAM_USER_1=${UPSTREAM_USER_1:-}   # 可选：注入上游凭据，配合面板中 ${VAR} 引用
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?请在 .env 中设置 ADMIN_PASSWORD}
+      # 可选：固定会话签名密钥（留空则自动生成并保存在数据目录）
+      - SESSION_SECRET=${SESSION_SECRET:-}
+      # 可选：上游凭据，可在上游地址里用 ${UPSTREAM_USER_1} / ${UPSTREAM_PASS_1} 引用
+      - UPSTREAM_USER_1=${UPSTREAM_USER_1:-}
       - UPSTREAM_PASS_1=${UPSTREAM_PASS_1:-}
+      # 端口范围：应用只允许创建该范围内的端口；Docker 也必须映射同一范围
+      - PORT_RANGE=${PORT_RANGE:-10001-10050}
+      # 数据密码加密密钥（32 字节 base64/hex）。强烈建议设置并单独备份；
+      # 留空则自动生成 /data/.secret_key（备份数据库时要一并备份）
+      - FASTPROXY_SECRET_KEY=${FASTPROXY_SECRET_KEY:-}
+      # 面板登录失败锁定（仅内存，重启清零）
+      - LOGIN_MAX_ATTEMPTS=${LOGIN_MAX_ATTEMPTS:-5}
+      - LOGIN_LOCK_DURATION=${LOGIN_LOCK_DURATION:-5m}
+      # 反向代理：可信代理 CIDR 列表（Nginx/OpenResty 与本机同机时填 127.0.0.1/32）
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
     ports:
-      - "7788:7788"                # 管理面板（默认 7788）
-      - "10001-10500:10001-10500"  # 代理端口范围（默认 10001-10500，按需调整/扩大）
+      - "7788:7788"
+      # 必须与 PORT_RANGE 一致；默认只映射 50 个端口，避免占用过多宿主机端口
+      - "${PORT_RANGE:-10001-10050}:${PORT_RANGE:-10001-10050}"
     volumes:
-      - ./data:/data               # 数据持久化（SQLite: /data/fastproxy.db）
+      - ./data:/data

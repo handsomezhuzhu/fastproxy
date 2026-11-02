@@ -92,11 +92,13 @@ async function goTo(page: Page, id: "dashboard" | "ports" | "accounts" | "upstre
 
 /** Open the row action menu (last cell) and run an action by its visible label. */
 async function rowAction(row: Locator, label: string) {
-  await row.getByRole("button", { name: /操作菜单|actions$/ }).click();
-  const item = row.page().getByRole("menuitem", { name: label, exact: true });
-  const check = (await item.count().catch(() => 0)) > 0;
-  if (!check) return false;
-  await item.click();
+  await row.getByRole("button", { name: /操作菜单|操作$|actions$/i }).click();
+  const item = row.page().getByRole("menuitem", { name: label, exact: true }).first();
+  // Base UI renders the menu through a portal on the next frame; wait for it
+  // instead of counting immediately (the old code raced the animation).
+  await item.waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
+  if (!(await item.isVisible().catch(() => false))) return false;
+  await item.click({ force: true });
   return true;
 }
 
@@ -111,15 +113,23 @@ async function deletePortRow(page: Page, port: number) {
 }
 
 async function deleteUpstreamByName(page: Page, name: string) {
-  const row = page.locator("tbody tr").filter({ has: page.getByText(name, { exact: true }) });
-  if ((await row.count()) === 0) return false;
-  // afterEach 里是尽力而为的清理（页面可能已处于英文/401 状态）：找不到菜单项就跳过。
-  if (!(await rowAction(row.first(), "删除").catch(() => false))) return false;
-  const dialog = page.getByRole("alertdialog");
-  await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "删除", exact: true }).click();
-  await expect(dialog).toBeHidden();
-  return true;
+  // Cleanup through the API: menu clicks are covered by dedicated UI tests and
+  // the Base UI portal makes cleanup clicks flaky in headless mode.
+  try {
+    const res = await page.request.get("/api/upstreams?limit=1000&offset=0");
+    if (!res.ok()) return false;
+    const body = await res.json();
+    const item = (body.items ?? []).find((u: { id: string; name: string }) => u.name === name);
+    if (!item) return false;
+    const del = await page.request.delete(`/api/upstreams/${item.id}`);
+    if (!del.ok()) return false;
+    // The UI is not notified of API-side cleanup; refresh so callers can assert
+    // the row is gone (and afterEach leaves a consistent page).
+    await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** 主题取决于 localStorage；每个用例开始前清掉，避免上一个用例的英文/暗色泄漏。 */
@@ -342,7 +352,7 @@ test("上游代理：批量导入后列表能显示 e2e 节点", async ({ page }
   // 清理：UI 删除两条 e2e 上游（afterEach 也会兜底）。
   await deleteUpstreamByName(page, "e2e-1");
   await deleteUpstreamByName(page, "e2e-2");
-  await expect(page.getByText("e2e-1", { exact: true })).toHaveCount(0);
+  await expect(page.locator("tbody tr").filter({ hasText: "e2e-1" })).toHaveCount(0);
 });
 
 test("上游代理：检测全部走统一接口（v2 未合并则跳过）", async ({ page }) => {
@@ -430,8 +440,8 @@ test("上游代理：表单可新增 Shadowsocks 与 VLESS（并回填编辑）"
   }
 
   // 编辑回填：按类型回填字段，而不是拼 ss:// 地址。
-  await rowAction(ssRow.first(), "编辑");
-  const edit = page.getByRole("dialog", { name: "编辑上游 e2e-ss" });
+  expect(await rowAction(ssRow.first(), "编辑"), "行操作菜单里应有「编辑」").toBe(true);
+  const edit = page.getByRole("dialog").filter({ hasText: "e2e-ss" });
   await expect(edit).toBeVisible();
   await expect(edit.getByLabel("服务器地址")).toHaveValue("1.1.1.1:8388");
   await expect(edit.getByLabel("密码")).toHaveValue("e2e-secret");

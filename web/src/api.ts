@@ -187,6 +187,38 @@ export type SingboxStatus = {
   logs?: string[];
 };
 
+export type Subscription = {
+  id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+  interval_sec: number;
+  last_fetch_at: number;
+  last_success_at: number;
+  last_error?: string;
+  node_count: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export type SubscriptionInput = {
+  name: string;
+  url: string;
+  enabled: boolean;
+  interval_sec: number;
+};
+
+export type SubscriptionRefresh = {
+  result: {
+    added: number;
+    updated: number;
+    removed: number;
+    problems?: string[];
+    error?: string;
+  };
+  saved?: Subscription | null;
+};
+
 export type MetricPoint = {
   t: string;
   conns: number;
@@ -410,6 +442,22 @@ export const api = {
       logs: r?.logs ?? [],
     };
   },
+
+  subscriptions: () => req<{ items: Subscription[]; total: number }>("/api/subscriptions"),
+  createSubscription: (body: SubscriptionInput) =>
+    req<{ saved: Subscription }>("/api/subscriptions", { method: "POST", body: JSON.stringify(body) }),
+  updateSubscription: (id: string, body: SubscriptionInput) =>
+    req<{ saved: Subscription }>(`/api/subscriptions/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  deleteSubscription: (id: string, deleteNodes = true) =>
+    req<{ ok: boolean }>(
+      `/api/subscriptions/${id}?delete_nodes=${deleteNodes ? "true" : "false"}`,
+      { method: "DELETE" }
+    ),
+  refreshSubscription: (id: string) =>
+    req<SubscriptionRefresh>(`/api/subscriptions/${id}/refresh`, { method: "POST" }),
 
   stats: async () => {
     const r = await req<{ status: { ports: PortStatus[]; accounts: AccountStatus[] } }>("/api/stats");

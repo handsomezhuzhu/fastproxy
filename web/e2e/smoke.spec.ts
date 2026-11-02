@@ -557,6 +557,36 @@ test("上游代理：批量导入 REALITY/Vision 节点后列表显示 e2e-reali
   await expect(page.getByText("e2e-reality", { exact: true })).toHaveCount(0);
 });
 
+test("订阅：创建、列表展示与删除", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await login(page);
+  await nav(page, "订阅").click();
+  await expect(page.getByRole("heading", { level: 1, name: "订阅管理" })).toBeVisible();
+
+  await page.getByRole("button", { name: "添加订阅" }).first().click();
+  const dialog = page.getByRole("dialog", { name: "添加订阅" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("名称").fill("e2e-sub");
+  await dialog.getByLabel("订阅地址").fill("https://example.invalid/sub?token=e2e");
+  await dialog.getByLabel("刷新间隔（分钟）").fill("60");
+  await dialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(dialog).toBeHidden();
+
+  const row = page.locator("tbody tr").filter({ hasText: "e2e-sub" });
+  await expect(row).toHaveCount(1);
+  await expect(row.getByText("60 分钟")).toBeVisible();
+
+  // Cleanup through the API and refresh; the create handler may still be trying
+  // to fetch the fake URL in the background, which must not affect the UI.
+  const list = await (await page.request.get("/api/subscriptions")).json();
+  const sub = (list.items ?? []).find((x: { name: string }) => x.name === "e2e-sub");
+  expect(sub).toBeTruthy();
+  await page.request.delete(`/api/subscriptions/${sub.id}?delete_nodes=true`);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator("tbody tr").filter({ hasText: "e2e-sub" })).toHaveCount(0);
+  await expectNoCrash(page, failures);
+});
+
 test("端口线路：新增/删除 10021 与每页下拉宽度", async ({ page }) => {
   const failures = watchRuntime(page);
   await login(page);

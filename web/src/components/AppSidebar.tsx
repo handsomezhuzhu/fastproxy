@@ -4,6 +4,7 @@ import {
   Layers,
   LogOut,
   Network,
+  Rss,
   ScrollText,
   Settings as SettingsIcon,
   ShieldCheck,
@@ -30,6 +31,7 @@ export const NAV_GROUPS: { labelKey: string; items: NavItem[] }[] = [
       { id: "ports", labelKey: "nav.ports", icon: <Network className="size-4" aria-hidden="true" /> },
       { id: "accounts", labelKey: "nav.accounts", icon: <Users className="size-4" aria-hidden="true" /> },
       { id: "upstreams", labelKey: "nav.upstreams", icon: <Layers className="size-4" aria-hidden="true" /> },
+      { id: "subscriptions", labelKey: "nav.subscriptions", icon: <Rss className="size-4" aria-hidden="true" /> },
     ],
   },
   {

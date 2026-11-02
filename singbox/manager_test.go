@@ -52,6 +52,9 @@ func selfSignedPEM(t *testing.T) (certPEM, keyPEM string) {
 // TestManagerVLESSPlainTLS is the baseline end-to-end check: a local sing-box
 // vless inbound (TLS, self-signed certificate) behind the manager's loopback
 // SOCKS inbound, reaching an httptest target over the plain TCP transport.
+//
+// This is the only VLESS path FastProxy has: the native client is gone, so
+// every VLESS upstream (plain TCP included) must route through sing-box.
 func TestManagerVLESSPlainTLS(t *testing.T) {
 	certPEM, keyPEM := selfSignedPEM(t)
 	for _, transport := range []string{"", "ws"} {
@@ -73,12 +76,27 @@ func TestManagerVLESSPlainTLS(t *testing.T) {
 			target := newHTTPTarget(t)
 			body, err := m.tryDial(*u, target)
 			if err != nil {
-				t.Skipf("no route (plain VLESS is served natively): %v", err)
+				t.Fatalf("plain-TLS VLESS must be dialable through sing-box: %v", err)
 			}
 			if body != "hello-through-singbox" {
 				t.Fatalf("unexpected body %q", body)
 			}
 		})
+	}
+}
+
+// TestManagerVLESSNoTLS covers security=none (no TLS at all).
+func TestManagerVLESSNoTLS(t *testing.T) {
+	addr, _ := startServer(t, serverSpec{typ: "vless"})
+	waitPortReady(t, addr)
+	u := &config.Upstream{
+		ID: "vl-none", Name: "vless-none", Type: config.UpstreamVless,
+		Host: addr, UUID: testUUID, Security: config.SecurityNone,
+	}
+	m, _ := newManager(t, u)
+	target := newHTTPTarget(t)
+	if body := httpThrough(t, m, *u, target); body != "hello-through-singbox" {
+		t.Fatalf("unexpected body %q", body)
 	}
 }
 

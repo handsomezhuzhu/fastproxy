@@ -59,8 +59,8 @@ func TestParseUpstreamEndpoint(t *testing.T) {
 	p := resp.Proxy
 	want := map[string]any{
 		"name": "HK", "type": "vless", "host": "r.example.com:443",
-		"uuid": "b831381d-6324-4d53-ad4f-8cda48b30811", "tls": true,
-		"sni": "www.microsoft.com", "security": "reality", "pbk": "PBKEY", "sid": "a1b2",
+		"uuid": "b831381d-6324-4d53-ad4f-8cda48b30811",
+		"sni":  "www.microsoft.com", "security": "reality", "pbk": "PBKEY", "sid": "a1b2",
 		"flow": "xtls-rprx-vision", "fingerprint": "chrome", "transport": "ws",
 		"path": "/ws", "host_header": "cdn.example.com",
 	}
@@ -68,6 +68,10 @@ func TestParseUpstreamEndpoint(t *testing.T) {
 		if p[k] != v {
 			t.Fatalf("proxy[%s] = %v, want %v (all: %v)", k, p[k], v, p)
 		}
+	}
+	// TLS is expressed through security only: the API never returns "tls".
+	if _, ok := p["tls"]; ok {
+		t.Fatalf("parse response must not carry a tls field: %v", p)
 	}
 
 	// Parse failures answer 400 with a Chinese reason.

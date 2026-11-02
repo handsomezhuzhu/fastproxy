@@ -252,17 +252,50 @@ func TestNeedsSingBox(t *testing.T) {
 		want bool
 	}{
 		{config.Upstream{Type: config.UpstreamVmess}, true},
-		{config.Upstream{Type: config.UpstreamVless}, false},
+		// Every VLESS node goes through sing-box, including plain TCP/TLS.
+		{config.Upstream{Type: config.UpstreamVless}, true},
+		{config.Upstream{Type: config.UpstreamVless, Security: "none"}, true},
+		{config.Upstream{Type: config.UpstreamVless, Security: "tls"}, true},
 		{config.Upstream{Type: config.UpstreamVless, Security: "reality"}, true},
 		{config.Upstream{Type: config.UpstreamVless, Flow: "xtls-rprx-vision"}, true},
 		{config.Upstream{Type: config.UpstreamVless, Transport: "ws"}, true},
 		{config.Upstream{Type: config.UpstreamVless, Transport: "grpc"}, true},
-		{config.Upstream{Type: config.UpstreamVless, Security: "tls", Transport: "tcp"}, false},
 		{config.Upstream{Type: config.UpstreamHTTP}, false},
+		{config.Upstream{Type: config.UpstreamSocks5}, false},
+		{config.Upstream{Type: config.UpstreamShadowsocks}, false},
 	}
 	for i, c := range cases {
 		if got := NeedsSingBox(c.up); got != c.want {
 			t.Fatalf("case %d (%+v): got %v want %v", i, c.up, got, c.want)
+		}
+	}
+}
+
+// TestTLSOptionsFollowSecurity pins that TLS is derived from security alone.
+func TestTLSOptionsFollowSecurity(t *testing.T) {
+	cases := []struct {
+		up          config.Upstream
+		wantEnabled bool
+		wantReality bool
+	}{
+		{config.Upstream{Security: ""}, false, false},
+		{config.Upstream{Security: config.SecurityNone}, false, false},
+		{config.Upstream{Security: config.SecurityTLS}, true, false},
+		{config.Upstream{Security: config.SecurityReality, PBK: "pk"}, true, true},
+	}
+	for _, c := range cases {
+		got := tlsOptions(c.up)
+		if c.wantEnabled == (got == nil) {
+			t.Fatalf("%q: enabled mismatch (%v)", c.up.Security, got)
+		}
+		if !c.wantEnabled {
+			continue
+		}
+		if (got.Reality != nil) != c.wantReality {
+			t.Fatalf("%q: reality mismatch", c.up.Security)
+		}
+		if !c.wantReality && got.UTLS != nil {
+			t.Fatalf("%q: plain TLS must not enable uTLS", c.up.Security)
 		}
 	}
 }

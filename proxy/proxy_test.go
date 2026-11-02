@@ -219,7 +219,9 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	store, err := config.Open(filepath.Join(t.TempDir(), "fastproxy.db"), freePort(t))
+	// Test ports come from ephemeral listeners (1-65535); open the full range.
+	store, err := config.OpenWithPortRange(filepath.Join(t.TempDir(), "fastproxy.db"), freePort(t),
+		config.PortRange{Min: 1, Max: 65535})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -25,23 +25,14 @@ const (
 const defaultFingerprint = "chrome"
 
 // NeedsSingBox reports whether the upstream must be tunnelled through the
-// embedded sing-box instance instead of the native client:
-//
-//   - vmess always (FastProxy has no native VMess implementation);
-//   - vless when it uses REALITY, an XTLS Vision flow or a ws/grpc transport.
-//
-// Plain VLESS (TLS or not, TCP transport, no flow) keeps using the native
-// client, so it works even if sing-box fails to start.
-//
-// The comparisons below are spelled inline on purpose: routing the switch
-// through config.UpstreamVless/ServiceReality constants mis-dispatched the
-// plain-vless branch in the windows/amd64 toolchain used during development.
+// embedded sing-box instance instead of a native client. Every VLESS and
+// VMess node does: FastProxy has no native implementation for either, and
+// TLS/REALITY/flow/transport are all expressed through Security and the
+// transport fields of the same outbound.
 func NeedsSingBox(u config.Upstream) bool {
 	switch u.Type {
-	case "vmess":
+	case config.UpstreamVless, config.UpstreamVmess:
 		return true
-	case "vless":
-		return u.Security == "reality" || u.Flow != "" || u.Transport == "ws" || u.Transport == "grpc"
 	}
 	return false
 }
@@ -104,11 +95,13 @@ func buildOutbound(up config.Upstream) (option.Outbound, error) {
 	return option.Outbound{}, fmt.Errorf("上游类型 %q 不需要 sing-box", up.Type)
 }
 
-// tlsOptions maps the upstream TLS/REALITY fields onto sing-box. Returns nil
-// for plaintext connections.
+// tlsOptions maps the upstream Security field onto sing-box. Returns nil for
+// plaintext connections (security none/empty); tls and reality both enable
+// TLS, reality adding uTLS + REALITY parameters.
 func tlsOptions(up config.Upstream) *option.OutboundTLSOptions {
-	reality := up.Security == config.SecurityReality
-	if !reality && !up.TLS && up.Security != config.SecurityTLS {
+	security := strings.ToLower(strings.TrimSpace(up.Security))
+	reality := security == config.SecurityReality
+	if !reality && security != config.SecurityTLS {
 		return nil
 	}
 	opts := &option.OutboundTLSOptions{

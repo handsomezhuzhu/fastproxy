@@ -16,7 +16,7 @@ func TestBuildOptionsShape(t *testing.T) {
 			UUID: testUUID, Security: config.SecurityReality, Flow: config.UpstreamFlowVision,
 			PBK: "pk", SID: "01", SNI: "www.example.com"},
 		{ID: "b", Name: "b", Type: config.UpstreamVmess, Host: "[2001:db8::1]:8443",
-			UUID: testUUID, TLS: true, Security: config.SecurityTLS, Transport: "ws",
+			UUID: testUUID, Security: config.SecurityTLS, Transport: "ws",
 			Path: "/vm", HostHeader: "cdn.example.com"},
 	}
 	opts, err := buildOptions(ups, map[string]uint16{"a": 20000, "b": 20001})

@@ -143,6 +143,9 @@ func (m *Manager) needed() []config.Upstream {
 			}
 			continue
 		}
+		if m.log != nil && u.Type == config.UpstreamVless && u.Security == "" {
+			m.log.Warnf("上游 %s 未设置 security，将按明文 VLESS 连接", u.Name)
+		}
 		out = append(out, *u)
 	}
 	return out

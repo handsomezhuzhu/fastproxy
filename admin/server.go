@@ -82,6 +82,16 @@ func (s *Server) singboxReloader() SingBoxReloader {
 	return s.singbox
 }
 
+// singboxError returns the embedded box's last startup/reload error (nil when
+// it is healthy or not installed).
+func (s *Server) singboxError() error {
+	r := s.singboxReloader()
+	if r == nil {
+		return nil
+	}
+	return r.LastError()
+}
+
 // reloadSingBox applies upstream changes to the embedded box and returns a
 // warning string for the response ("" on success). The store is already
 // updated when this runs.
@@ -350,14 +360,19 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	if !checkedAt.IsZero() {
 		checkedUnix = checkedAt.Unix()
 	}
+	probeInfo := map[string]any{"server_ip": serverIP, "last_check_at": checkedUnix}
+	if err := s.singboxError(); err != nil {
+		probeInfo["singbox_error"] = err.Error()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":   s.ver,
-		"settings":  s.store.Settings(),
-		"upstreams": s.store.Upstreams(),
-		"ports":     s.store.Ports(),
-		"accounts":  s.store.Accounts(),
-		"status":    map[string]any{"ports": ports, "accounts": accounts},
-		"probe":     map[string]any{"server_ip": serverIP, "last_check_at": checkedUnix},
+		"version":    s.ver,
+		"settings":   s.store.Settings(),
+		"upstreams":  s.store.Upstreams(),
+		"ports":      s.store.Ports(),
+		"accounts":   s.store.Accounts(),
+		"status":     map[string]any{"ports": ports, "accounts": accounts},
+		"probe":      probeInfo,
+		"port_range": s.store.PortRange(),
 	})
 }
 
@@ -466,9 +481,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 //
 //   - Address form (http/socks5): {name, type?, upstream:"http://user:pass@h:p"}
 //   - Field form (all types):    {name, type, host:"h:p", username, password,
-//     method, uuid, tls, sni} plus the vless/vmess fields
+//     method, uuid, sni} plus the vless/vmess fields
 //     (security, pbk, sid, flow, fingerprint, transport, path, host_header,
-//     service_name, vmess_security).
+//     service_name, vmess_security). TLS is expressed only through security
+//     ("none" | "tls" | "reality"); a legacy "tls" bool in the body is ignored.
 //
 // When "upstream" carries an ss:// vmess:// or vless:// share link it is parsed
 // by the importer and the resulting fields win over the explicit ones.
@@ -481,7 +497,6 @@ type upstreamInput struct {
 	Password      string `json:"password"`
 	Method        string `json:"method"`
 	UUID          string `json:"uuid"`
-	TLS           bool   `json:"tls"`
 	SNI           string `json:"sni"`
 	Security      string `json:"security"`
 	PBK           string `json:"pbk"`
@@ -500,7 +515,7 @@ func (in *upstreamInput) toEntity() (*config.Upstream, error) {
 	u := &config.Upstream{
 		Name: in.Name, Type: in.Type, Host: in.Host,
 		Username: in.Username, Password: in.Password,
-		Method: in.Method, UUID: in.UUID, TLS: in.TLS, SNI: in.SNI,
+		Method: in.Method, UUID: in.UUID, SNI: in.SNI,
 		Remark:   in.Remark,
 		Security: in.Security, PBK: in.PBK, SID: in.SID, Flow: in.Flow,
 		Fingerprint: in.Fingerprint, Transport: in.Transport, Path: in.Path,
@@ -529,7 +544,7 @@ func (in *upstreamInput) toEntity() (*config.Upstream, error) {
 		p := res.Proxies[0]
 		u.Type, u.Host = p.Type, p.Host
 		u.Username, u.Password = p.User, p.Pass
-		u.Method, u.UUID, u.TLS, u.SNI = p.Method, p.UUID, p.TLS, p.SNI
+		u.Method, u.UUID, u.SNI = p.Method, p.UUID, p.SNI
 		u.Security, u.PBK, u.SID, u.Flow = p.Security, p.PBK, p.SID, p.Flow
 		u.Fingerprint, u.Transport, u.Path = p.Fingerprint, p.Transport, p.Path
 		u.HostHeader, u.ServiceName = p.HostHeader, p.ServiceName
@@ -625,7 +640,7 @@ func (s *Server) handleImportUpstreams(w http.ResponseWriter, r *http.Request) {
 		candidates = append(candidates, &config.Upstream{
 			Name: p.Name, Type: p.Type, Host: p.Host,
 			Username: p.User, Password: p.Pass,
-			Method: p.Method, UUID: p.UUID, TLS: p.TLS, SNI: p.SNI,
+			Method: p.Method, UUID: p.UUID, SNI: p.SNI,
 			Security: p.Security, PBK: p.PBK, SID: p.SID, Flow: p.Flow,
 			Fingerprint: p.Fingerprint, Transport: p.Transport, Path: p.Path,
 			HostHeader: p.HostHeader, ServiceName: p.ServiceName,
@@ -658,9 +673,13 @@ func (s *Server) handleImportUpstreams(w http.ResponseWriter, r *http.Request) {
 // "paste and auto-fill the form" flow. It never touches the store.
 //
 //	POST /api/upstreams/parse {"text":"vless://..."}
-//	200 {"proxy":{name,type,host,uuid,password,method,tls,sni,security,pbk,
-//	              sid,flow,fingerprint,transport,path,host_header,service_name}}
+//	200 {"proxy":{name,type,host,uuid,password,method,sni,security,pbk,
+//	              sid,flow,fingerprint,transport,path,host_header,service_name,
+//	              vmess_security}}
 //	400 {"error":"中文原因"}
+//
+// TLS is conveyed by security only (none|tls|reality); no legacy tls flag is
+// returned.
 func (s *Server) handleParseUpstream(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Text string `json:"text"`
@@ -697,7 +716,6 @@ func (s *Server) handleParseUpstream(w http.ResponseWriter, r *http.Request) {
 		"uuid":           p.UUID,
 		"password":       p.Pass,
 		"method":         p.Method,
-		"tls":            p.TLS,
 		"sni":            p.SNI,
 		"security":       p.Security,
 		"pbk":            p.PBK,

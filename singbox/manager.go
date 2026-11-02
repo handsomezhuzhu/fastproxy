@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -51,7 +52,71 @@ type Manager struct {
 	ports   map[string]uint16 // upstream id -> local SOCKS port
 	lastErr error
 
+	// Status surface for the panel (GET /api/singbox/status).
+	startedAt    time.Time
+	reloadCount  int
+	lastReloadAt time.Time
+	events       []string // ring buffer, newest last
+
 	dialMu sync.Mutex // serialises Reload against in-flight Dial handshakes
+}
+
+const maxStatusEvents = 100
+
+// addEventLocked appends one status line. Caller must hold m.mu.
+func (m *Manager) addEventLocked(format string, args ...any) {
+	line := time.Now().Format(time.RFC3339) + " " + fmt.Sprintf(format, args...)
+	m.events = append(m.events, line)
+	if len(m.events) > maxStatusEvents {
+		m.events = append([]string(nil), m.events[len(m.events)-maxStatusEvents:]...)
+	}
+}
+
+// Status returns a JSON-friendly snapshot for the panel. It never blocks on a
+// reload for long: the same mutex protects the fields and Reload holds it only
+// while rebuilding.
+func (m *Manager) Status() map[string]any {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	names := map[string]string{}
+	if m.src != nil {
+		for _, u := range m.src.Upstreams() {
+			if u != nil {
+				names[u.ID] = u.Name
+			}
+		}
+	}
+	type row struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Port uint16 `json:"port"`
+	}
+	rows := make([]row, 0, len(m.ports))
+	for id, port := range m.ports {
+		rows = append(rows, row{ID: id, Name: names[id], Port: port})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Port < rows[j].Port })
+	var started, reloaded int64
+	if !m.startedAt.IsZero() {
+		started = m.startedAt.Unix()
+	}
+	if !m.lastReloadAt.IsZero() {
+		reloaded = m.lastReloadAt.Unix()
+	}
+	errText := ""
+	if m.lastErr != nil {
+		errText = m.lastErr.Error()
+	}
+	events := append([]string(nil), m.events...)
+	return map[string]any{
+		"running":        m.box != nil,
+		"started_at":     started,
+		"reload_count":   m.reloadCount,
+		"last_reload_at": reloaded,
+		"last_error":     errText,
+		"upstreams":      rows,
+		"logs":           events,
+	}
 }
 
 // New creates a stopped manager. Call Start or Reload to spawn sing-box.
@@ -82,6 +147,8 @@ func (m *Manager) Reload(ctx context.Context) error {
 	defer m.dialMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.reloadCount++
+	m.addEventLocked("开始重载 sing-box")
 	if m.box != nil {
 		_ = m.box.Close()
 		m.box = nil
@@ -90,16 +157,22 @@ func (m *Manager) Reload(ctx context.Context) error {
 	if len(ups) == 0 {
 		m.ports = map[string]uint16{}
 		m.lastErr = nil
+		m.lastReloadAt = time.Now()
+		m.addEventLocked("没有需要 sing-box 的上游，实例已停止")
 		return nil
 	}
 	ports, err := m.assignPorts(ups)
 	if err != nil {
 		m.lastErr = err
+		m.lastReloadAt = time.Now()
+		m.addEventLocked("分配本地端口失败: %v", err)
 		return err
 	}
 	opts, err := buildOptions(ups, ports)
 	if err != nil {
 		m.lastErr = fmt.Errorf("生成 sing-box 配置失败: %w", err)
+		m.lastReloadAt = time.Now()
+		m.addEventLocked("生成配置失败: %v", err)
 		return m.lastErr
 	}
 	m.relaxTLS(opts)
@@ -112,11 +185,16 @@ func (m *Manager) Reload(ctx context.Context) error {
 			_ = instance.Close()
 		}
 		m.lastErr = fmt.Errorf("启动内置 sing-box 失败: %w", err)
+		m.lastReloadAt = time.Now()
+		m.addEventLocked("启动失败: %v", err)
 		return m.lastErr
 	}
 	m.box = instance
 	m.ports = ports
 	m.lastErr = nil
+	m.startedAt = time.Now()
+	m.lastReloadAt = m.startedAt
+	m.addEventLocked("已启动，%d 个上游经内嵌出站", len(ups))
 	if m.log != nil {
 		m.log.Infof("内置 sing-box 已启动，%d 个上游经内嵌出站", len(ups))
 	}
@@ -138,10 +216,14 @@ func (m *Manager) needed() []config.Upstream {
 			continue
 		}
 		if u.Type == config.UpstreamVless && u.Security == config.SecurityReality && u.PBK == "" {
+			m.addEventLocked("跳过上游 %s: REALITY 缺少 pbk", u.Name)
 			if m.log != nil {
 				m.log.Warnf("上游 %s 的 REALITY 配置缺少 pbk，已跳过", u.Name)
 			}
 			continue
+		}
+		if m.log != nil && u.Type == config.UpstreamVless && u.Security == "" {
+			m.log.Warnf("上游 %s 未设置 security，将按明文 VLESS 连接", u.Name)
 		}
 		out = append(out, *u)
 	}
@@ -231,6 +313,7 @@ func (m *Manager) Close() error {
 	if m.box != nil {
 		err = m.box.Close()
 		m.box = nil
+		m.addEventLocked("sing-box 已停止")
 	}
 	m.ports = map[string]uint16{}
 	return err

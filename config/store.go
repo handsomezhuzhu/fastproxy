@@ -10,8 +10,11 @@
 //	ports(id, port UNIQUE, default_upstream, enabled, remark, created_at, updated_at)
 //	accounts(id, username UNIQUE, password, port_id, upstream_id, enabled, remark, ...)
 //	logs(ts, level, port, account, client, proto, target, status, bytes..., msg)
+//	schema_migrations(version, name, applied_at)
 //
-// A legacy fastproxy JSON config next to the database is imported once.
+// Schema changes go through the versioned migrations in migrate.go; the
+// upstreams.tls column is legacy and no longer read or written (see security).
+// Passwords are sealed with AES-256-GCM (secrets.go) before they reach SQLite.
 package config
 
 import (
@@ -21,9 +24,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -57,7 +62,7 @@ var ErrNotFound = errors.New("不存在")
 //
 //	http / socks5  -> Username + Password
 //	shadowsocks    -> Method + Password
-//	vless / vmess  -> UUID (+ TLS, SNI)
+//	vless / vmess  -> UUID + Security (+ SNI)
 type Upstream struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
@@ -67,11 +72,11 @@ type Upstream struct {
 	Password string `json:"password,omitempty"`
 	Method   string `json:"method,omitempty"` // shadowsocks cipher
 	UUID     string `json:"uuid,omitempty"`   // vless / vmess user id
-	TLS      bool   `json:"tls,omitempty"`    // vless / vmess: TLS on top of TCP
 	SNI      string `json:"sni,omitempty"`    // vless / vmess: TLS server name ("" = host)
 	Remark   string `json:"remark,omitempty"`
 
 	// vless / vmess advanced options (tunnelled through embedded sing-box).
+	// Security is the single source of truth for TLS: none | tls | reality.
 	Security      string `json:"security,omitempty"`       // "" | "none" | "tls" | "reality"
 	PBK           string `json:"pbk,omitempty"`            // REALITY public key
 	SID           string `json:"sid,omitempty"`            // REALITY short id
@@ -124,7 +129,6 @@ type Settings struct {
 	LogLevel            string `json:"log_level"`
 	LogBuffer           int    `json:"log_buffer"`
 	LogRetentionDays    int    `json:"log_retention_days"`
-	AllowDirect         bool   `json:"allow_direct"`
 	DialTimeoutSec      int    `json:"dial_timeout_sec"`
 	HandshakeTimeoutSec int    `json:"handshake_timeout_sec"`
 
@@ -142,7 +146,6 @@ func DefaultSettings() Settings {
 		LogLevel:            "info",
 		LogBuffer:           1000,
 		LogRetentionDays:    7,
-		AllowDirect:         true,
 		DialTimeoutSec:      15,
 		HandshakeTimeoutSec: 60,
 		ProbeEnabled:        true,
@@ -153,30 +156,118 @@ func DefaultSettings() Settings {
 	}
 }
 
+// PortRange is the starting-level window of inbound ports a deployment may
+// use (PORT_RANGE, default 10001-10050). It is not a runtime setting: it is
+// fixed at startup and only used to validate port create/update.
+type PortRange struct {
+	Min int `json:"min"`
+	Max int `json:"max"`
+}
+
+// DefaultPortRange is used when PORT_RANGE is unset.
+var DefaultPortRange = PortRange{Min: 10001, Max: 10050}
+
+// String renders the range in PORT_RANGE syntax ("min-max" or "port").
+func (r PortRange) String() string {
+	if r.Min == r.Max {
+		return fmt.Sprintf("%d", r.Min)
+	}
+	return fmt.Sprintf("%d-%d", r.Min, r.Max)
+}
+
+// Contains reports whether port falls inside the range.
+func (r PortRange) Contains(port int) bool { return port >= r.Min && port <= r.Max }
+
+// ParsePortRange parses "10001-10050" or a single port "10080". Bounds must
+// satisfy 1 <= min <= max <= 65535.
+func ParsePortRange(spec string) (PortRange, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return DefaultPortRange, nil
+	}
+	parse := func(v string) (int, error) {
+		v = strings.TrimSpace(v)
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, fmt.Errorf("PORT_RANGE 格式错误: %q 不是数字（示例 10001-10050 或 10080）", spec)
+		}
+		if n < 1 || n > 65535 {
+			return 0, fmt.Errorf("PORT_RANGE 端口 %d 越界（允许 1-65535）", n)
+		}
+		return n, nil
+	}
+	if !strings.Contains(spec, "-") {
+		n, err := parse(spec)
+		if err != nil {
+			return PortRange{}, err
+		}
+		return PortRange{Min: n, Max: n}, nil
+	}
+	parts := strings.Split(spec, "-")
+	if len(parts) != 2 {
+		return PortRange{}, fmt.Errorf("PORT_RANGE 格式错误: %q（示例 10001-10050）", spec)
+	}
+	min, err := parse(parts[0])
+	if err != nil {
+		return PortRange{}, err
+	}
+	max, err := parse(parts[1])
+	if err != nil {
+		return PortRange{}, err
+	}
+	if min > max {
+		return PortRange{}, fmt.Errorf("PORT_RANGE 起点 %d 大于终点 %d", min, max)
+	}
+	return PortRange{Min: min, Max: max}, nil
+}
+
 // Store is a SQLite-backed store. All methods are safe for concurrent use.
 type Store struct {
 	mu        sync.RWMutex
 	db        *sql.DB
 	path      string
 	adminPort int
+	portRange PortRange
 	settings  Settings
 }
 
-// Open opens (or creates) the SQLite database, applies the schema and
-// imports a legacy JSON config when the database is empty.
+// Open opens (or creates) the SQLite database, applies pending migrations and
+// ensures the admin session secret and password encryption key exist.
+//
+// OPEN_TIMEOUT_MS bounds how long SQLite waits for a lock at open time
+// (default 15000 ms, which tolerates the backup job holding a read lock).
 func Open(path string, adminPort int) (*Store, error) {
+	return OpenWithPortRange(path, adminPort, DefaultPortRange)
+}
+
+// OpenWithPortRange opens the database with an explicit PORT_RANGE window.
+func OpenWithPortRange(path string, adminPort int, pr PortRange) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
 		}
 	}
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)", filepath.ToSlash(path))
+	// The key is resolved before any migration so v3 can seal plaintext rows.
+	if err := loadSecretKey(path); err != nil {
+		return nil, err
+	}
+	if pr.Min == 0 && pr.Max == 0 {
+		pr = DefaultPortRange
+	}
+	lockMS := 15000
+	if v := strings.TrimSpace(os.Getenv("OPEN_TIMEOUT_MS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			lockMS = n
+		}
+	}
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)",
+		filepath.ToSlash(path), lockMS)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // one writer, avoids SQLITE_BUSY loops
-	s := &Store{db: db, path: path, adminPort: adminPort}
+	s := &Store{db: db, path: path, adminPort: adminPort, portRange: pr}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
@@ -204,150 +295,10 @@ func (s *Store) Close() error { return s.db.Close() }
 // Path returns the database path.
 func (s *Store) Path() string { return s.path }
 
-func (s *Store) migrate() error {
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS settings (
-			key TEXT PRIMARY KEY,
-			value TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS upstreams (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			type TEXT NOT NULL,
-			host TEXT NOT NULL,
-			username TEXT NOT NULL DEFAULT '',
-			password TEXT NOT NULL DEFAULT '',
-			method TEXT NOT NULL DEFAULT '',
-			uuid TEXT NOT NULL DEFAULT '',
-			tls INTEGER NOT NULL DEFAULT 0,
-			sni TEXT NOT NULL DEFAULT '',
-			security TEXT NOT NULL DEFAULT '',
-			pbk TEXT NOT NULL DEFAULT '',
-			sid TEXT NOT NULL DEFAULT '',
-			flow TEXT NOT NULL DEFAULT '',
-			fingerprint TEXT NOT NULL DEFAULT '',
-			transport TEXT NOT NULL DEFAULT '',
-			path TEXT NOT NULL DEFAULT '',
-			host_header TEXT NOT NULL DEFAULT '',
-			service_name TEXT NOT NULL DEFAULT '',
-			vmess_security TEXT NOT NULL DEFAULT '',
-			remark TEXT NOT NULL DEFAULT '',
-			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS ports (
-			id TEXT PRIMARY KEY,
-			port INTEGER NOT NULL UNIQUE,
-			default_upstream TEXT NOT NULL DEFAULT '',
-			enabled INTEGER NOT NULL DEFAULT 1,
-			remark TEXT NOT NULL DEFAULT '',
-			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS accounts (
-			id TEXT PRIMARY KEY,
-			username TEXT NOT NULL UNIQUE,
-			password TEXT NOT NULL,
-			port_id TEXT NOT NULL DEFAULT '',
-			upstream_id TEXT NOT NULL DEFAULT '',
-			enabled INTEGER NOT NULL DEFAULT 1,
-			remark TEXT NOT NULL DEFAULT '',
-			is_default INTEGER NOT NULL DEFAULT 0,
-			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			ts INTEGER NOT NULL,
-			level TEXT NOT NULL,
-			port INTEGER NOT NULL DEFAULT 0,
-			account TEXT NOT NULL DEFAULT '',
-			client TEXT NOT NULL DEFAULT '',
-			proto TEXT NOT NULL DEFAULT '',
-			target TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL DEFAULT '',
-			bytes_in INTEGER NOT NULL DEFAULT 0,
-			bytes_out INTEGER NOT NULL DEFAULT 0,
-			duration_ms INTEGER NOT NULL DEFAULT 0,
-			msg TEXT NOT NULL DEFAULT '')`,
-		`CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts)`,
-		`CREATE INDEX IF NOT EXISTS idx_logs_port_ts ON logs(port, ts)`,
-		`CREATE INDEX IF NOT EXISTS idx_logs_account_ts ON logs(account, ts)`,
-		`CREATE INDEX IF NOT EXISTS idx_logs_level_ts ON logs(level, ts)`,
-	}
-	for _, stmt := range stmts {
-		if _, err := s.db.Exec(stmt); err != nil {
-			return fmt.Errorf("初始化数据库失败: %w", err)
-		}
-	}
-	// Probe columns were added in v0.4, protocol columns (shadowsocks/vless/
-	// vmess) later on; ALTER existing databases in place.
-	cols := map[string]string{
-		"health":        "TEXT NOT NULL DEFAULT 'unknown'",
-		"latency_ms":    "INTEGER NOT NULL DEFAULT 0",
-		"exit_ip":       "TEXT NOT NULL DEFAULT ''",
-		"last_check_at": "INTEGER NOT NULL DEFAULT 0",
-		"last_error":    "TEXT NOT NULL DEFAULT ''",
-		"method":        "TEXT NOT NULL DEFAULT ''",
-		"uuid":          "TEXT NOT NULL DEFAULT ''",
-		"tls":           "INTEGER NOT NULL DEFAULT 0",
-		"sni":           "TEXT NOT NULL DEFAULT ''",
-		// REALITY / Vision / transport columns (embedded sing-box era).
-		"security":       "TEXT NOT NULL DEFAULT ''",
-		"pbk":            "TEXT NOT NULL DEFAULT ''",
-		"sid":            "TEXT NOT NULL DEFAULT ''",
-		"flow":           "TEXT NOT NULL DEFAULT ''",
-		"fingerprint":    "TEXT NOT NULL DEFAULT ''",
-		"transport":      "TEXT NOT NULL DEFAULT ''",
-		"path":           "TEXT NOT NULL DEFAULT ''",
-		"host_header":    "TEXT NOT NULL DEFAULT ''",
-		"service_name":   "TEXT NOT NULL DEFAULT ''",
-		"vmess_security": "TEXT NOT NULL DEFAULT ''",
-	}
-	for name, def := range cols {
-		exists, err := s.columnExists("upstreams", name)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE upstreams ADD COLUMN %s %s`, name, def)); err != nil {
-				return fmt.Errorf("升级 upstreams.%s 失败: %w", name, err)
-			}
-		}
-	}
+// PortRange returns the startup-level inbound port window.
+func (s *Store) PortRange() PortRange { return s.portRange }
 
-	// The default-account marker arrived in v0.5.
-	exists, err := s.columnExists("accounts", "is_default")
-	if err != nil {
-		return err
-	}
-	if !exists {
-		if _, err := s.db.Exec(`ALTER TABLE accounts ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0`); err != nil {
-			return fmt.Errorf("升级 accounts.is_default 失败: %w", err)
-		}
-	}
-	return nil
-}
-
-// columnExists reports whether a table already has a column.
-func (s *Store) columnExists(table, column string) (bool, error) {
-	rows, err := s.db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notNull, pk int
-		var dflt any
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
-			return false, err
-		}
-		if name == column {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
-}
-
-// importLegacyLocked imports a fastproxy JSON config stored next to the
+// boolInt renders a bool as SQLite's 0/1.
 func boolInt(v bool) int {
 	if v {
 		return 1
@@ -461,8 +412,9 @@ func (s *Store) UpdateSettings(in Settings) (Settings, error) {
 // --- upstreams ---
 
 // upstreamColumns is the column list shared by every upstream read; the
-// matching scanUpstream keeps SELECT and Scan in lockstep.
-const upstreamColumns = `id, name, type, host, username, password, method, uuid, tls, sni, remark,
+// matching scanUpstream keeps SELECT and Scan in lockstep. The legacy `tls`
+// column is deliberately absent: security is the only TLS source of truth.
+const upstreamColumns = `id, name, type, host, username, password, method, uuid, sni, remark,
 	health, latency_ms, exit_ip, last_check_at, last_error,
 	security, pbk, sid, flow, fingerprint, transport, path, host_header, service_name, vmess_security`
 
@@ -473,16 +425,14 @@ type upstreamScanner interface {
 
 func scanUpstream(sc upstreamScanner) (Upstream, error) {
 	var u Upstream
-	var tls int
 	if err := sc.Scan(&u.ID, &u.Name, &u.Type, &u.Host, &u.Username, &u.Password,
-		&u.Method, &u.UUID, &tls, &u.SNI, &u.Remark,
+		&u.Method, &u.UUID, &u.SNI, &u.Remark,
 		&u.Health, &u.LatencyMS, &u.ExitIP, &u.LastCheckAt, &u.LastError,
 		&u.Security, &u.PBK, &u.SID, &u.Flow, &u.Fingerprint,
 		&u.Transport, &u.Path, &u.HostHeader, &u.ServiceName, &u.VMessSecurity); err != nil {
 		return Upstream{}, err
 	}
-	u.TLS = tls != 0
-	return resolveUpstream(u), nil
+	return resolveUpstream(u)
 }
 
 func (s *Store) Upstreams() []*Upstream {
@@ -491,13 +441,20 @@ func (s *Store) Upstreams() []*Upstream {
 	out := make([]*Upstream, 0, 4)
 	rows, err := s.db.Query(`SELECT ` + upstreamColumns + ` FROM upstreams ORDER BY created_at`)
 	if err != nil {
+		log.Printf("config: 查询上游列表失败: %v", err)
 		return nil
 	}
 	defer rows.Close()
 	for rows.Next() {
-		if u, err := scanUpstream(rows); err == nil {
-			out = append(out, &u)
+		u, err := scanUpstream(rows)
+		if err != nil {
+			log.Printf("config: 读取上游记录失败: %v", err)
+			continue
 		}
+		out = append(out, &u)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("config: 遍历上游列表失败: %v", err)
 	}
 	return out
 }
@@ -505,16 +462,26 @@ func (s *Store) Upstreams() []*Upstream {
 func (s *Store) getUpstreamLocked(id string) *Upstream {
 	u, err := scanUpstream(s.db.QueryRow(`SELECT `+upstreamColumns+` FROM upstreams WHERE id=?`, id))
 	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("config: 读取上游 %s 失败: %v", id, err)
+		}
 		return nil
 	}
 	return &u
 }
 
-// resolveUpstream expands secret references in a copy of the upstream.
-func resolveUpstream(u Upstream) Upstream {
+// resolveUpstream decrypts the stored password and expands ${VAR} references
+// in the credentials of a copy of the upstream. Decryption runs first so a
+// sealed placeholder is expanded and a plaintext legacy row keeps working.
+func resolveUpstream(u Upstream) (Upstream, error) {
+	pass, err := openSecret(u.Password)
+	if err != nil {
+		return Upstream{}, fmt.Errorf("上游[%s]密码解密失败: %w", u.Name, err)
+	}
+	u.Password = pass
 	u.Username, _ = expandEnv(u.Username)
 	u.Password, _ = expandEnv(u.Password)
-	return u
+	return u, nil
 }
 
 // normalizeUpstreamType maps the accepted spellings of upstream types onto
@@ -549,7 +516,6 @@ func NormalizeUpstream(in *Upstream) error {
 	in.Method = strings.ToLower(strings.TrimSpace(in.Method))
 	in.UUID = strings.TrimSpace(in.UUID)
 	in.SNI = strings.TrimSpace(in.SNI)
-	in.TLS = in.TLS && (typ == UpstreamVless || typ == UpstreamVmess)
 	switch typ {
 	case UpstreamShadowsocks:
 		if in.Method == "" {
@@ -591,6 +557,8 @@ func upstreamDedupKey(u *Upstream) string {
 }
 
 // UpsertUpstream validates and inserts (id == "") or updates an upstream.
+// The password is sealed before it is written; the returned entity carries
+// the plaintext (like every other read path).
 func (s *Store) UpsertUpstream(id string, in *Upstream) (*Upstream, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -609,40 +577,48 @@ func (s *Store) UpsertUpstream(id string, in *Upstream) (*Upstream, error) {
 	if missing := dedupeMissing(append(mustRef("上游账号", in.Username), mustRef("上游密码", in.Password)...)); len(missing) > 0 {
 		return nil, missingRefError("上游凭据", missing)
 	}
+	stored, err := sealSecret(in.Password)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now().Unix()
 	if id == "" {
 		in.ID = randomHex(4)
 		_, err := s.db.Exec(`INSERT INTO upstreams
-			(id, name, type, host, username, password, method, uuid, tls, sni, remark, health, created_at, updated_at,
+			(id, name, type, host, username, password, method, uuid, sni, remark, health, created_at, updated_at,
 			 security, pbk, sid, flow, fingerprint, transport, path, host_header, service_name, vmess_security)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,'unknown',?,?,
+			VALUES(?,?,?,?,?,?,?,?,?,?,'unknown',?,?,
 			 ?,?,?,?,?,?,?,?,?,?)`,
-			in.ID, in.Name, in.Type, in.Host, in.Username, in.Password,
-			in.Method, in.UUID, boolInt(in.TLS), in.SNI, in.Remark, now, now,
+			in.ID, in.Name, in.Type, in.Host, in.Username, stored,
+			in.Method, in.UUID, in.SNI, in.Remark, now, now,
 			in.Security, in.PBK, in.SID, in.Flow, in.Fingerprint,
 			in.Transport, in.Path, in.HostHeader, in.ServiceName, in.VMessSecurity)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		// Reset probe state when the endpoint identity changes.
+		// Reset probe state when the endpoint identity changes (compared in
+		// plaintext on both sides).
 		reset := false
 		var oldType, oldHost, oldUser, oldPass, oldMethod, oldUUID string
-		var oldTLS int
-		err := s.db.QueryRow(`SELECT type, host, username, password, method, uuid, tls FROM upstreams WHERE id=?`, id).
-			Scan(&oldType, &oldHost, &oldUser, &oldPass, &oldMethod, &oldUUID, &oldTLS)
+		err := s.db.QueryRow(`SELECT type, host, username, password, method, uuid FROM upstreams WHERE id=?`, id).
+			Scan(&oldType, &oldHost, &oldUser, &oldPass, &oldMethod, &oldUUID)
 		if err != nil {
 			return nil, ErrNotFound
 		}
-		if oldType != in.Type || oldHost != in.Host || oldUser != in.Username || oldPass != in.Password ||
-			oldMethod != in.Method || oldUUID != in.UUID || (oldTLS != 0) != in.TLS {
+		oldPlain, perr := openSecret(oldPass)
+		if perr != nil {
+			return nil, fmt.Errorf("上游旧密码解密失败: %w", perr)
+		}
+		if oldType != in.Type || oldHost != in.Host || oldUser != in.Username || oldPlain != in.Password ||
+			oldMethod != in.Method || oldUUID != in.UUID {
 			reset = true
 		}
-		const setCols = `name=?, type=?, host=?, username=?, password=?, method=?, uuid=?, tls=?, sni=?, remark=?,
+		const setCols = `name=?, type=?, host=?, username=?, password=?, method=?, uuid=?, sni=?, remark=?,
 			security=?, pbk=?, sid=?, flow=?, fingerprint=?, transport=?, path=?, host_header=?, service_name=?, vmess_security=?`
-		args := []any{in.Name, in.Type, in.Host, in.Username, in.Password,
-			in.Method, in.UUID, boolInt(in.TLS), in.SNI, in.Remark,
+		args := []any{in.Name, in.Type, in.Host, in.Username, stored,
+			in.Method, in.UUID, in.SNI, in.Remark,
 			in.Security, in.PBK, in.SID, in.Flow, in.Fingerprint,
 			in.Transport, in.Path, in.HostHeader, in.ServiceName, in.VMessSecurity}
 		var res sql.Result
@@ -719,6 +695,11 @@ func (s *Store) ImportUpstreams(candidates []*Upstream) (int, []string, []string
 			var sec, pbk, sid, flow, transport, path, hostHeader, service string
 			if rows.Scan(&typ, &host, &user, &pass, &method, &uuid,
 				&sec, &pbk, &sid, &flow, &transport, &path, &hostHeader, &service) == nil {
+				// Compare in plaintext so freshly imported duplicates match
+				// sealed rows too.
+				if plain, derr := openSecret(pass); derr == nil {
+					pass = plain
+				}
 				seen[typ+"|"+host+"|"+method+"|"+uuid+"|"+user+"|"+pass+
 					"|"+pbk+"|"+sid+"|"+flow+"|"+sec+"|"+transport+"|"+path+"|"+hostHeader+"|"+service] = true
 			}
@@ -750,13 +731,18 @@ func (s *Store) ImportUpstreams(candidates []*Upstream) (int, []string, []string
 		}
 		seen[key] = true
 		u.ID = randomHex(4)
+		stored, serr := sealSecret(u.Password)
+		if serr != nil {
+			problems = append(problems, name+" ("+u.Host+"): 密码加密失败: "+serr.Error())
+			continue
+		}
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO upstreams
-			(id, name, type, host, username, password, method, uuid, tls, sni, remark, created_at, updated_at,
+			(id, name, type, host, username, password, method, uuid, sni, remark, created_at, updated_at,
 			 security, pbk, sid, flow, fingerprint, transport, path, host_header, service_name, vmess_security)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,
 			 ?,?,?,?,?,?,?,?,?,?)`,
-			u.ID, name, u.Type, u.Host, u.Username, u.Password,
-			u.Method, u.UUID, boolInt(u.TLS), u.SNI, u.Remark, now, now,
+			u.ID, name, u.Type, u.Host, u.Username, stored,
+			u.Method, u.UUID, u.SNI, u.Remark, now, now,
 			u.Security, u.PBK, u.SID, u.Flow, u.Fingerprint,
 			u.Transport, u.Path, u.HostHeader, u.ServiceName, u.VMessSecurity); err != nil {
 			return added, duplicates, problems
@@ -814,6 +800,10 @@ func (s *Store) UpsertPort(id string, in *Port) (*Port, error) {
 	in.Remark = strings.TrimSpace(in.Remark)
 	if in.Port <= 0 || in.Port > 65535 {
 		return nil, errors.New("端口无效（1-65535）")
+	}
+	if !s.portRange.Contains(in.Port) {
+		return nil, fmt.Errorf("端口 %d 超出允许范围（当前 PORT_RANGE=%s，允许 %d-%d），请修改 PORT_RANGE 环境变量或选择范围内的端口",
+			in.Port, s.portRange, s.portRange.Min, s.portRange.Max)
 	}
 	if in.Port == s.adminPort {
 		return nil, fmt.Errorf("端口 %d 与管理面板端口冲突", s.adminPort)
@@ -873,11 +863,15 @@ func (s *Store) ensureDefaultAccountLocked(p Port, upstreamID string) error {
 		}
 		username = fmt.Sprintf("default-%d-%d", p.Port, i)
 	}
+	password, err := sealSecret(randomHex(6))
+	if err != nil {
+		return err
+	}
 	now := time.Now().Unix()
-	_, err := s.db.Exec(`INSERT INTO accounts
+	_, err = s.db.Exec(`INSERT INTO accounts
 		(id, username, password, port_id, upstream_id, enabled, remark, is_default, created_at, updated_at)
 		VALUES(?,?,?,?,?,1,'',1,?,?)`,
-		randomHex(4), username, randomHex(6), p.ID, upstreamID, now, now)
+		randomHex(4), username, password, p.ID, upstreamID, now, now)
 	return err
 }
 
@@ -895,7 +889,10 @@ func (s *Store) GetDefaultAccount(portID string) *Account {
 	}
 	a.Enabled = enabled == 1
 	a.IsDefault = def == 1
-	c := resolveAccount(a)
+	c, err := resolveAccount(a)
+	if err != nil {
+		return nil
+	}
 	return &c
 }
 
@@ -961,16 +958,25 @@ func (s *Store) Accounts() []*Account {
 		}
 		a.Enabled = enabled == 1
 		a.IsDefault = def == 1
-		c := resolveAccount(a)
+		c, err := resolveAccount(a)
+		if err != nil {
+			continue
+		}
 		out = append(out, &c)
 	}
 	return out
 }
 
-// resolveAccount expands secret references in a copy of the account.
-func resolveAccount(a Account) Account {
+// resolveAccount decrypts the stored password and expands ${VAR} references
+// in a copy of the account (decryption first, env expansion second).
+func resolveAccount(a Account) (Account, error) {
+	pass, err := openSecret(a.Password)
+	if err != nil {
+		return Account{}, fmt.Errorf("账户[%s]密码解密失败: %w", a.Username, err)
+	}
+	a.Password = pass
 	a.Password, _ = expandEnv(a.Password)
-	return a
+	return a, nil
 }
 
 func (s *Store) getAccountLocked(id string) *Account {
@@ -983,7 +989,10 @@ func (s *Store) getAccountLocked(id string) *Account {
 	}
 	a.Enabled = enabled == 1
 	a.IsDefault = def == 1
-	c := resolveAccount(a)
+	c, err := resolveAccount(a)
+	if err != nil {
+		return nil
+	}
 	return &c
 }
 
@@ -1011,9 +1020,7 @@ func (s *Store) UpsertAccount(id string, in *Account) (*Account, error) {
 		return nil, errors.New("绑定的端口不存在")
 	}
 	if in.UpstreamID == "" {
-		if !s.settings.AllowDirect {
-			return nil, errors.New("当前设置不允许直连，请为账户绑定上游")
-		}
+		// "" = direct egress; this is the only direct mode (no global switch).
 	} else if s.getUpstreamLocked(in.UpstreamID) == nil {
 		return nil, errors.New("绑定的上游不存在")
 	}
@@ -1026,6 +1033,10 @@ func (s *Store) UpsertAccount(id string, in *Account) (*Account, error) {
 	if n > 0 {
 		return nil, fmt.Errorf("用户名 %s 已存在", in.Username)
 	}
+	stored, err := sealSecret(in.Password)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now().Unix()
 	if id == "" {
@@ -1033,7 +1044,7 @@ func (s *Store) UpsertAccount(id string, in *Account) (*Account, error) {
 		if _, err := s.db.Exec(`INSERT INTO accounts
 			(id, username, password, port_id, upstream_id, enabled, remark, is_default, created_at, updated_at)
 			VALUES(?,?,?,?,?,?,?,0,?,?)`,
-			in.ID, in.Username, in.Password, in.PortID, in.UpstreamID, boolInt(in.Enabled), in.Remark, now, now); err != nil {
+			in.ID, in.Username, stored, in.PortID, in.UpstreamID, boolInt(in.Enabled), in.Remark, now, now); err != nil {
 			return nil, err
 		}
 	} else {
@@ -1046,7 +1057,7 @@ func (s *Store) UpsertAccount(id string, in *Account) (*Account, error) {
 		}
 		in.IsDefault = existing.IsDefault
 		res, err := s.db.Exec(`UPDATE accounts SET username=?, password=?, port_id=?, upstream_id=?, enabled=?, remark=?, updated_at=? WHERE id=?`,
-			in.Username, in.Password, in.PortID, in.UpstreamID, boolInt(in.Enabled), in.Remark, now, id)
+			in.Username, stored, in.PortID, in.UpstreamID, boolInt(in.Enabled), in.Remark, now, id)
 		if err != nil {
 			return nil, err
 		}

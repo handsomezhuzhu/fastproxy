@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/handsomezhuzhu/fastproxy/config"
@@ -30,10 +31,8 @@ import (
 )
 
 const (
-	cookieName   = "fp_admin"
-	sessionTTL   = 12 * time.Hour
-	maxFails     = 10
-	lockDuration = 10 * time.Minute
+	cookieName = "fp_admin"
+	sessionTTL = 12 * time.Hour
 )
 
 //go:embed all:dist
@@ -51,8 +50,12 @@ type Server struct {
 	singMu  sync.Mutex
 	singbox SingBoxReloader
 
-	mu    sync.Mutex
-	fails map[string]*failState
+	// proxyMu guards the trusted reverse-proxy list installed by main.
+	proxyMu sync.RWMutex
+	proxies []*net.IPNet
+
+	// login throttles admin password attempts globally (single admin).
+	login *loginLimiter
 }
 
 // SingBoxReloader is the embedded sing-box manager as seen by the panel.
@@ -62,6 +65,7 @@ type SingBoxReloader interface {
 	Dial(up config.Upstream, addr string, timeout time.Duration) (net.Conn, error)
 	Reload(ctx context.Context) error
 	LastError() error
+	Status() map[string]any
 }
 
 // SetSingBox installs the embedded sing-box manager. Upstream create/update/
@@ -82,6 +86,16 @@ func (s *Server) singboxReloader() SingBoxReloader {
 	return s.singbox
 }
 
+// singboxError returns the embedded box's last startup/reload error (nil when
+// it is healthy or not installed).
+func (s *Server) singboxError() error {
+	r := s.singboxReloader()
+	if r == nil {
+		return nil
+	}
+	return r.LastError()
+}
+
 // reloadSingBox applies upstream changes to the embedded box and returns a
 // warning string for the response ("" on success). The store is already
 // updated when this runs.
@@ -97,19 +111,35 @@ func (s *Server) reloadSingBox() string {
 	return ""
 }
 
-type failState struct {
-	count       int
-	lockedUntil time.Time
-}
-
-// NewServer wires the panel to the store, proxy manager, logger and prober.
 func NewServer(store *config.Store, mgr *proxy.Manager, logger *logx.Logger, prober *probe.Runner, version string) *Server {
 	sub, err := fs.Sub(distFS, "dist")
 	if err != nil {
 		log.Fatalf("嵌入的前端资源损坏: %v", err)
 	}
+	policy, _ := EnvLoginPolicy()
 	return &Server{store: store, mgr: mgr, log: logger, probe: prober, ver: version,
-		web: sub, fails: map[string]*failState{}}
+		web:   sub,
+		login: newLoginLimiter(policy.MaxAttempts, policy.Lock, time.Now)}
+}
+
+// SetLoginPolicy overrides the login throttle (main uses it to log parsed env
+// values; tests use it to shrink windows). The existing clock (if any) is kept
+// so a test may install a fake clock before or after this call.
+func (s *Server) SetLoginPolicy(maxAttempts int, lock time.Duration) {
+	now := time.Now
+	if s.login != nil {
+		s.login.mu.Lock()
+		now = s.login.now
+		s.login.mu.Unlock()
+	}
+	s.login = newLoginLimiter(maxAttempts, lock, now)
+}
+
+// SetLoginClock installs a fake clock for the login limiter (tests).
+func (s *Server) SetLoginClock(now func() time.Time) {
+	s.login.mu.Lock()
+	defer s.login.mu.Unlock()
+	s.login.now = now
 }
 
 // Handler returns the panel's routes.
@@ -119,6 +149,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/data", s.auth(s.handleData))
+	mux.HandleFunc("GET /api/singbox/status", s.auth(s.handleSingBoxStatus))
 	mux.HandleFunc("GET /api/stats", s.auth(s.handleStats))
 	mux.HandleFunc("GET /api/logs", s.auth(s.handleLogs))
 	mux.HandleFunc("DELETE /api/logs", s.auth(s.handleClearLogs))
@@ -131,10 +162,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/upstreams/bulk", s.auth(s.handleBulkUpstreams))
 	mux.HandleFunc("POST /api/upstreams/import", s.auth(s.handleImportUpstreams))
 	mux.HandleFunc("POST /api/upstreams/parse", s.auth(s.handleParseUpstream))
-	mux.HandleFunc("POST /api/upstreams/check-all", s.auth(s.handleCheckAllUpstreams))
+	mux.HandleFunc("POST /api/upstreams/check", s.auth(s.handleCheckUpstreams))
 	mux.HandleFunc("PUT /api/upstreams/{id}", s.auth(s.handleUpdateUpstream))
-	mux.HandleFunc("POST /api/upstreams/{id}/check", s.auth(s.handleCheckUpstream))
-	mux.HandleFunc("POST /api/upstreams/{id}/test", s.auth(s.handleCheckUpstream)) // 兼容旧前端
 	mux.HandleFunc("DELETE /api/upstreams/{id}", s.auth(s.handleDeleteUpstream))
 
 	mux.HandleFunc("POST /api/ports", s.auth(s.handleCreatePort))
@@ -208,6 +237,13 @@ func (s *Server) newCookie() *http.Cookie {
 	}
 }
 
+// setSessionCookie attaches the session cookie, adding Secure when the client
+// reached the panel over HTTPS (direct TLS or a trusted proxy's XFP=https).
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, c *http.Cookie) {
+	c.Secure = s.requestIsHTTPS(r)
+	http.SetCookie(w, c)
+}
+
 func (s *Server) validSession(r *http.Request) bool {
 	c, err := r.Cookie(cookieName)
 	if err != nil {
@@ -234,12 +270,11 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func clientIP(r *http.Request) string {
-	host := r.RemoteAddr
-	if i := strings.LastIndex(host, ":"); i > 0 {
-		host = host[:i]
-	}
-	return host
+// clientIP resolves the requesting client for logging: the right-most
+// untrusted X-Forwarded-For hop when the peer is a configured trusted proxy,
+// otherwise the TCP peer address.
+func (s *Server) clientIP(r *http.Request) string {
+	return s.clientInfo(r).addr
 }
 
 // --- session / password endpoints ---
@@ -252,50 +287,50 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Refuse early while locked so even a malformed body cannot be used to
+	// probe the password.
+	if remain := s.login.lockedFor(); remain > 0 {
+		s.writeLocked(w, remain)
+		return
+	}
 	var in struct {
 		Password string `json:"password"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	ip := clientIP(r)
-	now := time.Now()
-
-	s.mu.Lock()
-	fs, ok := s.fails[ip]
-	if !ok {
-		fs = &failState{}
-		s.fails[ip] = fs
-	}
-	if fs.lockedUntil.After(now) {
-		s.mu.Unlock()
-		writeErr(w, http.StatusTooManyRequests, "尝试次数过多，请 10 分钟后再试")
+	hash := s.store.AdminPasswordHash()
+	ok := hash == "" || VerifyPassword(hash, in.Password)
+	if remain := s.login.attempt(ok); remain > 0 {
+		if !ok {
+			s.log.Warnf("管理面板登录失败（已达上限，锁定 %s）: %s", remain.Round(time.Second), s.clientIP(r))
+		}
+		s.writeLocked(w, remain)
 		return
 	}
-	if len(s.fails) > 1024 {
-		for k, v := range s.fails {
-			if v.lockedUntil.Before(now) && v.count == 0 {
-				delete(s.fails, k)
-			}
-		}
-	}
-	hash := s.store.AdminPasswordHash()
-	if hash != "" && !VerifyPassword(hash, in.Password) {
-		fs.count++
-		if fs.count >= maxFails {
-			fs.lockedUntil = now.Add(lockDuration)
-			fs.count = 0
-		}
-		s.mu.Unlock()
-		s.log.Warnf("管理面板登录失败 ip=%s", ip)
+	if !ok {
+		s.log.Warnf("管理面板登录失败: %s", s.clientIP(r))
 		writeErr(w, http.StatusUnauthorized, "密码错误")
 		return
 	}
-	delete(s.fails, ip)
-	s.mu.Unlock()
+	s.log.Infof("管理面板登录成功: %s", s.clientIP(r))
 
-	http.SetCookie(w, s.newCookie())
+	s.setSessionCookie(w, r, s.newCookie())
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// writeLocked answers a throttled login with 429, Retry-After (seconds, always
+// at least 1) and a JSON body the panel can show verbatim.
+func (s *Server) writeLocked(w http.ResponseWriter, remain time.Duration) {
+	sec := int((remain + time.Second - 1) / time.Second)
+	if sec < 1 {
+		sec = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(sec))
+	writeJSON(w, http.StatusTooManyRequests, map[string]any{
+		"error":           fmt.Sprintf("登录失败次数过多，请 %d 秒后再试", sec),
+		"retry_after_sec": sec,
+	})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -336,12 +371,26 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "会话重置失败")
 		return
 	}
-	http.SetCookie(w, s.newCookie())
+	s.setSessionCookie(w, r, s.newCookie())
 	s.log.Infof("管理密码已修改")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // --- read endpoints ---
+
+// handleSingBoxStatus reports the embedded sing-box state, registered upstreams
+// and the recent manager events. The panel uses it for the dashboard card.
+func (s *Server) handleSingBoxStatus(w http.ResponseWriter, r *http.Request) {
+	if box := s.singboxReloader(); box != nil {
+		writeJSON(w, http.StatusOK, box.Status())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"running": false, "started_at": 0, "reload_count": 0,
+		"last_reload_at": 0, "last_error": "",
+		"upstreams": []any{}, "logs": []string{},
+	})
+}
 
 func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	ports, accounts := s.mgr.Status()
@@ -350,14 +399,19 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	if !checkedAt.IsZero() {
 		checkedUnix = checkedAt.Unix()
 	}
+	probeInfo := map[string]any{"server_ip": serverIP, "last_check_at": checkedUnix}
+	if err := s.singboxError(); err != nil {
+		probeInfo["singbox_error"] = err.Error()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":   s.ver,
-		"settings":  s.store.Settings(),
-		"upstreams": s.store.Upstreams(),
-		"ports":     s.store.Ports(),
-		"accounts":  s.store.Accounts(),
-		"status":    map[string]any{"ports": ports, "accounts": accounts},
-		"probe":     map[string]any{"server_ip": serverIP, "last_check_at": checkedUnix},
+		"version":    s.ver,
+		"settings":   s.store.Settings(),
+		"upstreams":  s.store.Upstreams(),
+		"ports":      s.store.Ports(),
+		"accounts":   s.store.Accounts(),
+		"status":     map[string]any{"ports": ports, "accounts": accounts},
+		"probe":      probeInfo,
+		"port_range": s.store.PortRange(),
 	})
 }
 
@@ -466,9 +520,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 //
 //   - Address form (http/socks5): {name, type?, upstream:"http://user:pass@h:p"}
 //   - Field form (all types):    {name, type, host:"h:p", username, password,
-//     method, uuid, tls, sni} plus the vless/vmess fields
+//     method, uuid, sni} plus the vless/vmess fields
 //     (security, pbk, sid, flow, fingerprint, transport, path, host_header,
-//     service_name, vmess_security).
+//     service_name, vmess_security). TLS is expressed only through security
+//     ("none" | "tls" | "reality"); a legacy "tls" bool in the body is ignored.
 //
 // When "upstream" carries an ss:// vmess:// or vless:// share link it is parsed
 // by the importer and the resulting fields win over the explicit ones.
@@ -481,7 +536,6 @@ type upstreamInput struct {
 	Password      string `json:"password"`
 	Method        string `json:"method"`
 	UUID          string `json:"uuid"`
-	TLS           bool   `json:"tls"`
 	SNI           string `json:"sni"`
 	Security      string `json:"security"`
 	PBK           string `json:"pbk"`
@@ -500,7 +554,7 @@ func (in *upstreamInput) toEntity() (*config.Upstream, error) {
 	u := &config.Upstream{
 		Name: in.Name, Type: in.Type, Host: in.Host,
 		Username: in.Username, Password: in.Password,
-		Method: in.Method, UUID: in.UUID, TLS: in.TLS, SNI: in.SNI,
+		Method: in.Method, UUID: in.UUID, SNI: in.SNI,
 		Remark:   in.Remark,
 		Security: in.Security, PBK: in.PBK, SID: in.SID, Flow: in.Flow,
 		Fingerprint: in.Fingerprint, Transport: in.Transport, Path: in.Path,
@@ -529,7 +583,7 @@ func (in *upstreamInput) toEntity() (*config.Upstream, error) {
 		p := res.Proxies[0]
 		u.Type, u.Host = p.Type, p.Host
 		u.Username, u.Password = p.User, p.Pass
-		u.Method, u.UUID, u.TLS, u.SNI = p.Method, p.UUID, p.TLS, p.SNI
+		u.Method, u.UUID, u.SNI = p.Method, p.UUID, p.SNI
 		u.Security, u.PBK, u.SID, u.Flow = p.Security, p.PBK, p.SID, p.Flow
 		u.Fingerprint, u.Transport, u.Path = p.Fingerprint, p.Transport, p.Path
 		u.HostHeader, u.ServiceName = p.HostHeader, p.ServiceName
@@ -625,7 +679,7 @@ func (s *Server) handleImportUpstreams(w http.ResponseWriter, r *http.Request) {
 		candidates = append(candidates, &config.Upstream{
 			Name: p.Name, Type: p.Type, Host: p.Host,
 			Username: p.User, Password: p.Pass,
-			Method: p.Method, UUID: p.UUID, TLS: p.TLS, SNI: p.SNI,
+			Method: p.Method, UUID: p.UUID, SNI: p.SNI,
 			Security: p.Security, PBK: p.PBK, SID: p.SID, Flow: p.Flow,
 			Fingerprint: p.Fingerprint, Transport: p.Transport, Path: p.Path,
 			HostHeader: p.HostHeader, ServiceName: p.ServiceName,
@@ -658,9 +712,13 @@ func (s *Server) handleImportUpstreams(w http.ResponseWriter, r *http.Request) {
 // "paste and auto-fill the form" flow. It never touches the store.
 //
 //	POST /api/upstreams/parse {"text":"vless://..."}
-//	200 {"proxy":{name,type,host,uuid,password,method,tls,sni,security,pbk,
-//	              sid,flow,fingerprint,transport,path,host_header,service_name}}
+//	200 {"proxy":{name,type,host,uuid,password,method,sni,security,pbk,
+//	              sid,flow,fingerprint,transport,path,host_header,service_name,
+//	              vmess_security}}
 //	400 {"error":"中文原因"}
+//
+// TLS is conveyed by security only (none|tls|reality); no legacy tls flag is
+// returned.
 func (s *Server) handleParseUpstream(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Text string `json:"text"`
@@ -697,7 +755,6 @@ func (s *Server) handleParseUpstream(w http.ResponseWriter, r *http.Request) {
 		"uuid":           p.UUID,
 		"password":       p.Pass,
 		"method":         p.Method,
-		"tls":            p.TLS,
 		"sni":            p.SNI,
 		"security":       p.Security,
 		"pbk":            p.PBK,
@@ -712,35 +769,118 @@ func (s *Server) handleParseUpstream(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
-// handleCheckUpstream probes one upstream now (health + latency + exit IP).
-func (s *Server) handleCheckUpstream(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	res, ok := s.probe.CheckOne(id)
-	if !ok {
-		writeErr(w, http.StatusNotFound, "上游不存在")
-		return
-	}
-	if res.OK {
-		s.log.Infof("上游探测 %s: 正常, 延迟 %dms, 出口 IP %s", id, res.LatencyMS, res.ExitIP)
-	} else {
-		s.log.Warnf("上游探测 %s: 失败 %s", id, res.Error)
-	}
-	writeJSON(w, http.StatusOK, res)
+// checkResult is one upstream probe outcome returned by
+// POST /api/upstreams/check.
+type checkResult struct {
+	ID        string `json:"id"`
+	Found     bool   `json:"-"`
+	OK        bool   `json:"ok"`
+	LatencyMS int64  `json:"latency_ms"`
+	ExitIP    string `json:"exit_ip"`
+	Error     string `json:"error"`
 }
 
-// handleCheckAllUpstreams probes every upstream and refreshes the direct IP.
-func (s *Server) handleCheckAllUpstreams(w http.ResponseWriter, r *http.Request) {
-	ok, failed := s.probe.CheckAll()
-	serverIP, _ := s.probe.ServerIP()
+// checkConcurrency bounds parallel probes triggered by one API call (the
+// same ceiling as the settings' probe_concurrency).
+const checkConcurrency = 8
+
+// handleCheckUpstreams probes the requested upstreams (empty/omitted ids =
+// every upstream) and stores each result. This is the only probe entry point:
+// the panel calls it per row ({"ids":["<id>"]}) for live refresh and once
+// without ids (or with all ids) for "check all".
+//
+//	POST /api/upstreams/check {"ids":["a","b"]}
+//	200 {"results":[{id,ok,latency_ms,exit_ip,error}],"ok":N,"failed":N}
+func (s *Server) handleCheckUpstreams(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		IDs []string `json:"ids"`
+	}
+	// An empty body and "{}" both mean "all upstreams"; a malformed JSON body
+	// is still rejected.
+	if ct := r.Header.Get("Content-Type"); strings.HasPrefix(ct, "application/json") && bodyPresent(r) {
+		if !decodeJSON(w, r, &in) {
+			return
+		}
+	}
+	ids := normalizeIDs(in.IDs)
+	if len(ids) == 0 {
+		for _, u := range s.store.Upstreams() {
+			ids = append(ids, u.ID)
+		}
+	}
+
+	out := make([]checkResult, len(ids))
+	var ok, failed atomic.Int64
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, checkConcurrency)
+	for i, id := range ids {
+		i, id := i, id
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			defer func() {
+				// A panicking prober must not take the whole panel down; the
+				// slot reports a generic failure instead.
+				if rec := recover(); rec != nil {
+					out[i] = checkResult{ID: id, Found: true, Error: fmt.Sprintf("探测异常: %v", rec)}
+					failed.Add(1)
+				}
+			}()
+			res, found := s.probe.CheckOne(id)
+			out[i] = checkResult{ID: id, Found: found, OK: res.OK, LatencyMS: res.LatencyMS,
+				ExitIP: res.ExitIP, Error: res.Error}
+			if !found {
+				out[i].Error = "不存在"
+				failed.Add(1)
+			} else if res.OK {
+				ok.Add(1)
+			} else {
+				failed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	for _, res := range out {
+		if res.Found && res.OK {
+			s.log.Infof("上游探测 %s: 正常, 延迟 %dms, 出口 IP %s", res.ID, res.LatencyMS, res.ExitIP)
+		} else {
+			s.log.Warnf("上游探测 %s: 失败 %s", res.ID, res.Error)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":        ok,
-		"failed":    failed,
-		"checked":   ok + failed,
-		"server_ip": serverIP,
+		"results": out, "ok": int(ok.Load()), "failed": int(failed.Load()),
 	})
 }
 
-// handleBulkUpstreams applies bulk delete/check to upstreams.
+// bodyPresent reports whether the request carries a body at all.
+func bodyPresent(r *http.Request) bool {
+	if r.ContentLength != 0 {
+		return true
+	}
+	return r.Body != nil && r.Body != http.NoBody && r.ContentLength < 0
+}
+
+// normalizeIDs trims, de-duplicates and drops empty ids while keeping input
+// order.
+func normalizeIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+// handleBulkUpstreams applies a bulk action to upstreams (delete only; probes
+// go through POST /api/upstreams/check).
 func (s *Server) handleBulkUpstreams(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		IDs    []string `json:"ids"`
@@ -757,35 +897,8 @@ func (s *Server) handleBulkUpstreams(w http.ResponseWriter, r *http.Request) {
 			boxWarning = s.reloadSingBox()
 		}
 		s.syncRespondWith(w, s.mgr.Sync(), boxWarning, map[string]any{"deleted": deleted, "skipped": skipped})
-	case "check":
-		type checkOut struct {
-			ID        string `json:"id"`
-			OK        bool   `json:"ok"`
-			LatencyMS int64  `json:"latency_ms"`
-			ExitIP    string `json:"exit_ip,omitempty"`
-			Error     string `json:"error,omitempty"`
-		}
-		out := make([]checkOut, 0, len(in.IDs))
-		okCount := 0
-		for _, id := range in.IDs {
-			res, found := s.probe.CheckOne(id)
-			if !found {
-				out = append(out, checkOut{ID: id, OK: false, Error: "不存在"})
-				continue
-			}
-			if res.OK {
-				okCount++
-			}
-			out = append(out, checkOut{
-				ID: id, OK: res.OK, LatencyMS: res.LatencyMS, ExitIP: res.ExitIP, Error: res.Error,
-			})
-		}
-		serverIP, _ := s.probe.ServerIP()
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok": okCount, "failed": len(out) - okCount, "checks": out, "server_ip": serverIP,
-		})
 	default:
-		writeErr(w, http.StatusBadRequest, "action 仅支持 delete 或 check")
+		writeErr(w, http.StatusBadRequest, "action 仅支持 delete（检测请使用 POST /api/upstreams/check）")
 	}
 }
 

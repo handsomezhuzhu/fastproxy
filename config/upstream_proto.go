@@ -39,11 +39,7 @@ func (in *Upstream) normalizeTLSLike() error {
 	in.VMessSecurity = strings.ToLower(strings.TrimSpace(in.VMessSecurity))
 
 	if in.Security == "" {
-		if in.TLS {
-			in.Security = SecurityTLS
-		} else {
-			in.Security = SecurityNone
-		}
+		in.Security = SecurityNone
 	}
 	switch in.Security {
 	case SecurityNone, SecurityTLS, SecurityReality:
@@ -61,9 +57,6 @@ func (in *Upstream) normalizeTLSLike() error {
 	if in.Fingerprint == "" && in.Security == SecurityReality {
 		in.Fingerprint = "chrome"
 	}
-	// TLS (and REALITY) are TLS-based: keep the legacy bool in sync so the
-	// native VLESS client and older clients agree.
-	in.TLS = in.Security == SecurityTLS || in.Security == SecurityReality
 	return nil
 }
 

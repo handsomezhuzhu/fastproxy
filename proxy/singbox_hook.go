@@ -9,26 +9,20 @@ import (
 	"github.com/handsomezhuzhu/fastproxy/config"
 )
 
-// needsSingBox mirrors singbox.NeedsSingBox without importing that package
-// (the singbox package depends on config only, but keeping the rule local
-// lets the proxy package stay free of the heavy sing-box dependency graph).
-func needsSingBox(up config.Upstream) bool {
-	switch up.Type {
-	case config.UpstreamVmess:
-		return true
-	case config.UpstreamVless:
-		return up.Security == config.SecurityReality ||
-			up.Flow != "" || up.Transport == "ws" || up.Transport == "grpc"
-	}
-	return false
-}
+// ErrVmessUnsupported is kept for compatibility with older callers; VLESS and
+// VMess are now both served by the embedded sing-box instance (see
+// SingBoxDialer) and only report this error when it was never initialised.
+var ErrVmessUnsupported = errors.New(
+	"vless/vmess 需要内置 sing-box，但 sing-box 尚未初始化")
 
-// dialViaSingBox routes the connection through the embedded sing-box manager.
+// dialViaSingBox routes a VLESS/VMess connection through the embedded sing-box
+// manager (each such upstream owns a loopback SOCKS inbound inside the box).
 func dialViaSingBox(up config.Upstream, addr string, timeout time.Duration) (net.Conn, error) {
-	if SingBoxDialer == nil {
-		return nil, fmt.Errorf("%w：上游 %s 需要 VMess/REALITY/Vision/WS/gRPC 出站", ErrVmessUnsupported, up.Name)
+	dial := SingBoxDialer
+	if dial == nil {
+		return nil, fmt.Errorf("%w：上游 %s（%s）无法直连", ErrVmessUnsupported, up.Name, up.Type)
 	}
-	conn, err := SingBoxDialer(up, addr, timeout)
+	conn, err := dial(up, addr, timeout)
 	if err != nil {
 		return nil, err
 	}

@@ -7,7 +7,7 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/session` | `{auth, version}` |
-| POST | `/api/login` | `{password}` → 设置会话 Cookie |
+| POST | `/api/login` | `{password}` → 设置会话 Cookie；连续失败达到 `LOGIN_MAX_ATTEMPTS` 后返回 429 + `Retry-After`/`{error, retry_after_sec}`，锁定仅在内存、重启清零 |
 | POST | `/api/logout` | 退出 |
 | POST | `/api/password` | `{old, new}` 修改管理密码 |
 
@@ -15,16 +15,17 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/data` | `{version, settings, upstreams, ports, accounts, status:{ports,accounts}}` |
+| GET | `/api/data` | `{version, settings, upstreams, ports, accounts, port_range:{min,max}, status:{ports,accounts}, probe}` |
 | GET | `/api/stats` | 仅统计 `{status}` |
 | GET | `/api/logs?limit=&level=&port=&account=` | 连接日志（SQLite 查询），`level` 为最低级别 |
 | GET | `/api/settings` | 全局设置 |
 | PUT | `/api/settings` | 保存全局设置 |
+| GET | `/api/singbox/status` | 内置 sing-box 状态：`{running, started_at, reload_count, last_reload_at, last_error, upstreams:[{id,name,port}], logs:[string]}` |
 
 设置字段：`access_log, log_level(debug|info|warn|error), log_buffer(100-10000),
-log_retention_days(1-90), allow_direct, dial_timeout_sec(3-120), handshake_timeout_sec(10-300),
+log_retention_days(1-90), dial_timeout_sec(3-120), handshake_timeout_sec(10-300),
 probe_enabled, probe_interval_sec(30-3600), probe_timeout_sec(3-30), probe_concurrency(1-32),
-probe_target(域名)`。
+probe_target(域名)`。直连不再有全局开关：账户不绑定上游即直连。
 
 ## 上游代理
 
@@ -33,20 +34,18 @@ probe_target(域名)`。
 | POST | `/api/upstreams` | 见下方两种请求形状 |
 | PUT | `/api/upstreams/{id}` | 同上 |
 | DELETE | `/api/upstreams/{id}` | 被引用时返回错误 |
-| POST | `/api/upstreams/{id}/test` | 立即探测该上游（健康 + 延迟 + 出口 IP），返回 `{ok, latency_ms, exit_ip, error?}` |
-| POST | `/api/upstreams/{id}/check` | 同上（`/test` 为兼容别名） |
-| POST | `/api/upstreams/check-all` | 检测全部上游与本机出口，返回 `{ok, failed, checked, server_ip}` |
+| POST | `/api/upstreams/check` | 唯一探测入口：`{ids:["..."]}`（空/缺省=全部）→ `{results:[{id,ok,latency_ms,exit_ip,error}], ok, failed}`。前端的逐行实时刷新就是对单个 id 调用它 |
 | POST | `/api/upstreams/import` | `{url}` 或 `{text}` → `{added,total,duplicates[],problems[],warning?}` |
-| POST | `/api/upstreams/parse` | `{text:"vless://…"}` → `{proxy:{name,type,host,uuid,password,method,tls,sni,security,pbk,sid,flow,fingerprint,transport,path,host_header,service_name}}`；解析失败 400 `{error:"中文原因"}`。只读，供前端“粘贴分享链接自动填表” |
+| POST | `/api/upstreams/parse` | `{text:"vless://…"}` → `{proxy:{name,type,host,uuid,password,method,sni,security,pbk,sid,flow,fingerprint,transport,path,host_header,service_name,vmess_security}}`；解析失败 400 `{error:"中文原因"}`。只读，供前端“粘贴分享链接自动填表” |
 
 `/api/data` 与 `GET /api/upstreams` 的 `upstreams[]` 字段：
-`id, name, type, host, username?, password?, remark?, method?, uuid?, tls?, sni?`，
+`id, name, type, host, username?, password?, remark?, method?, uuid?, sni?`，
 vless/vmess 高级字段 `security(""|none|tls|reality), pbk?, sid?, flow?, fingerprint?, transport?(""|tcp|ws|grpc), path?, host_header?, service_name?, vmess_security?`，
 以及探测字段 `health(ok|fail|unknown), latency_ms, exit_ip, last_check_at(秒), last_error`；
 另有 `probe:{server_ip,last_check_at}`。
 
-> 上游增删改/导入后服务端会重建内嵌 sing-box：VMess 与 VLESS（REALITY / Vision / WS / gRPC）经
-> 127.0.0.1:20000 起的本地 SOCKS 出站；普通 VLESS（TCP，可 TLS）、http/socks5/ss 仍走原生实现。
+> 上游增删改/导入后服务端会重建内嵌 sing-box：**所有 VLESS 与 VMess** 经
+> 127.0.0.1:20000 起的本地 SOCKS 出站；http/socks5/ss 仍走原生实现。
 > 正式二进制需以 `-tags with_utls` 构建（Dockerfile / CI / `make build-utls` 已带）。
 
 ### 上游创建/更新的两种请求形状
@@ -64,13 +63,19 @@ vless/vmess 高级字段 `security(""|none|tls|reality), pbk?, sid?, flow?, fing
    ```
    ```json
    {"name":"JP-VLESS","type":"vless","host":"j.example.com:443",
-    "uuid":"b831381d-6324-4d53-ad4f-8cda48b30811","tls":true,"sni":"cdn.example.com"}
+    "uuid":"b831381d-6324-4d53-ad4f-8cda48b30811","security":"tls","sni":"cdn.example.com"}
+   ```
+   ```json
+   {"name":"JP-REALITY","type":"vless","host":"j.example.com:443",
+    "uuid":"b831381d-6324-4d53-ad4f-8cda48b30811","security":"reality",
+    "pbk":"H5M42pBqRHTcRX3_LPHDXTeO0cEz_G_zYud220O96As","sid":"0123456789abcdef",
+    "flow":"xtls-rprx-vision","fingerprint":"chrome","sni":"www.apple.com"}
    ```
 
 `type` 取值：`http` | `socks5` | `shadowsocks` | `vless` | `vmess`（空值视为 `http`）。
 校验规则：ss 必填 `method`（`aes-128-gcm`/`aes-256-gcm`/`chacha20-ietf-poly1305`）与 `password`；
-vless/vmess 必填 `uuid`；`tls` 仅对 vless/vmess 生效；`host` 必须是 `host:port`。
-`vmess` 可保存但出站隧道返回 `vmess 暂未支持`（探测显示为失败）。
+vless/vmess 必填 `uuid`；TLS 由 `security` 表达（`none`/`tls`/`reality`，不再有 `tls` 布尔字段）；
+REALITY 必填 32 字节 `pbk`、`sid` 为不超过 16 位十六进制（可空）；`transport` 为 `tcp/ws/grpc`。
 
 ## 端口线路
 

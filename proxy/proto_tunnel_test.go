@@ -1,15 +1,10 @@
 package proxy
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -86,118 +81,73 @@ func TestShadowsocksUnsupportedMethodError(t *testing.T) {
 	}
 }
 
-// --- VLESS ---
+// --- VLESS / VMess dispatch (both go through the embedded sing-box) ---
+//
+// The VLESS end-to-end path is covered by the singbox package (a real
+// sing-box inbound is started and dialled through the manager); here only the
+// dispatcher contract of this package is pinned: vless/vmess never open a
+// native connection and report a clear error when the hook is missing.
 
-func TestVlessTunnelPlainTCP(t *testing.T) {
-	target := newTarget(t, "hello-from-vless")
-	srv := startFakeVLESS(t, testUUID, nil)
-	up := config.Upstream{Type: config.UpstreamVless, Host: srv.addr(), UUID: testUUID}
-	if body := tunnelGetThrough(t, up, target); !strings.Contains(body, "hello-from-vless") {
-		t.Fatalf("unexpected body: %q", body)
+func TestDialTunnelVlessVmessRequireSingBox(t *testing.T) {
+	if SingBoxDialer != nil {
+		t.Fatal("test assumes no sing-box hook is installed")
+	}
+	for _, up := range []config.Upstream{
+		{Type: config.UpstreamVless, Host: "127.0.0.1:1", UUID: testUUID},
+		{Type: config.UpstreamVless, Host: "127.0.0.1:1", UUID: testUUID, Security: config.SecurityTLS, SNI: "a.example.com"},
+		{Type: config.UpstreamVless, Host: "127.0.0.1:1", UUID: testUUID,
+			Security: config.SecurityReality, PBK: "pk", SID: "01"},
+		{Type: config.UpstreamVmess, Host: "127.0.0.1:1", UUID: testUUID},
+	} {
+		_, err := DialTunnel(up, "example.com:80", time.Second)
+		if !errors.Is(err, ErrVmessUnsupported) {
+			t.Fatalf("%s/%s: expected ErrVmessUnsupported, got %v", up.Type, up.Security, err)
+		}
 	}
 }
 
-// TestVlessTunnelWithTLS runs the real client handshake against a local
-// self-signed server, trusting that certificate only through testRoots
-// (production code has no InsecureSkipVerify path).
-func TestVlessTunnelWithTLS(t *testing.T) {
-	cert := testCert(t)
-	target := newTarget(t, "hello-from-vless-tls")
-	srv := startFakeVLESS(t, testUUID, &tls.Config{Certificates: []tls.Certificate{cert}})
+func TestDialTunnelUsesSingBoxDialer(t *testing.T) {
+	var got config.Upstream
+	var gotAddr string
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	SingBoxDialer = func(up config.Upstream, addr string, timeout time.Duration) (net.Conn, error) {
+		got, gotAddr = up, addr
+		return client, nil
+	}
+	t.Cleanup(func() { SingBoxDialer = nil })
 
-	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	up := config.Upstream{Type: config.UpstreamVless, ID: "x", Host: "h:443", UUID: testUUID}
+	conn, err := DialTunnel(up, "example.com:443", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool := x509.NewCertPool()
-	pool.AddCert(leaf)
-	testRoots = pool
-	t.Cleanup(func() { testRoots = nil })
+	defer conn.Close()
+	if got.ID != "x" || gotAddr != "example.com:443" {
+		t.Fatalf("dialer received %+v / %q", got, gotAddr)
+	}
 
-	up := config.Upstream{Type: config.UpstreamVless, Host: srv.addr(), UUID: testUUID,
-		TLS: true, SNI: "sni.test"}
-	if body := tunnelGetThrough(t, up, target); !strings.Contains(body, "hello-from-vless-tls") {
-		t.Fatalf("unexpected body: %q", body)
+	// A nil connection from the hook is an error, never a silent success.
+	SingBoxDialer = func(config.Upstream, string, time.Duration) (net.Conn, error) { return nil, nil }
+	if _, err := DialTunnel(up, "example.com:443", time.Second); err == nil {
+		t.Fatal("nil connection should be rejected")
 	}
 }
 
-func TestVlessTLSHandshakeFailsWithUntrustedCert(t *testing.T) {
-	// Without the throwaway root, the real client must reject the certificate:
-	// proves certificate verification is on.
-	target := newTarget(t, "nope")
-	srv := startFakeVLESS(t, testUUID, &tls.Config{Certificates: []tls.Certificate{testCert(t)}})
-	up := config.Upstream{Type: config.UpstreamVless, Host: srv.addr(), UUID: testUUID,
-		TLS: true, SNI: "sni.test"}
-	if _, err := DialTunnel(up, target, 3*time.Second); err == nil ||
-		!strings.Contains(err.Error(), "TLS 握手失败") {
-		t.Fatalf("expected TLS verification failure with an untrusted certificate, got %v", err)
-	}
-}
-
-func TestVlessWrongUUIDRejected(t *testing.T) {
-	target := newTarget(t, "nope")
-	srv := startFakeVLESS(t, testUUID, nil)
-	up := config.Upstream{Type: config.UpstreamVless, Host: srv.addr(),
-		UUID: "11111111-2222-3333-4444-555555555555"}
-	_, err := DialTunnel(up, target, 2*time.Second)
-	if err == nil {
-		t.Fatal("expected rejection for a mismatched uuid")
-	}
-	select {
-	case <-srv.rejected:
-	case <-time.After(2 * time.Second):
-		t.Fatal("server did not see the request as rejected")
-	}
-}
-
-// TestDialTunnelDispatchesByType pins the dispatcher contract used by every
-// inbound path and the prober.
-func TestDialTunnelDispatchesByType(t *testing.T) {
+// TestDialTunnelShadowsocksAndHTTP pins the remaining native dispatchers.
+func TestDialTunnelShadowsocksAndHTTP(t *testing.T) {
 	target := newTarget(t, "dispatch-ok")
-
-	// shadowsocks (typed through the store → resolveUpstream path is covered
-	// separately; here the struct itself is exercised).
 	ssLn := startFakeSS(t, "aes-256-gcm", "pw")
 	ss := config.Upstream{Type: config.UpstreamShadowsocks, Host: ssLn.Addr().String(),
 		Method: "aes-256-gcm", Password: "pw"}
 	if body := tunnelGetThrough(t, ss, target); !strings.Contains(body, "dispatch-ok") {
 		t.Fatalf("shadowsocks dispatch: %q", body)
 	}
-
-	vl := startFakeVLESS(t, testUUID, nil)
-	v := config.Upstream{Type: config.UpstreamVless, Host: vl.addr(), UUID: testUUID}
-	if body := tunnelGetThrough(t, v, target); !strings.Contains(body, "dispatch-ok") {
-		t.Fatalf("vless dispatch: %q", body)
-	}
-
-	// vmess without an initialised sing-box hook reports the explicit error.
-	if _, err := DialTunnel(config.Upstream{Type: config.UpstreamVmess, Host: "127.0.0.1:1",
-		UUID: testUUID}, target, time.Second); !errors.Is(err, ErrVmessUnsupported) {
-		t.Fatalf("vmess should return ErrVmessUnsupported, got %v", err)
-	}
-
-	// A REALITY vless node must be routed to sing-box (and fail cleanly when
-	// the hook is not installed), never to the native plain-TCP client.
-	if _, err := DialTunnel(config.Upstream{Type: config.UpstreamVless, Host: "127.0.0.1:1",
-		UUID: testUUID, Security: config.SecurityReality, PBK: "pk", SID: "01"}, target, time.Second); err == nil {
-		t.Fatal("reality vless without sing-box should fail")
-	}
-
-	// socks5 and http still route through their own paths (HTTPS upstream is
-	// covered by the existing suite; here just assert the default branch is
-	// the CONNECT one, i.e. it fails against a non-HTTP listener).
-	if _, err := DialTunnel(config.Upstream{Type: config.UpstreamHTTP, Host: vl.addr()}, target, time.Second); err == nil {
-		t.Fatal("http CONNECT against a VLESS server should fail")
-	}
-}
-
-// --- VMess ---
-
-func TestVmessReturnsClearError(t *testing.T) {
-	up := config.Upstream{Type: config.UpstreamVmess, Host: "127.0.0.1:1", UUID: testUUID}
-	_, err := DialTunnel(up, "example.com:80", time.Second)
-	if err == nil || !errors.Is(err, ErrVmessUnsupported) {
-		t.Fatalf("expected explicit vmess error, got %v", err)
+	// The default branch is the HTTP CONNECT dial: it must fail against a
+	// listener that is not an HTTP proxy.
+	if _, err := DialTunnel(config.Upstream{Type: config.UpstreamHTTP, Host: ssLn.Addr().String()}, target, time.Second); err == nil {
+		t.Fatal("http CONNECT against a shadowsocks server should fail")
 	}
 }
 
@@ -224,41 +174,5 @@ func TestInboundConnectViaShadowsocksUpstream(t *testing.T) {
 	defer conn.Close()
 	if body := tunnelGet(t, conn, br, target); !strings.Contains(body, "hello-from-ss-inbound") {
 		t.Fatalf("unexpected body: %q", body)
-	}
-}
-
-// TestInboundPlainHTTPViaVlessUpstream covers the plain-HTTP path (origin
-// form request through a tunnel-only upstream).
-func TestInboundPlainHTTPViaVlessUpstream(t *testing.T) {
-	tAddr := newTarget(t, "hello-from-vless-plain")
-	srv := startFakeVLESS(t, testUUID, nil)
-	env := newEnv(t)
-	u, err := env.store.UpsertUpstream("", &config.Upstream{
-		Name: "vl", Type: config.UpstreamVless, Host: srv.addr(), UUID: testUUID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := env.addPort(t, freePort(t))
-	env.addAccount(t, "alice", "wonder", p.ID, u.ID)
-	env.sync(t)
-
-	proxyURL := &url.URL{
-		Scheme: "http",
-		Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(p.Port)),
-		User:   url.UserPassword("alice", "wonder"),
-	}
-	client := &http.Client{
-		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
-		Timeout:   10 * time.Second,
-	}
-	resp, err := client.Get("http://" + tAddr + "/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 || !strings.Contains(string(body), "hello-from-vless-plain") {
-		t.Fatalf("bad response: %s %q", resp.Status, body)
 	}
 }

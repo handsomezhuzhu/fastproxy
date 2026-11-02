@@ -15,8 +15,8 @@ Upstream（上游代理池）
   id, name, type(http|socks5|shadowsocks|vless|vmess), host,
   username, password,          # http/socks5 账号密码；ss 用 password
   method,                      # ss 加密方式
-  uuid, tls, sni,              # vless/vmess 用户 ID 与 TLS 参数
-  security, pbk, sid, flow,    # REALITY 公钥/短 ID、XTLS Vision
+  uuid, sni,                   # vless/vmess 用户 ID 与 TLS SNI
+  security, pbk, sid, flow,    # TLS 单一来源 none|tls|reality；REALITY 公钥/短 ID、XTLS Vision
   fingerprint, transport,      # uTLS 指纹、tcp/ws/grpc
   path, host_header, service_name,
   vmess_security,              # vmess auto/none/zero/aes-128-gcm/...
@@ -54,26 +54,40 @@ Account（账户，必须绑定一个端口）
 | 表 | 说明 |
 |---|---|
 | `settings(key, value)` | 管理密码哈希、会话密钥、JSON 系统设置 |
-| `upstreams` | 上游代理池 |
+| `upstreams` | 上游代理池（密码 AES-GCM 加密存储） |
 | `ports` | 端口线路（port 唯一） |
-| `accounts` | 账户（username 唯一） |
+| `accounts` | 账户（username 唯一；密码 AES-GCM 加密存储） |
 | `logs` | 连接日志（ts/port/account/level 索引） |
+| `schema_migrations` | 已应用的数据库迁移版本 |
 
-- 启动时自动建表；若同目录存在旧版 `config.json`，首次启动**自动迁移**并重命名为 `config.json.migrated`
-- 备份 = 复制数据库文件（或 `sqlite3 fastproxy.db ".backup out.db"`）
+- 启动时按 `schema_migrations` **版本化迁移**（事务执行、幂等；旧库自动补齐列并记录基线）
+- 若同目录存在旧版 `config.json`，首次启动**自动迁移**并重命名为 `config.json.migrated`
+- 备份 = 复制数据库文件（或 `sqlite3 fastproxy.db ".backup out.db"`）；**密码加密时还需备份密钥**
 - 日志异步批量写入，不阻塞转发路径；按 `log_retention_days`（默认 7 天）定时清理
+
+## 启动级配置
+
+| 环境变量 | 说明 |
+|---|---|
+| `PORT_RANGE` | 允许创建的入站端口范围，默认 `10001-10050`；Docker 映射必须与之一致 |
+| `FASTPROXY_SECRET_KEY` | 数据密码加密密钥（32 字节 base64/hex）；留空生成 `/data/.secret_key` |
+| `LOGIN_MAX_ATTEMPTS` / `LOGIN_LOCK_DURATION` | 面板登录全局失败锁定（仅内存，重启清零） |
+| `TRUSTED_PROXIES` | 可信反向代理 CIDR；只有这些来源的 `X-Forwarded-For/Proto` 被采信 |
+| `SESSION_SECRET` | 可选固定会话签名密钥 |
 
 ## 热加载
 
 - 账户 / 上游 / 系统设置：**不重启监听**，下一次连接即生效（认证、上游解析实时读库）
 - 端口定义变更（端口号、默认上游）：仅重启该端口监听
-- 日志级别 / 保留天数 / 直连策略：保存后立即应用
+- 日志级别 / 保留天数：保存后立即应用；直连 = 账户不绑定上游，没有全局开关
 
 ## 敏感信息
 
 - 上游账号/密码、账户密码支持 `${VAR}` / `${VAR:-默认值}` 环境变量引用
-- 数据库中只保存引用，**明文密码不落盘**；启动与保存时严格校验（缺失变量 → 拒绝）
-- 管理密码 PBKDF2-SHA256 哈希存储，登录失败按 IP 限速
+- 所有密码字段在 SQLite 中以 **AES-256-GCM** 密文保存（`enc:v1:` 前缀），读取时解密；
+  密钥来自 `FASTPROXY_SECRET_KEY`，未设置时生成数据目录下 `.secret_key`（0600）
+- 备份数据库时必须同时备份密钥；密钥丢失则密码不可恢复
+- 管理密码 PBKDF2-SHA256 哈希存储；登录失败为**全局**内存锁定（单管理员，重启清零）
 
 ## 日志
 
@@ -114,15 +128,16 @@ Account（账户，必须绑定一个端口）
 | http | CONNECT | 明文 HTTP 请求走标准 Transport | 支持 |
 | socks5 | TCP | 用户名/密码认证可选 | 支持 |
 | shadowsocks | AEAD TCP | `aes-128-gcm` / `aes-256-gcm` / `chacha20-ietf-poly1305`，`go-shadowsocks2/core` 实现；不支持 UDP 与 `2022-*` | 支持 |
-| vless | TCP / WS / gRPC（可选 TLS/REALITY） | 普通 TCP+TLS 走原生实现（严格校验证书）；REALITY、`flow=xtls-rprx-vision`、WS、gRPC 走**内置 sing-box**：每个上游在 `127.0.0.1:20000+` 起一个 SOCKS 入口，`DialTunnel` 经本地 SOCKS 转发 | 支持 |
+| vless | TCP / WS / gRPC（可选 TLS/REALITY） | **全部经内置 sing-box**：每个上游在 `127.0.0.1:20000+` 起一个 SOCKS 入口，`DialTunnel` 经本地 SOCKS 转发；支持 REALITY、`flow=xtls-rprx-vision`、WS、gRPC | 支持 |
 | vmess | TCP / WS / gRPC（可选 TLS） | 内置 sing-box 出站（VMess AEAD），支持 `security=auto/none/zero/aes-128-gcm/chacha20-poly1305` | 支持 |
 
-内置 sing-box 只在存在 VMess / 高级 VLESS 上游时启动；普通 VLESS、http/socks5/ss 不依赖它，sing-box 启动失败也不影响这些协议。
-REALITY / uTLS 需要 `-tags with_utls` 构建（Dockerfile、CI、`make build-utls` 已带）。上游增删改后服务端会重建内置实例。
+内置 sing-box 只在存在 VLESS / VMess 上游时启动；http/socks5/ss 不依赖它，sing-box 启动失败也不影响这些协议。
+REALITY / uTLS 需要 `-tags with_utls` 构建（Dockerfile、CI、`make build-utls` 已带）。上游增删改后服务端会重建内置实例，
+面板的 `GET /api/singbox/status` 展示运行状态、已注册上游与最近事件。
 
 ## 探测与出口 IP
 
-- **主动探测**：默认每 300 秒（可在系统设置调整 30-3600 秒）并发（≤4）检测全部上游：
+- **主动探测**：默认每 300 秒（可在系统设置调整 30-3600 秒）并发（`probe_concurrency`，1-32，默认 6）检测全部上游：
   通过上游隧道请求探测目标（默认 `api.ipify.org`，先 :80 再 :443/TLS），
   记录健康状态（ok/fail）、握手延迟、响应中的**出口 IP**、失败原因与检测时间。
 - **本机出口 IP**：同一轮探测中直连探测一次，控制台仪表盘展示。

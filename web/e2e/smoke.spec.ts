@@ -226,7 +226,7 @@ test("语言切换：英文导航与页面标题出现，并且刷新后保持",
   await expect(page.getByRole("heading", { level: 1, name: "仪表盘" })).toBeVisible();
 
   // 侧栏底部的 中 / EN 切换
-  const sidebarSwitch = page.locator("aside").getByRole("group", { name: /语言|Language/ });
+  const sidebarSwitch = page.getByRole("group", { name: /语言|Language/ });
   await expect(sidebarSwitch).toBeVisible();
   await sidebarSwitch.getByRole("button", { name: "EN", exact: true }).click();
 
@@ -252,12 +252,12 @@ test("语言切换：英文导航与页面标题出现，并且刷新后保持",
   await expect(nav(page, "Dashboard")).toBeVisible();
 
   // 切回中文
-  await page.locator("aside").getByRole("group", { name: /Language/ }).getByRole("button", { name: "中", exact: true }).click();
+  await page.getByRole("group", { name: /Language/ }).getByRole("button", { name: "中", exact: true }).click();
   await expect(page.getByRole("heading", { level: 1, name: "系统设置" })).toBeVisible();
   await expectNoCrash(page, failures);
 });
 
-test("主题：首次跟随系统，按钮手动切换后持久化", async ({ page }) => {
+test("主题：三态（跟随系统/亮/暗）切换并持久化", async ({ page }) => {
   const failures = watchRuntime(page);
   await page.emulateMedia({ colorScheme: "dark" });
   await login(page);
@@ -266,11 +266,11 @@ test("主题：首次跟随系统，按钮手动切换后持久化", async ({ pa
   // 首次（无 localStorage）：跟随系统 → 暗色
   await expect(html).toHaveClass(/dark/);
   await expect(html).toHaveAttribute("lang", "zh-CN");
-  const themeBtn = page.getByRole("button", { name: /外观|外观：|Appearance|Switch to (light|dark) theme/i }).last();
-  await expect(themeBtn).toBeVisible();
+  const group = page.getByRole("group", { name: /外观|Appearance/ });
+  await expect(group).toBeVisible();
 
   // 手动切到亮色 → 持久化 fp-theme=light
-  await themeBtn.click();
+  await group.getByRole("button", { name: /浅色|Light/ }).click();
   await expect(html).not.toHaveClass(/dark/);
   expect(await page.evaluate(() => window.localStorage.getItem("fp-theme"))).toBe("light");
 
@@ -278,15 +278,19 @@ test("主题：首次跟随系统，按钮手动切换后持久化", async ({ pa
   await page.emulateMedia({ colorScheme: "dark" });
   await page.waitForTimeout(200);
   await expect(html).not.toHaveClass(/dark/);
-  // 整页重新加载（waitUntil: "load"：等待子资源完成，避免中止导航）后仍是亮色。
   await page.goto(`${new URL(page.url()).origin}/#/dashboard`, { waitUntil: "load" });
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible({ timeout: 20_000 });
   await expect(html).not.toHaveClass(/dark/);
 
-  // 手动切到暗色后，首屏就是暗色（内联脚本，无闪白）
-  await page.getByRole("button", { name: /Appearance|外观|Switch to (light|dark) theme/i }).last().click();
+  // 手动切到暗色 → 持久化
+  await page.getByRole("group", { name: /外观|Appearance/ }).getByRole("button", { name: /深色|Dark/ }).click();
   await expect(html).toHaveClass(/dark/);
   expect(await page.evaluate(() => window.localStorage.getItem("fp-theme"))).toBe("dark");
+
+  // 回到跟随系统：系统为暗色，所以页面仍是暗色但存储为 system
+  await page.getByRole("group", { name: /外观|Appearance/ }).getByRole("button", { name: /跟随系统|Follow system/ }).click();
+  await expect(html).toHaveClass(/dark/);
+  expect(await page.evaluate(() => window.localStorage.getItem("fp-theme"))).toBe("system");
 
   await expectNoCrash(page, failures);
 });

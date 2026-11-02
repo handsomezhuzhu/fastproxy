@@ -4,11 +4,8 @@ import {
   Gauge,
   Loader2,
   LogOut,
-  MonitorSmartphone,
-  Moon,
   PanelLeft,
   RefreshCw,
-  Sun,
   Zap,
 } from "lucide-react";
 import { api } from "@/api";
@@ -30,7 +27,9 @@ import { SidebarContent, NAV_ITEMS } from "@/components/AppSidebar";
 import { CopyWizard, type CopyPreset } from "@/components/CopyWizard";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { I18nProvider, useI18n } from "@/i18n";
-import { useColorMode } from "@/lib/theme";
+import { ThemeSwitch } from "@/components/ThemeSwitch";
+import { AuthLanguageToggle } from "@/components/LanguageSwitch";
+import { ThemeProvider, useTheme } from "@/lib/theme-context";
 import { LoginPage } from "@/pages/Login";
 import { DashboardPage } from "@/pages/Dashboard";
 import { PortsPage } from "@/pages/Ports";
@@ -50,7 +49,9 @@ function readHash(): Page {
 export default function App() {
   return (
     <I18nProvider>
-      <AppShell />
+      <ThemeProvider>
+        <AppShell />
+      </ThemeProvider>
     </I18nProvider>
   );
 }
@@ -63,7 +64,7 @@ function AppShell() {
   const [page, setPage] = React.useState<Page>(readHash);
   const [copyOpen, setCopyOpen] = React.useState(false);
   const [copyPreset, setCopyPreset] = React.useState<CopyPreset>(null);
-  const { mode, resolved, setMode, toggle } = useColorMode();
+  const { resolved } = useTheme();
   const [navOpen, setNavOpen] = React.useState(false);
 
   const reload = React.useCallback(async () => {
@@ -173,11 +174,6 @@ function AppShell() {
 
   const title = t(NAV_ITEMS.find((n) => n.id === page)?.labelKey ?? "nav.dashboard");
   const activeConns = data.status.ports.reduce((sum, p) => sum + p.conns_cur, 0);
-  const followSystem = mode === "system";
-  const themeNext = resolved === "dark" ? t("shell.theme.toLight") : t("shell.theme.toDark");
-  const themeLabel = followSystem
-    ? t("shell.theme.system", { next: themeNext })
-    : t(resolved === "dark" ? "shell.theme.dark" : "shell.theme.light", { next: themeNext });
 
   return (
     <TooltipProvider>
@@ -243,28 +239,10 @@ function AppShell() {
               {t("shell.copyAccess")}
             </Button>
 
-            {/* 主题：跟随系统 / 亮 / 暗 三态；主按钮仍是单图标 toggle */}
-            <div className="flex items-center">
-              {followSystem ? (
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={t("shell.theme.hint")}
-                  title={t("shell.theme.hint")}
-                  aria-pressed={true}
-                  onClick={() => setMode("system")}
-                  className="text-muted-foreground"
-                >
-                  <MonitorSmartphone className="size-3.5" aria-hidden="true" />
-                </Button>
-              ) : null}
-              <Button variant="ghost" size="icon-sm" onClick={toggle} aria-label={themeLabel} title={themeLabel}>
-                {resolved === "dark" ? (
-                  <Sun className="size-4" aria-hidden="true" />
-                ) : (
-                  <Moon className="size-4" aria-hidden="true" />
-                )}
-              </Button>
+            {/* 右上角：三态主题 + 语言 */}
+            <div className="flex items-center gap-2">
+              <ThemeSwitch />
+              <AuthLanguageToggle />
             </div>
           </header>
 

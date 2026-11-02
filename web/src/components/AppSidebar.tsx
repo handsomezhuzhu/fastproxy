@@ -45,36 +45,6 @@ export const NAV_GROUPS: { labelKey: string; items: NavItem[] }[] = [
 
 export const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 
-/** 语言切换：中 / EN 两段式，保持 monochrome 设计。 */
-export function LanguageToggle({ className }: { className?: string }) {
-  const { lang, setLang, t } = useI18n();
-  return (
-    <div
-      role="group"
-      aria-label={t("shell.language")}
-      className={cn(
-        "inline-flex items-center rounded-md border border-neutral-700 bg-neutral-900/60 p-0.5 text-xs",
-        className
-      )}
-    >
-      {(["zh", "en"] as const).map((l) => (
-        <button
-          key={l}
-          type="button"
-          lang={l === "zh" ? "zh-CN" : "en"}
-          aria-pressed={lang === l}
-          onClick={() => setLang(l)}
-          className={cn(
-            "rounded px-2 py-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40",
-            lang === l ? "bg-white text-neutral-950 font-medium" : "text-neutral-400 hover:text-white"
-          )}
-        >
-          {t(l === "zh" ? "shell.lang.zh" : "shell.lang.en")}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 /**
  * 侧边栏主体（恒定深色，明暗主题下一致）。
@@ -139,7 +109,6 @@ export function SidebarContent({
       </nav>
 
       <div className="space-y-3 p-3">
-        <LanguageToggle className="w-full justify-center" />
         <div className="flex items-center gap-2.5 rounded-lg border border-neutral-800 bg-white/5 p-3">
           <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-white/10 text-white">
             <ShieldCheck className="size-4" aria-hidden="true" />

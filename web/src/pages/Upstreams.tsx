@@ -714,7 +714,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     return (
       <div className="space-y-5">
         <PageHeader title={t("upstreams.title")} description={t("upstreams.description")} />
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center justify-between gap-4">
           <Skeleton className="h-5 w-32" />
           <div className="flex gap-2">
             <Skeleton className="h-7 w-40" />
@@ -977,8 +977,8 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             </DialogTitle>
             <DialogDescription>{t("upstreams.dialog.desc")}</DialogDescription>
           </DialogHeader>
-          <form onSubmit={save} className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
+          <form onSubmit={save} className="space-y-5">
+            <div className="grid grid-cols-2 gap-4">
               <Field label={t("upstreams.field.name")} htmlFor="up-name">
                 <Input
                   id="up-name"
@@ -1070,7 +1070,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             ) : null}
 
             {form.type === "shadowsocks" ? (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-4">
                 <Field label={t("upstreams.field.method")} htmlFor="up-method">
                   <FormSelect
                     id="up-method"
@@ -1092,7 +1092,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             ) : null}
 
             {form.type === "vless" || form.type === "vmess" ? (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-4">
                 <Field label={t("upstreams.field.uuid")} htmlFor="up-uuid">
                   <Input
                     id="up-uuid"
@@ -1116,7 +1116,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
 
             {form.type === "vless" ? (
               <>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-4">
                   <Field label={t("upstreams.field.security")} htmlFor="up-security">
                     <FormSelect
                       id="up-security"
@@ -1140,7 +1140,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 </div>
 
                 {form.security === "reality" ? (
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-3 gap-4">
                     <Field label={t("upstreams.field.pbk")} htmlFor="up-pbk">
                       <Input
                         id="up-pbk"
@@ -1189,7 +1189,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             ) : null}
 
             {form.type === "vmess" ? (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-4">
                 <Field label={t("upstreams.field.vmessSecurity")} htmlFor="up-vmess-security">
                   <FormSelect
                     id="up-vmess-security"
@@ -1228,7 +1228,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 ) : null}
 
                 {form.transport === "ws" ? (
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-2 gap-4">
                     <Field label={t("upstreams.field.wsPath")} htmlFor="up-path" hint={t("upstreams.field.wsPathHint")}>
                       <Input
                         id="up-path"

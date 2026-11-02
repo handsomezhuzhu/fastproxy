@@ -303,7 +303,7 @@ export function SubscriptionsPage({ reload }: { reload: () => Promise<void> }) {
             </DialogTitle>
             <DialogDescription>{t("subscriptions.dialog.desc")}</DialogDescription>
           </DialogHeader>
-          <form onSubmit={save} className="space-y-4" noValidate>
+          <form onSubmit={save} className="space-y-5" noValidate>
             <Field label={t("subscriptions.field.name")} htmlFor="sub-name">
               <Input
                 id="sub-name"
@@ -326,7 +326,7 @@ export function SubscriptionsPage({ reload }: { reload: () => Promise<void> }) {
                 spellCheck={false}
               />
             </Field>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-4">
               <Field label={t("subscriptions.field.interval")} htmlFor="sub-interval">
                 <Input
                   id="sub-interval"
@@ -338,7 +338,7 @@ export function SubscriptionsPage({ reload }: { reload: () => Promise<void> }) {
                   onChange={(e) => setForm({ ...form, intervalMin: e.target.value })}
                 />
               </Field>
-              <div className="flex items-end justify-between gap-3 pb-0.5">
+              <div className="flex items-end justify-between gap-4 pb-0.5">
                 <div>
                   <div className="text-sm font-medium">{t("subscriptions.field.enabled")}</div>
                   <p className="text-xs text-muted-foreground">

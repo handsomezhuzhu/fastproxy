@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLanguageToggle } from "@/components/LanguageSwitch";
+import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { useI18n } from "@/i18n";
 
 /**
@@ -65,11 +66,12 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-6">
-      <div className="w-full max-w-sm space-y-3">
-        <div className="flex justify-end">
-          <AuthLanguageToggle />
-        </div>
+    <div className="relative flex min-h-screen items-center justify-center bg-background p-6">
+      <div className="absolute right-4 top-4 flex items-center gap-2">
+        <ThemeSwitch />
+        <AuthLanguageToggle />
+      </div>
+      <div className="w-full max-w-sm space-y-4">
         <Card className="rounded-xl border shadow-sm">
           <CardContent className="p-6">
             <div className="mb-6 flex flex-col items-center gap-3 text-center">
@@ -81,8 +83,8 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
                 <p className="mt-1 text-xs text-muted-foreground">{t("login.subtitle")}</p>
               </div>
             </div>
-            <form onSubmit={submit} className="space-y-4">
-              <div className="space-y-1.5">
+            <form onSubmit={submit} className="space-y-5">
+              <div className="space-y-2">
                 <Label htmlFor="admin-password">{t("login.password")}</Label>
                 <Input
                   id="admin-password"

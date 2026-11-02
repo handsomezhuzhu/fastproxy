@@ -110,7 +110,7 @@ export function SettingsPage({
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-4">
                 <Field label={t("settings.logLevel")} htmlFor="set-level">
                   <FormSelect
                     id="set-level"
@@ -171,7 +171,7 @@ export function SettingsPage({
                     aria-label={t("settings.probe")}
                   />
                 </div>
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-3 gap-4">
                   <Field label={t("settings.probeInterval")} htmlFor="set-probe-interval">
                     <Input
                       id="set-probe-interval"
@@ -241,7 +241,7 @@ export function SettingsPage({
               <CardDescription>{t("settings.pwd.desc")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={changePassword} className="space-y-3">
+              <form onSubmit={changePassword} className="space-y-4">
                 <Field label={t("settings.pwd.old")} htmlFor="pwd-old">
                   <Input
                     id="pwd-old"

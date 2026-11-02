@@ -405,7 +405,7 @@ export function AccountsPage({
             </DialogTitle>
             <DialogDescription>{t("accounts.dialog.desc")}</DialogDescription>
           </DialogHeader>
-          <form onSubmit={save} className="space-y-4">
+          <form onSubmit={save} className="space-y-5">
             <Field label={t("accounts.field.username")} htmlFor="acc-username">
               <Input
                 id="acc-username"

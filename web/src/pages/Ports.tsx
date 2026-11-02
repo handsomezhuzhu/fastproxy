@@ -413,7 +413,7 @@ export function PortsPage({
             </DialogTitle>
             <DialogDescription>{t("ports.dialog.desc")}</DialogDescription>
           </DialogHeader>
-          <form onSubmit={save} className="space-y-4" noValidate>
+          <form onSubmit={save} className="space-y-5" noValidate>
             <Field
               label={t("ports.field.port")}
               htmlFor="port-input"

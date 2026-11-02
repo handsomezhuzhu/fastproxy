@@ -137,8 +137,17 @@ jobs:
         run: |
           PRERELEASE=""
           case "$GITHUB_REF_NAME" in *rc*|*beta*|*alpha*|*dev*) PRERELEASE="--prerelease";; esac
+          cat > /tmp/release-notes.md <<EOF
+          FastProxy $GITHUB_REF_NAME — 多端口、多账户、上游代理转发的 HTTP/SOCKS5 转发器
+
+          - 上游：HTTP / SOCKS5 / Shadowsocks / VLESS（TCP/TLS、REALITY、Vision、WS、gRPC）/ VMess
+          - 内置 sing-box 出站（REALITY / Vision / WS / gRPC / VMess AEAD）
+          - 批量检测：并发数可设置（1-32），每行实时更新状态、延迟与出口 IP
+          - 导入：ss:// vless:// vmess:// 分享链接、Clash、sing-box JSON、base64 订阅
+          - 面板：分页 + 批量操作、上游健康探测、连接日志、JSON 打印、一键复制配置
+
+          Docker: docker pull ghcr.io/${{ github.repository }}:$GITHUB_REF_NAME
+          EOF
           gh release create "$GITHUB_REF_NAME" $PRERELEASE dist/*.tar.gz \
             --title "FastProxy $GITHUB_REF_NAME" \
-            --notes "FastProxy $GITHUB_REF_NAME — 多端口·多账户·上游绑定的轻量 HTTP/SOCKS5 转发中转。
-
-            Docker: docker pull ghcr.io/${{ github.repository }}:$GITHUB_REF_NAME"
+            --notes-file /tmp/release-notes.md

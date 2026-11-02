@@ -77,6 +77,21 @@ vless/vmess 高级字段 `security(""|none|tls|reality), pbk?, sid?, flow?, fing
 vless/vmess 必填 `uuid`；TLS 由 `security` 表达（`none`/`tls`/`reality`，不再有 `tls` 布尔字段）；
 REALITY 必填 32 字节 `pbk`、`sid` 为不超过 16 位十六进制（可空）；`transport` 为 `tcp/ws/grpc`。
 
+## 订阅
+
+| 方法 | 路径 | Body |
+|---|---|---|
+| GET | `/api/subscriptions` | `{items:[{id,name,url,enabled,interval_sec,last_fetch_at,last_success_at,last_error,node_count,...}],total}` |
+| POST | `/api/subscriptions` | `{name,url,enabled,interval_sec}`；创建后若启用会异步拉取一次 |
+| PUT | `/api/subscriptions/{id}` | 同上（名称/地址/间隔/启用） |
+| DELETE | `/api/subscriptions/{id}?delete_nodes=true` | 删除订阅；默认删除其同步且未被账户引用的节点 |
+| POST | `/api/subscriptions/{id}/refresh` | 立即拉取并按节点差异更新，返回 `{result:{added,updated,removed,problems,error},saved}` |
+
+- 订阅 URL 加密存储；拉取要求 http(s)，默认拒绝内网/回环/链路本地地址，限制 4 MiB、25 秒、最多 3 次重定向，支持 ETag/Last-Modified 304
+- 本地订阅转换器需要访问 127.0.0.1/内网时设置 `SUB_ALLOW_PRIVATE=1`
+- 刷新只增删该订阅映射的节点，手动上游与账户绑定不受影响；被账户引用的旧节点不会删除
+- 拉取失败会写入 `last_error`，并在订阅列表展示
+
 ## 端口线路
 
 | 方法 | 路径 | Body |

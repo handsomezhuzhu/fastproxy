@@ -58,6 +58,8 @@ Account（账户，必须绑定一个端口）
 | `ports` | 端口线路（port 唯一） |
 | `accounts` | 账户（username 唯一；密码 AES-GCM 加密存储） |
 | `logs` | 连接日志（ts/port/account/level 索引） |
+| `subscriptions` | 订阅源（URL 加密、刷新间隔、ETag/Last-Modified、最近状态） |
+| `subscription_nodes` | 订阅 → 上游映射与节点去重键（刷新 diff 用） |
 | `schema_migrations` | 已应用的数据库迁移版本 |
 
 - 启动时按 `schema_migrations` **版本化迁移**（事务执行、幂等；旧库自动补齐列并记录基线）
@@ -117,6 +119,16 @@ Account（账户，必须绑定一个端口）
   与现有上游及同批次节点比较
 - 返回 `{added, total, duplicates[], problems[], warning?}`，面板展示明细；`ImportUpstreams` 入库前再校验一次，
   不合格节点以 problem 返回而不入库
+
+## 订阅刷新（Resin 风格）
+
+- `subscriptions` 保存 URL（AES-GCM 加密）、刷新间隔（5-1440 分钟）、启用状态、ETag/Last-Modified 与最近状态
+- 后台每 30 秒扫描到期订阅（最多 2 个并发），手动刷新走 `POST /api/subscriptions/{id}/refresh`
+- 拉取：仅 http(s)，默认拒绝内网/回环/链路本地地址（`SUB_ALLOW_PRIVATE=1` 可放开给本地转换器），
+  4 MiB 上限、25 秒超时、最多 3 次重定向；支持 304
+- 解析复用导入器；节点以去重键映射到上游：存在则原地更新，新增则插入，消失则删除映射并删除未被账户引用的上游
+- 手动上游不受影响；被账户引用的旧节点会保留（只删映射），避免断线
+- 刷新后若节点有变化，重建内置 sing-box；失败写入 `last_error`，不会保留半套配置
 
 ## 上游出站协议
 

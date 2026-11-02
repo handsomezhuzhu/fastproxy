@@ -1,4 +1,4 @@
-/** VLESS/VMess 安全层：none（无加密）/ tls / reality（VLESS 专用）。 */
+/** VLESS/VMess 安全层：none（无加密）/ tls / reality（VLESS 专用）。v2 起 `tls` 字段已删除。 */
 export type Security = "" | "none" | "tls" | "reality";
 /** 传输层：tcp / ws / grpc。 */
 export type Transport = "" | "tcp" | "ws" | "grpc";
@@ -27,7 +27,6 @@ export type Upstream = {
   remark?: string;
   method?: string;
   uuid?: string;
-  tls?: boolean;
   sni?: string;
   health?: "ok" | "fail" | "unknown";
   latency_ms?: number;
@@ -46,7 +45,6 @@ export type UpstreamInput = {
   password?: string;
   method?: string;
   uuid?: string;
-  tls?: boolean;
   sni?: string;
   remark?: string;
 } & SingBoxFields;
@@ -63,12 +61,33 @@ export type ProbeResult = {
   error?: string;
 };
 
+/** POST /api/upstreams/check 的单条结果。 */
+export type CheckResult = {
+  id: string;
+  ok: boolean;
+  latency_ms?: number;
+  exit_ip?: string;
+  error?: string;
+};
+
+/** POST /api/upstreams/check response：`ids` 为空时后端检测全部。 */
+export type CheckResponse = {
+  results: CheckResult[];
+  ok: number;
+  failed: number;
+};
+
 export type Port = {
   id: string;
   port: number;
   enabled: boolean;
   remark?: string;
 };
+
+/** 新建/编辑端口允许的号段，由容器环境变量 PORT_RANGE 决定（默认 10001-10050）。 */
+export type PortRange = { min: number; max: number };
+
+export const DEFAULT_PORT_RANGE: PortRange = { min: 10001, max: 10050 };
 
 export type Account = {
   id: string;
@@ -97,7 +116,6 @@ export type Settings = {
   log_level: string;
   log_buffer: number;
   log_retention_days: number;
-  allow_direct: boolean;
   dial_timeout_sec: number;
   handshake_timeout_sec: number;
   probe_enabled: boolean;
@@ -153,7 +171,20 @@ export type Data = {
   accounts: Account[];
   status: { ports: PortStatus[]; accounts: AccountStatus[] };
   settings: Settings;
+  /** v2：端口号允许范围；旧后端没有时回落到容器默认值。 */
+  port_range?: PortRange;
   probe?: { server_ip: string; last_check_at: number };
+};
+
+/** GET /api/singbox/status（需登录）。接口不存在时状态卡降级显示。 */
+export type SingboxStatus = {
+  running: boolean;
+  started_at?: number;
+  reload_count?: number;
+  last_reload_at?: number;
+  last_error?: string;
+  upstreams?: { id: string; name?: string; port?: number }[];
+  logs?: string[];
 };
 
 export type MetricPoint = {
@@ -182,9 +213,12 @@ export type BulkResult = {
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** 429 登录限流时后端返回的等待秒数（v2：`{error, retry_after_sec}`）。 */
+  retryAfterSec?: number;
+  constructor(status: number, message: string, retryAfterSec?: number) {
     super(message);
     this.status = status;
+    this.retryAfterSec = retryAfterSec;
   }
 }
 
@@ -204,11 +238,15 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
       /* empty body */
     }
     if (!r.ok || body?.error) {
-      throw new ApiError(r.status, body?.error || `请求失败 (HTTP ${r.status})`);
+      const sec =
+        typeof body?.retry_after_sec === "number"
+          ? body.retry_after_sec
+          : Number(r.headers?.get?.("Retry-After") || 0) || undefined;
+      throw new ApiError(r.status, body?.error || `HTTP ${r.status}`, sec);
     }
     return body as T;
   } catch (e: any) {
-    if (e?.name === "AbortError") throw new ApiError(0, "请求超时（15 秒）");
+    if (e?.name === "AbortError") throw new ApiError(0, "timeout");
     throw e;
   } finally {
     clearTimeout(timer);
@@ -220,7 +258,6 @@ export const defaultSettings: Settings = {
   log_level: "info",
   log_buffer: 1000,
   log_retention_days: 7,
-  allow_direct: true,
   dial_timeout_sec: 15,
   handshake_timeout_sec: 60,
   probe_enabled: true,
@@ -232,6 +269,11 @@ export const defaultSettings: Settings = {
 
 /** The API returns null for empty slices; normalize every collection. */
 function normalizeData(d: Data): Data {
+  const pr = d.port_range;
+  const port_range: PortRange =
+    pr && Number(pr.min) > 0 && Number(pr.max) >= Number(pr.min)
+      ? { min: Number(pr.min), max: Number(pr.max) }
+      : { ...DEFAULT_PORT_RANGE };
   return {
     ...d,
     version: d.version || "dev",
@@ -239,6 +281,7 @@ function normalizeData(d: Data): Data {
     ports: d.ports ?? [],
     accounts: d.accounts ?? [],
     settings: { ...defaultSettings, ...(d.settings ?? {}) },
+    port_range,
     status: {
       ports: d.status?.ports ?? [],
       accounts: d.status?.accounts ?? [],
@@ -278,13 +321,20 @@ export const api = {
   updateUpstream: (id: string, body: UpstreamInput) =>
     req<{ saved?: Upstream; warning?: string }>(`/api/upstreams/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteUpstream: (id: string) => req<{ ok: true }>(`/api/upstreams/${id}`, { method: "DELETE" }),
-  checkUpstream: (id: string) =>
-    req<ProbeResult>(`/api/upstreams/${id}/check`, { method: "POST" }),
-  checkAllUpstreams: () =>
-    req<{ ok: number; failed: number; checked: number; server_ip: string }>(
-      "/api/upstreams/check-all",
-      { method: "POST" }
-    ),
+  /**
+   * v2 唯一检测入口：POST /api/upstreams/check `{ids}`（空数组 = 全部）。
+   * 返回 `{results, ok, failed}`；旧版 `/{id}/check`、`/test`、`/check-all`、`/bulk` check 已删除。
+   * 批量检测请按 id 分别调用（调用方控制并发），以便逐行实时刷新。
+   */
+  checkUpstreams: (ids: string[]) =>
+    req<CheckResponse>("/api/upstreams/check", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }).then((r) => ({
+      results: r?.results ?? [],
+      ok: r?.ok ?? (r?.results ?? []).filter((x) => x.ok).length,
+      failed: r?.failed ?? (r?.results ?? []).filter((x) => !x.ok).length,
+    })),
   importUpstreams: async (body: { text?: string; url?: string }) => {
     const r = await req<ImportResult>("/api/upstreams/import", {
       method: "POST",
@@ -344,8 +394,22 @@ export const api = {
     req<BulkResult>("/api/accounts/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }),
   bulkPorts: (ids: string[], action: "enable" | "disable" | "delete") =>
     req<BulkResult>("/api/ports/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }),
-  bulkUpstreams: (ids: string[], action: "delete" | "check") =>
+  bulkUpstreams: (ids: string[], action: "delete") =>
     req<BulkResult>("/api/upstreams/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }),
+
+  /** 内置 sing-box 运行状态；旧后端没有该接口（404/405），调用方据此降级。 */
+  singboxStatus: async () => {
+    const r = await req<SingboxStatus>("/api/singbox/status");
+    return {
+      ...r,
+      running: Boolean(r?.running),
+      reload_count: Number(r?.reload_count ?? 0),
+      last_reload_at: Number(r?.last_reload_at ?? 0),
+      last_error: r?.last_error ?? "",
+      upstreams: r?.upstreams ?? [],
+      logs: r?.logs ?? [],
+    };
+  },
 
   stats: async () => {
     const r = await req<{ status: { ports: PortStatus[]; accounts: AccountStatus[] } }>("/api/stats");

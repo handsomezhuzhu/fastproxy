@@ -13,13 +13,7 @@ import {
   Zap,
 } from "lucide-react";
 import { toast } from "sonner";
-import {
-  api,
-  type Data,
-  type ImportResult,
-  type Upstream,
-  type UpstreamInput,
-} from "@/api";
+import { api, type CheckResult, type Data, type ImportResult, type Upstream, type UpstreamInput } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -72,40 +66,47 @@ import {
   Toolbar,
   useSelection,
 } from "@/components/page";
+import { useI18n } from "@/i18n";
+import type { T } from "@/i18n";
+import { explainError, explainErrorLine, explainProblem } from "@/lib/errors";
 import { timeAgo } from "@/lib/utils";
 
 function HealthCell({ u, checking }: { u: Upstream; checking?: boolean }) {
+  const { t, lang } = useI18n();
   if (checking) {
     return (
       <DotBadge tone="muted">
         <Loader2 className="size-3 animate-spin" aria-hidden="true" />
-        检测中…
+        {t("upstreams.health.checking")}
       </DotBadge>
     );
   }
   if (!u.last_check_at) {
-    return <DotBadge tone="muted">未检测</DotBadge>;
+    return <DotBadge tone="muted">{t("upstreams.health.unknown")}</DotBadge>;
   }
   const checkedAt = new Date(u.last_check_at * 1000).toISOString();
   if (u.health === "ok") {
     return (
       <div className="space-y-0.5">
         <div className="flex items-center gap-1.5">
-          <DotBadge tone="ok">正常</DotBadge>
+          <DotBadge tone="ok">{t("upstreams.health.ok")}</DotBadge>
           <span className="text-xs tabular-nums text-muted-foreground">{u.latency_ms ?? 0} ms</span>
         </div>
-        <p className="text-xs text-muted-foreground">{timeAgo(checkedAt)}检测</p>
+        <p className="text-xs text-muted-foreground">
+          {t("upstreams.health.checkedAt", { when: timeAgo(checkedAt, lang) })}
+        </p>
       </div>
     );
   }
+  const reason = u.last_error ? explainErrorLine(u.last_error, lang) : t("upstreams.health.failDefault");
   return (
     <div className="space-y-0.5">
-      <DotBadge tone="fail" title={u.last_error || "探测失败"}>
+      <DotBadge tone="fail" title={u.last_error || t("upstreams.health.failDefault")}>
         <AlertTriangle className="size-3" aria-hidden="true" />
-        失败
+        {t("upstreams.health.fail")}
       </DotBadge>
-      <p className="max-w-[180px] truncate text-xs text-muted-foreground" title={u.last_error}>
-        {u.last_error || "探测失败"} · {timeAgo(checkedAt)}
+      <p className="max-w-[220px] truncate text-xs text-muted-foreground" title={u.last_error}>
+        {reason} · {timeAgo(checkedAt, lang)}
       </p>
     </div>
   );
@@ -146,10 +147,9 @@ type UpstreamForm = {
   password: string;
   method: string;
   uuid: string;
-  tls: boolean;
   sni: string;
   remark: string;
-  // sing-box 出站字段（VLESS / VMess）
+  // sing-box 出站字段（VLESS / VMess）。v2 起 TLS 只由 security 表达，没有独立的 tls 字段。
   security: "none" | "tls" | "reality";
   pbk: string;
   sid: string;
@@ -171,7 +171,6 @@ const EMPTY_FORM: UpstreamForm = {
   password: "",
   method: "aes-256-gcm",
   uuid: "",
-  tls: true,
   sni: "",
   remark: "",
   security: "tls",
@@ -188,8 +187,8 @@ const EMPTY_FORM: UpstreamForm = {
 
 const isTunnelForm = (t: UpstreamFormType) => t === "shadowsocks" || t === "vless" || t === "vmess";
 
-const SECURITY_OPTIONS = [
-  { value: "none", label: "无加密" },
+const SECURITY_OPTIONS = (t: T) => [
+  { value: "none", label: t("upstreams.security.none") },
   { value: "tls", label: "TLS" },
   { value: "reality", label: "REALITY" },
 ];
@@ -202,8 +201,8 @@ const FINGERPRINT_OPTIONS = [
   { value: "android", label: "android" },
 ];
 
-const FLOW_OPTIONS = [
-  { value: "", label: "空（无 Vision）" },
+const FLOW_OPTIONS = (t: T) => [
+  { value: "", label: t("upstreams.field.flowEmpty") },
   { value: "xtls-rprx-vision", label: "xtls-rprx-vision" },
 ];
 
@@ -231,14 +230,15 @@ const str = (v: unknown) => (typeof v === "string" ? v : "");
 
 /** List badges for a VLESS/VMess row: REALITY / Vision / WS / gRPC (monochrome outline). */
 function RouteBadges({ u }: { u: Upstream }) {
+  const t = useI18n().t;
   if (u.type !== "vless" && u.type !== "vmess") return null;
   const marks: string[] = [];
   if (u.type === "vless") {
-    if (u.security === "reality" || u.pbk) marks.push("REALITY");
-    if (u.flow) marks.push("Vision");
+    if (u.security === "reality" || u.pbk) marks.push(t("upstreams.route.reality"));
+    if (u.flow) marks.push(t("upstreams.route.vision"));
   }
-  if (u.transport === "ws") marks.push("WS");
-  if (u.transport === "grpc") marks.push("gRPC");
+  if (u.transport === "ws") marks.push(t("upstreams.route.ws"));
+  if (u.transport === "grpc") marks.push(t("upstreams.route.grpc"));
   if (marks.length === 0) return null;
   return (
     <>
@@ -251,7 +251,15 @@ function RouteBadges({ u }: { u: Upstream }) {
   );
 }
 
+/** Address sub-line for VLESS/VMess: UUID + security layer + transport (uses `security`, never `tls`). */
+function securityLabel(u: Upstream, t: T): string {
+  if (u.type === "vless" && u.security === "reality") return t("upstreams.route.reality");
+  if (u.security === "tls") return "TLS";
+  return "";
+}
+
 export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Promise<void> }) {
+  const { t, lang } = useI18n();
   // Server-side pagination state
   const [list, setList] = React.useState<Upstream[] | null>(null);
   const [total, setTotal] = React.useState(0);
@@ -287,11 +295,11 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
 
   // 300ms 防抖搜索
   React.useEffect(() => {
-    const t = window.setTimeout(() => {
+    const timer = window.setTimeout(() => {
       setQ(keyword.trim());
       setPage(1);
     }, 300);
-    return () => window.clearTimeout(t);
+    return () => window.clearTimeout(timer);
   }, [keyword]);
 
   const load = React.useCallback(
@@ -308,12 +316,12 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       } catch (err: any) {
         // 后端分页接口未上线/网络错误时不要整页崩溃，也保留已有列表（不清空）
         setList((prev) => prev ?? []);
-        toast.error(err?.message || "加载上游列表失败");
+        toast.error(err?.message || t("common.loadListFailed"));
       } finally {
         setRefreshing(false);
       }
     },
-    [page, pageSize, q]
+    [page, pageSize, q, t]
   );
 
   React.useEffect(() => {
@@ -352,7 +360,6 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       password: u.password || "",
       method: u.method || "aes-256-gcm",
       uuid: u.uuid || "",
-      tls: Boolean(u.tls),
       sni: u.sni || "",
       remark: u.remark || "",
       // 按类型回填 sing-box 字段（旧记录没有这些键时回落到默认值）
@@ -404,7 +411,6 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       password: str(p.password) || f.password,
       method: str(p.method) || f.method,
       uuid: str(p.uuid) || f.uuid,
-      tls: typeof p.tls === "boolean" ? p.tls : f.tls,
       sni: p.sni !== undefined ? str(p.sni) : f.sni,
       remark: p.remark !== undefined ? str(p.remark) : f.remark,
       ...(security ? { security } : {}),
@@ -418,8 +424,6 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       serviceName: p.service_name !== undefined ? str(p.service_name) : f.serviceName,
       vmessSecurity: str(p.vmess_security) || f.vmessSecurity,
     }));
-    // REALITY 自带 TLS：链接里 security=reality 时同步打开 TLS 开关，避免保存时被清空。
-    if (security === "reality") setForm((f) => ({ ...f, tls: true }));
   }
 
   async function parseShareLink() {
@@ -431,14 +435,14 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     try {
       const { proxy } = await api.parseUpstream(text);
       applyParsed(proxy);
-      toast.success("已解析并填入表单");
+      toast.success(t("upstreams.share.parsed"));
     } catch (err: any) {
       // 后端未合并该接口时会是 404/405；统一在表单里给出可读提示，不崩溃。
       const status = typeof err?.status === "number" ? err.status : 0;
       const msg =
         status === 404 || status === 405
-          ? "当前后端不支持分享链接解析（/api/upstreams/parse），请手动填写字段。"
-          : err?.message || "解析失败";
+          ? t("upstreams.share.unsupported")
+          : err?.message || t("upstreams.share.parseFailed");
       setParseError(msg);
     } finally {
       setParsing(false);
@@ -461,14 +465,13 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       body.method = form.method;
       body.password = form.password;
     } else if (form.type === "vless") {
-      // REALITY 自带 TLS，按 security 归一化开关，避免出现 security=tls + tls=false。
+      // REALITY 隐含 TLS，统一用 security 表达（v2 起不再发送 tls 字段）。
       const security = asSecurity(form.security);
-      const tls = security === "reality" ? true : form.tls;
+      const tlsLike = security !== "none";
       body.host = form.host.trim();
       body.uuid = form.uuid.trim();
       body.security = security;
-      body.tls = tls;
-      body.sni = tls ? form.sni.trim() : "";
+      body.sni = tlsLike ? form.sni.trim() : "";
       body.pbk = security === "reality" ? form.pbk.trim() : "";
       body.sid = security === "reality" ? form.sid.trim() : "";
       body.fingerprint = security === "reality" ? form.fingerprint || "chrome" : "";
@@ -478,11 +481,12 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       body.host_header = form.transport === "ws" ? form.hostHeader.trim() : "";
       body.service_name = form.transport === "grpc" ? form.serviceName.trim() : "";
     } else {
+      // VMess：TLS 开关写 security = "tls" / "none"。
+      const security = form.security === "tls" ? "tls" : "none";
       body.host = form.host.trim();
       body.uuid = form.uuid.trim();
-      body.security = form.tls ? "tls" : "none";
-      body.tls = form.tls;
-      body.sni = form.tls ? form.sni.trim() : "";
+      body.security = security;
+      body.sni = security === "tls" ? form.sni.trim() : "";
       body.transport = form.transport;
       body.path = form.transport === "ws" ? form.path.trim() : "";
       body.host_header = form.transport === "ws" ? form.hostHeader.trim() : "";
@@ -492,11 +496,11 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     try {
       if (editing) await api.updateUpstream(editing.id, body);
       else await api.createUpstream(body);
-      toast.success("上游已保存");
+      toast.success(t("upstreams.saved"));
       setOpen(false);
       await refreshAll();
     } catch (err: any) {
-      setError(err?.message || "保存失败");
+      setError(err?.message || t("common.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -506,30 +510,27 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     if (!deleting) return;
     try {
       await api.deleteUpstream(deleting.id);
-      toast.success(`上游「${deleting.name}」已删除`);
+      toast.success(t("upstreams.deleted", { name: deleting.name }));
       setDeleting(null);
       await refreshAll();
     } catch (err: any) {
-      toast.error(err?.message || "删除失败");
+      toast.error(err?.message || t("common.deleteFailed"));
     }
   }
 
   // Merge one check result into the visible list immediately (no full reload),
-  // so a sequential bulk check updates rows as each result arrives.
-  function applyCheckResult(
-    id: string,
-    r: { ok?: boolean; latency_ms?: number; exit_ip?: string; error?: string }
-  ) {
+  // so a concurrent bulk check updates rows as each result arrives.
+  function applyCheckResult(r: CheckResult) {
     setList((prev) =>
       prev
         ? prev.map((u) =>
-            u.id === id
+            u.id === r.id
               ? {
                   ...u,
                   health: r.ok ? ("ok" as const) : ("fail" as const),
                   latency_ms: r.ok ? r.latency_ms ?? 0 : 0,
                   exit_ip: r.ok ? r.exit_ip || "" : "",
-                  last_error: r.ok ? "" : r.error || "探测失败",
+                  last_error: r.ok ? "" : r.error || t("upstreams.health.failDefault"),
                   last_check_at: Math.floor(Date.now() / 1000),
                 }
               : u
@@ -538,68 +539,105 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
     );
   }
 
-  async function checkOne(u: Upstream) {
-    setChecking((c) => ({ ...c, [u.id]: true }));
+  /** v2 统一检测：每个 id 单独 POST /api/upstreams/check {ids:[id]}，完成即写回行。返回单条结果。 */
+  async function runCheck(id: string): Promise<CheckResult> {
+    setChecking((c) => ({ ...c, [id]: true }));
     try {
-      const r = await api.checkUpstream(u.id);
-      applyCheckResult(u.id, r);
-      if (r.ok) {
-        toast.success(`${u.name}：正常 · ${r.latency_ms} ms · 出口 ${r.exit_ip || "未知"}`);
-      } else {
-        toast.error(`${u.name}：${r.error || "探测失败"}`);
-      }
-      await reload();
+      const { results } = await api.checkUpstreams([id]);
+      const r = results.find((x) => x.id === id) ?? results[0];
+      const out: CheckResult = r
+        ? { ...r, id }
+        : { id, ok: false, error: t("upstreams.health.failDefault") };
+      applyCheckResult(out);
+      return out;
     } catch (err: any) {
-      applyCheckResult(u.id, { ok: false, error: err?.message || "探测失败" });
-      toast.error(err?.message || "探测失败");
+      // 404/405：后端尚未合并统一检测接口，向上抛出，由调用方统一提示一次。
+      if (err?.status === 404 || err?.status === 405) throw err;
+      const out: CheckResult = { id, ok: false, error: err?.message || t("upstreams.health.failDefault") };
+      applyCheckResult(out);
+      return out;
     } finally {
-      setChecking((c) => ({ ...c, [u.id]: false }));
+      setChecking((c) => ({ ...c, [id]: false }));
     }
   }
 
-  // 批量并发检测（默认 6 个并发）；每完成一个立刻写回对应行，
-  // 所以界面是“批量在跑 + 逐行实时出结果”，而不是等全部完成。
+  async function checkSingleRow(u: Upstream) {
+    try {
+      const r = await runCheck(u.id);
+      if (r.ok) {
+        toast.success(
+          t("upstreams.checkOk", {
+            name: u.name,
+            ms: r.latency_ms ?? 0,
+            ip: r.exit_ip || t("upstreams.unknownProvince"),
+          })
+        );
+      } else {
+        toast.error(t("upstreams.checkFail", { name: u.name, err: explainErrorLine(r.error, lang) }));
+      }
+      await reload();
+    } catch (err: any) {
+      if (err?.status === 404 || err?.status === 405) {
+        toast.error(t("upstreams.checkUnsupported"));
+        return;
+      }
+      toast.error(err?.message || t("upstreams.checkFailed"));
+      await reload();
+    }
+  }
+
+  // 批量并发检测：并发数取 settings.probe_concurrency（1-32），每个 id 一个请求；
+  // 每完成一个立刻写回对应行并推进进度，不等全部完成。
   async function checkInBatch(ids: string[]) {
     if (ids.length === 0) {
-      toast.info("没有可检测的上游");
+      toast.info(t("upstreams.checkNoTarget"));
       return;
     }
+    const concurrency = Math.min(
+      Math.max(1, Math.floor(Number(data.settings.probe_concurrency) || 6)),
+      32,
+      ids.length
+    );
     setBulkBusy(true);
     setCheckingAll(true);
     setCheckProgress({ done: 0, total: ids.length });
+    const queue = [...ids];
     let ok = 0;
     let fail = 0;
-    let next = 0;
+    let unsupported = false;
     const worker = async () => {
       for (;;) {
-        const i = next++;
-        if (i >= ids.length) return;
-        const id = ids[i];
-        setChecking((c) => ({ ...c, [id]: true }));
+        if (unsupported) return;
+        const id = queue.shift();
+        if (!id) return;
         try {
-          const r = await api.checkUpstream(id);
-          applyCheckResult(id, r);
-          if (r.ok) ok++;
+          const good = await runCheck(id);
+          if (good.ok) ok++;
           else fail++;
         } catch (err: any) {
-          applyCheckResult(id, { ok: false, error: err?.message || "探测失败" });
+          // 统一检测接口不存在：停止后续请求，保留已完成的结果。
+          if (err?.status === 404 || err?.status === 405) {
+            unsupported = true;
+            return;
+          }
           fail++;
         } finally {
-          setChecking((c) => ({ ...c, [id]: false }));
-          setCheckProgress((p) => ({ done: p.done + 1, total: p.total }));
+          setCheckProgress((p) => ({ done: Math.min(p.done + 1, p.total), total: p.total }));
         }
       }
     };
-    const workers = Array.from(
-      { length: Math.min(Math.max(1, Number(data.settings.probe_concurrency) || 6), 32, ids.length) },
-      () => worker()
-    );
-    await Promise.all(workers);
+    await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, () => worker()));
     setBulkBusy(false);
     setCheckingAll(false);
-    if (fail > 0) toast.warning(`检测完成：正常 ${ok}，失败 ${fail}`);
-    else toast.success(`检测完成：${ok} 个上游全部正常`);
-    await refreshAll();
+    if (unsupported) {
+      toast.error(t("upstreams.checkUnsupported"));
+    } else if (fail > 0) {
+      toast.warning(t("upstreams.checkDoneMixed", { ok, fail }));
+    } else {
+      toast.success(t("upstreams.checkDoneOk", { ok }));
+    }
+    // 全量同步一次（统计卡、健康数等），行内结果已经在过程中写回。
+    await reload();
   }
 
   async function checkAll() {
@@ -607,7 +645,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       const all = await api.upstreamsList({ limit: 1000, offset: 0 });
       await checkInBatch(all.entries.map((u) => u.id));
     } catch (err: any) {
-      toast.error(err?.message || "检测失败");
+      toast.error(err?.message || t("upstreams.checkFailed"));
     }
   }
 
@@ -618,13 +656,13 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       const r = await api.importUpstreams(useURL ? { url: importURL } : { text: importText });
       setResult(r);
       if (r.added > 0) {
-        toast.success(`成功导入 ${r.added} 个上游`);
+        toast.success(t("upstreams.import.ok", { n: r.added }));
         await refreshAll();
       } else {
-        toast.warning("没有新增上游：可能全部重复或格式无法识别");
+        toast.warning(t("upstreams.import.none"));
       }
     } catch (err: any) {
-      toast.error(err?.message || "导入失败");
+      toast.error(err?.message || t("upstreams.import.failed"));
     } finally {
       setImporting(false);
     }
@@ -645,15 +683,15 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       const skipped = r.skipped ?? [];
       const deleted = r.deleted ?? Math.max(0, ids.length - skipped.length);
       if (skipped.length > 0) {
-        toast.error(`${skipped.length} 个上游跳过：${skipped[0].reason}`);
-        if (deleted > 0) toast.success(`已删除 ${deleted} 个上游`);
+        toast.error(t("upstreams.bulkSkipped", { n: skipped.length, reason: skipped[0].reason }));
+        if (deleted > 0) toast.success(t("upstreams.bulkDeleted", { n: deleted }));
       } else {
-        toast.success(`已删除 ${deleted} 个上游`);
+        toast.success(t("upstreams.bulkDeleted", { n: deleted }));
       }
       sel.clear();
       await refreshAll();
     } catch (err: any) {
-      toast.error(err?.message || "批量操作失败");
+      toast.error(err?.message || t("common.bulkFailed"));
     } finally {
       setBulkBusy(false);
       setBulkConfirmDelete(false);
@@ -675,10 +713,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
   if (list === null) {
     return (
       <div className="space-y-5">
-        <PageHeader
-          title="上游代理"
-          description="支持 HTTP / SOCKS5 / Shadowsocks / VLESS（含 REALITY）/ VMess。"
-        />
+        <PageHeader title={t("upstreams.title")} description={t("upstreams.description")} />
         <div className="flex items-center justify-between gap-3">
           <Skeleton className="h-5 w-32" />
           <div className="flex gap-2">
@@ -700,23 +735,20 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
 
   return (
     <div className="space-y-5">
-      <PageHeader
-        title="上游代理"
-        description="支持 HTTP / SOCKS5 / Shadowsocks / VLESS（含 REALITY）/ VMess。"
-      />
+      <PageHeader title={t("upstreams.title")} description={t("upstreams.description")} />
 
       {showEmpty ? (
         <EmptyState
           icon={<Layers className="size-5" aria-hidden="true" />}
-          title="还没有上游代理"
-          description="可粘贴节点文本或订阅链接批量导入，也支持手动添加。"
+          title={t("upstreams.empty.title")}
+          description={t("upstreams.empty.desc")}
           action={
             <div className="flex flex-wrap items-center justify-center gap-2">
               <Button variant="outline" onClick={() => setImportOpen(true)}>
-                <Import className="size-4" aria-hidden="true" /> 批量导入
+                <Import className="size-4" aria-hidden="true" /> {t("upstreams.import")}
               </Button>
               <Button onClick={openCreate}>
-                <Plus className="size-4" aria-hidden="true" /> 添加上游
+                <Plus className="size-4" aria-hidden="true" /> {t("upstreams.add")}
               </Button>
             </div>
           }
@@ -724,8 +756,14 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       ) : (
         <>
           <Toolbar
-            count={`${total} 个上游`}
-            detail={q ? `按「${q}」筛选` : refreshing ? "刷新中…" : undefined}
+            count={t("upstreams.count", { n: total })}
+            detail={
+              q
+                ? t("upstreams.filteredBy", { q })
+                : refreshing
+                  ? t("upstreams.refreshing")
+                  : undefined
+            }
           >
             <div className="relative">
               <Search
@@ -736,23 +774,20 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
                 className="h-7 w-44 pl-8 text-xs"
-                placeholder="搜索名称或地址…"
-                aria-label="搜索上游"
+                placeholder={t("upstreams.searchPlaceholder")}
+                aria-label={t("upstreams.searchLabel")}
               />
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={checkAll}
-              disabled={checkingAll || bulkBusy}
-            >
+            <Button variant="outline" size="sm" onClick={checkAll} disabled={checkingAll || bulkBusy}>
               {checkingAll ? (
                 <Loader2 className="size-4 animate-spin" aria-hidden="true" />
               ) : (
                 <RefreshCw className="size-4" aria-hidden="true" />
               )}
               <span className="inline-block min-w-20 text-center tabular-nums">
-                {checkingAll ? `检测中 ${checkProgress.done}/${checkProgress.total}` : "检测全部"}
+                {checkingAll
+                  ? t("upstreams.checking", { done: checkProgress.done, total: checkProgress.total })
+                  : t("upstreams.checkAll")}
               </span>
             </Button>
             <Button
@@ -763,10 +798,10 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 setResult(null);
               }}
             >
-              <Import className="size-4" aria-hidden="true" /> 批量导入
+              <Import className="size-4" aria-hidden="true" /> {t("upstreams.import")}
             </Button>
             <Button size="sm" onClick={openCreate}>
-              <Plus className="size-4" aria-hidden="true" /> 添加上游
+              <Plus className="size-4" aria-hidden="true" /> {t("upstreams.add")}
             </Button>
           </Toolbar>
 
@@ -777,18 +812,18 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             >
               <span className="text-sm tabular-nums">
                 {checkingAll
-                  ? `检测中 ${checkProgress.done}/${checkProgress.total} ·`
-                  : `已选 ${sel.selected.size} 项 ·`}
+                  ? `${t("upstreams.checking", { done: checkProgress.done, total: checkProgress.total })} ·`
+                  : `${t("common.selected", { n: sel.selected.size })} ·`}
               </span>
               <Button size="sm" variant="outline" onClick={() => askBulk("check")} disabled={bulkBusy}>
                 {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                <span className="inline-block min-w-8 text-center">检测</span>
+                <span className="inline-block min-w-8 text-center">{t("upstreams.checkSelected")}</span>
               </Button>
               <Button size="sm" variant="destructive" onClick={() => askBulk("delete")} disabled={bulkBusy}>
-                删除
+                {t("common.delete")}
               </Button>
-              <Button size="sm" variant="ghost" onClick={sel.clear} aria-label="取消选择">
-                取消
+              <Button size="sm" variant="ghost" onClick={sel.clear} aria-label={t("common.clearSelection")}>
+                {t("common.cancel")}
               </Button>
             </div>
           ) : null}
@@ -796,11 +831,11 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
           {(list ?? []).length === 0 ? (
             <EmptyState
               icon={<Search className="size-5" aria-hidden="true" />}
-              title="没有匹配的上游"
-              description={`换个关键字试试，或直接添加新上游。`}
+              title={t("upstreams.noMatch.title")}
+              description={t("upstreams.noMatch.desc")}
               action={
                 <Button size="sm" variant="outline" onClick={() => setKeyword("")}>
-                  清空搜索
+                  {t("upstreams.clearSearch")}
                 </Button>
               }
             />
@@ -815,17 +850,17 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                         checked={pageAllSelected}
                         indeterminate={!pageAllSelected && pageSomeSelected}
                         onCheckedChange={(v) => sel.toggleMany(pageIDs, v)}
-                        label="全选当前页"
+                        label={t("common.selectAllPage")}
                       />
                     </TableHead>
-                    <TableHead>名称</TableHead>
-                    <TableHead>类型</TableHead>
-                    <TableHead>地址</TableHead>
-                    <TableHead>健康</TableHead>
-                    <TableHead>出口 IP</TableHead>
-                    <TableHead className="text-right">引用</TableHead>
+                    <TableHead>{t("upstreams.col.name")}</TableHead>
+                    <TableHead>{t("upstreams.col.type")}</TableHead>
+                    <TableHead>{t("upstreams.col.address")}</TableHead>
+                    <TableHead>{t("upstreams.col.health")}</TableHead>
+                    <TableHead>{t("upstreams.col.exitIp")}</TableHead>
+                    <TableHead className="text-right">{t("upstreams.col.refs")}</TableHead>
                     <TableHead className="w-12">
-                      <span className="sr-only">操作</span>
+                      <span className="sr-only">{t("common.actions")}</span>
                     </TableHead>
                   </TableRow>
                 </TableHeader>
@@ -840,7 +875,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                             className="size-3.5 accent-primary focus-visible:outline-2 focus-visible:outline-ring"
                             checked={checked}
                             onChange={(e) => sel.toggle(u.id, e.target.checked)}
-                            aria-label={`选择 上游 ${u.name}`}
+                            aria-label={t("upstreams.selectRow", { name: u.name })}
                           />
                         </TableCell>
                         <TableCell>
@@ -859,23 +894,21 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                           <div className="font-mono text-xs">{u.host}</div>
                           {u.type === "shadowsocks" ? (
                             <div className="max-w-[180px] truncate font-mono text-xs text-muted-foreground">
-                              {u.method || "加密方式未设置"}
+                              {u.method || t("upstreams.methodUnset")}
                             </div>
                           ) : u.type === "vless" || u.type === "vmess" ? (
                             <div className="max-w-[180px] truncate font-mono text-xs text-muted-foreground">
-                              {u.uuid ? `UUID ${u.uuid.slice(0, 8)}…` : "UUID 未设置"}
-                              {u.type === "vless" && u.security === "reality"
-                                ? " · REALITY"
-                                : u.tls
-                                  ? " · TLS"
-                                  : ""}
+                              {u.uuid
+                                ? `UUID ${u.uuid.slice(0, 8)}…`
+                                : t("upstreams.uuidUnset")}
+                              {securityLabel(u, t) ? ` · ${securityLabel(u, t)}` : ""}
                               {u.transport && u.transport !== "tcp"
                                 ? ` · ${u.transport === "ws" ? "WS" : "gRPC"} ${u.transport === "ws" ? u.path || "/" : u.service_name || ""}`.trimEnd()
                                 : ""}
                             </div>
                           ) : u.username ? (
                             <div className="max-w-[180px] truncate font-mono text-xs text-muted-foreground">
-                              账号 {u.username}
+                              {t("upstreams.userPrefix", { name: u.username })}
                             </div>
                           ) : null}
                         </TableCell>
@@ -894,7 +927,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                           <DropdownMenu>
                             <DropdownMenuTrigger
                               className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                              aria-label={`上游 ${u.name} 操作菜单`}
+                              aria-label={t("upstreams.rowMenu", { name: u.name })}
                             >
                               {checking[u.id] ? (
                                 <Loader2 className="size-4 animate-spin" aria-hidden="true" />
@@ -903,15 +936,15 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                               )}
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-40">
-                              <DropdownMenuItem onClick={() => checkOne(u)} disabled={checking[u.id]}>
-                                <Zap className="size-4" aria-hidden="true" /> 立即检测
+                              <DropdownMenuItem onClick={() => checkSingleRow(u)} disabled={checking[u.id]}>
+                                <Zap className="size-4" aria-hidden="true" /> {t("upstreams.menu.check")}
                               </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => openEdit(u)}>
-                                <Pencil className="size-4" aria-hidden="true" /> 编辑
+                                <Pencil className="size-4" aria-hidden="true" /> {t("common.edit")}
                               </DropdownMenuItem>
                               <DropdownMenuSeparator />
                               <DropdownMenuItem variant="destructive" onClick={() => setDeleting(u)}>
-                                <Trash2 className="size-4" aria-hidden="true" /> 删除
+                                <Trash2 className="size-4" aria-hidden="true" /> {t("common.delete")}
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -939,22 +972,22 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{editing ? `编辑上游 ${editing.name}` : "添加上游代理"}</DialogTitle>
-            <DialogDescription>
-              支持 HTTP / SOCKS5 / Shadowsocks / VLESS（REALITY / Vision / WS / gRPC）与 VMess。
-            </DialogDescription>
+            <DialogTitle>
+              {editing ? t("upstreams.dialog.edit", { name: editing.name }) : t("upstreams.dialog.create")}
+            </DialogTitle>
+            <DialogDescription>{t("upstreams.dialog.desc")}</DialogDescription>
           </DialogHeader>
           <form onSubmit={save} className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
-              <Field label="名称" htmlFor="up-name">
+              <Field label={t("upstreams.field.name")} htmlFor="up-name">
                 <Input
                   id="up-name"
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="美国-家宽-1"
+                  placeholder={t("upstreams.field.namePlaceholder")}
                 />
               </Field>
-              <Field label="协议" htmlFor="up-type">
+              <Field label={t("upstreams.field.type")} htmlFor="up-type">
                 <FormSelect
                   id="up-type"
                   value={form.type}
@@ -966,7 +999,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
 
             {!editing ? (
               <div className="space-y-1.5 rounded-lg border bg-muted/30 px-3 py-2">
-                <Label htmlFor="up-share">粘贴分享链接（可选）</Label>
+                <Label htmlFor="up-share">{t("upstreams.share.label")}</Label>
                 <div className="flex gap-2">
                   <Input
                     id="up-share"
@@ -990,7 +1023,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                     className="shrink-0"
                   >
                     {parsing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                    解析并填入
+                    {t("upstreams.share.parse")}
                   </Button>
                 </div>
                 {parseError ? (
@@ -998,9 +1031,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                     {parseError}
                   </p>
                 ) : (
-                  <p className="text-xs text-muted-foreground">
-                    支持 vless://、vmess://、ss://、http://、socks5://，解析后仍可手动修改。
-                  </p>
+                  <p className="text-xs text-muted-foreground">{t("upstreams.share.hint")}</p>
                 )}
               </div>
             ) : null}
@@ -1008,9 +1039,9 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             {form.type === "http" || form.type === "socks5" ? (
               <>
                 <Field
-                  label="地址"
+                  label={t("upstreams.field.address")}
                   htmlFor="up-address"
-                  hint="支持 ${VAR} 或 ${VAR:-默认值} 环境变量引用，密码不落盘。"
+                  hint={t("upstreams.field.addressHint")}
                 >
                   <Input
                     id="up-address"
@@ -1021,14 +1052,12 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                     spellCheck={false}
                   />
                 </Field>
-                <p className="text-xs text-muted-foreground">
-                  也可以直接粘贴 `ss://`、`vless://`、`vmess://` 分享链接，保存时自动识别协议并解析字段。
-                </p>
+                <p className="text-xs text-muted-foreground">{t("upstreams.field.addressPaste")}</p>
               </>
             ) : null}
 
             {isTunnelForm(form.type) ? (
-              <Field label="服务器地址" htmlFor="up-host" hint="host:port，例如 1.2.3.4:8388。">
+              <Field label={t("upstreams.field.host")} htmlFor="up-host" hint={t("upstreams.field.hostHint")}>
                 <Input
                   id="up-host"
                   className="font-mono"
@@ -1042,7 +1071,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
 
             {form.type === "shadowsocks" ? (
               <div className="grid grid-cols-2 gap-3">
-                <Field label="加密方式" htmlFor="up-method">
+                <Field label={t("upstreams.field.method")} htmlFor="up-method">
                   <FormSelect
                     id="up-method"
                     value={form.method}
@@ -1050,7 +1079,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                     items={SS_METHODS}
                   />
                 </Field>
-                <Field label="密码" htmlFor="up-ss-password">
+                <Field label={t("common.password")} htmlFor="up-ss-password">
                   <Input
                     id="up-ss-password"
                     type="password"
@@ -1064,7 +1093,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
 
             {form.type === "vless" || form.type === "vmess" ? (
               <div className="grid grid-cols-2 gap-3">
-                <Field label="UUID" htmlFor="up-uuid">
+                <Field label={t("upstreams.field.uuid")} htmlFor="up-uuid">
                   <Input
                     id="up-uuid"
                     className="font-mono"
@@ -1074,7 +1103,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                     spellCheck={false}
                   />
                 </Field>
-                <Field label="传输方式" htmlFor="up-transport">
+                <Field label={t("upstreams.field.transport")} htmlFor="up-transport">
                   <FormSelect
                     id="up-transport"
                     value={form.transport}
@@ -1088,23 +1117,23 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             {form.type === "vless" ? (
               <>
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label="安全层" htmlFor="up-security">
+                  <Field label={t("upstreams.field.security")} htmlFor="up-security">
                     <FormSelect
                       id="up-security"
                       value={form.security}
                       onValueChange={(v) => setForm({ ...form, security: asSecurity(v) })}
-                      items={SECURITY_OPTIONS}
+                      items={SECURITY_OPTIONS(t)}
                     />
                   </Field>
-                  <Field label="Flow" htmlFor="up-flow" hint="XTLS Vision 需要服务端开启对应流控。">
+                  <Field label={t("upstreams.field.flow")} htmlFor="up-flow" hint={t("upstreams.field.flowHint")}>
                     <FormSelect
                       id="up-flow"
                       value={form.flow}
                       onValueChange={(v) => setForm({ ...form, flow: v })}
                       items={
-                        FLOW_OPTIONS.some((o) => o.value === form.flow)
-                          ? FLOW_OPTIONS
-                          : [...FLOW_OPTIONS, { value: form.flow, label: form.flow }]
+                        FLOW_OPTIONS(t).some((o) => o.value === form.flow)
+                          ? FLOW_OPTIONS(t)
+                          : [...FLOW_OPTIONS(t), { value: form.flow, label: form.flow }]
                       }
                     />
                   </Field>
@@ -1112,17 +1141,17 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
 
                 {form.security === "reality" ? (
                   <div className="grid grid-cols-3 gap-3">
-                    <Field label="公钥 pbk" htmlFor="up-pbk">
+                    <Field label={t("upstreams.field.pbk")} htmlFor="up-pbk">
                       <Input
                         id="up-pbk"
                         className="font-mono"
                         value={form.pbk}
                         onChange={(e) => setForm({ ...form, pbk: e.target.value })}
-                        placeholder="REALITY 公钥"
+                        placeholder={t("upstreams.field.pbkPlaceholder")}
                         spellCheck={false}
                       />
                     </Field>
-                    <Field label="Short ID" htmlFor="up-sid">
+                    <Field label={t("upstreams.field.sid")} htmlFor="up-sid">
                       <Input
                         id="up-sid"
                         className="font-mono"
@@ -1132,7 +1161,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                         spellCheck={false}
                       />
                     </Field>
-                    <Field label="指纹" htmlFor="up-fingerprint">
+                    <Field label={t("upstreams.field.fingerprint")} htmlFor="up-fingerprint">
                       <FormSelect
                         id="up-fingerprint"
                         value={form.fingerprint}
@@ -1144,15 +1173,15 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 ) : (
                   <div className="flex items-center justify-between rounded-lg border px-3 py-2">
                     <div>
-                      <div className="text-sm font-medium">启用 TLS</div>
-                      <p className="text-xs text-muted-foreground">
-                        严格校验服务端证书，SNI 留空时使用服务器主机名。
-                      </p>
+                      <div className="text-sm font-medium">{t("upstreams.field.tls")}</div>
+                      <p className="text-xs text-muted-foreground">{t("upstreams.field.tlsHint")}</p>
                     </div>
                     <Switch
-                      checked={form.tls}
-                      onCheckedChange={(v) => setForm({ ...form, tls: Boolean(v) })}
-                      aria-label="启用 TLS"
+                      checked={form.security === "tls"}
+                      onCheckedChange={(v) =>
+                        setForm({ ...form, security: v ? "tls" : "none" })
+                      }
+                      aria-label={t("upstreams.field.tls")}
                     />
                   </div>
                 )}
@@ -1161,7 +1190,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
 
             {form.type === "vmess" ? (
               <div className="grid grid-cols-2 gap-3">
-                <Field label="安全层" htmlFor="up-vmess-security">
+                <Field label={t("upstreams.field.vmessSecurity")} htmlFor="up-vmess-security">
                   <FormSelect
                     id="up-vmess-security"
                     value={form.vmessSecurity}
@@ -1171,13 +1200,13 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 </Field>
                 <div className="flex items-center justify-between rounded-lg border px-3 py-2">
                   <div>
-                    <div className="text-sm font-medium">启用 TLS</div>
-                    <p className="text-xs text-muted-foreground">由 sing-box 出站发起 VMess 连接。</p>
+                    <div className="text-sm font-medium">{t("upstreams.field.tls")}</div>
+                    <p className="text-xs text-muted-foreground">{t("upstreams.field.vmessTlsHint")}</p>
                   </div>
                   <Switch
-                    checked={form.tls}
-                    onCheckedChange={(v) => setForm({ ...form, tls: Boolean(v) })}
-                    aria-label="启用 TLS"
+                    checked={form.security === "tls"}
+                    onCheckedChange={(v) => setForm({ ...form, security: v ? "tls" : "none" })}
+                    aria-label={t("upstreams.field.tls")}
                   />
                 </div>
               </div>
@@ -1185,8 +1214,8 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
 
             {form.type === "vless" || form.type === "vmess" ? (
               <>
-                {form.tls || form.security === "reality" ? (
-                  <Field label="SNI" htmlFor="up-sni" hint="留空则使用服务器主机名；IP 地址不会发送 SNI。">
+                {form.security !== "none" ? (
+                  <Field label={t("upstreams.field.sni")} htmlFor="up-sni" hint={t("upstreams.field.sniHint")}>
                     <Input
                       id="up-sni"
                       className="font-mono"
@@ -1200,7 +1229,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
 
                 {form.transport === "ws" ? (
                   <div className="grid grid-cols-2 gap-3">
-                    <Field label="WS Path" htmlFor="up-path" hint="默认 /。">
+                    <Field label={t("upstreams.field.wsPath")} htmlFor="up-path" hint={t("upstreams.field.wsPathHint")}>
                       <Input
                         id="up-path"
                         className="font-mono"
@@ -1210,7 +1239,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                         spellCheck={false}
                       />
                     </Field>
-                    <Field label="WS Host 头" htmlFor="up-host-header" hint="留空则不额外携带 Host。">
+                    <Field label={t("upstreams.field.wsHost")} htmlFor="up-host-header" hint={t("upstreams.field.wsHostHint")}>
                       <Input
                         id="up-host-header"
                         className="font-mono"
@@ -1224,7 +1253,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 ) : null}
 
                 {form.transport === "grpc" ? (
-                  <Field label="gRPC Service Name" htmlFor="up-service-name" hint="留空则使用空 serviceName。">
+                  <Field label={t("upstreams.field.grpcService")} htmlFor="up-service-name" hint={t("upstreams.field.grpcServiceHint")}>
                     <Input
                       id="up-service-name"
                       className="font-mono"
@@ -1238,7 +1267,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
               </>
             ) : null}
 
-            <Field label="备注" htmlFor="up-remark">
+            <Field label={t("common.remark")} htmlFor="up-remark">
               <Input
                 id="up-remark"
                 value={form.remark}
@@ -1252,11 +1281,13 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             ) : null}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-                取消
+                {t("common.cancel")}
               </Button>
               <Button type="submit" disabled={busy}>
                 {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                <span className="inline-block min-w-16 text-center">{busy ? "保存中…" : "保存"}</span>
+                <span className="inline-block min-w-16 text-center">
+                  {busy ? t("common.saving") : t("common.save")}
+                </span>
               </Button>
             </DialogFooter>
           </form>
@@ -1266,22 +1297,19 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>批量导入上游</DialogTitle>
-            <DialogDescription>
-              支持 URI 行、IP:PORT、IP:PORT:USER:PASS、base64 订阅、sing-box JSON、Clash 节点列表；自动去重。
-              节点支持 VLESS（REALITY / XTLS Vision / WS / gRPC）、VMess（WS / gRPC）、Shadowsocks。
-            </DialogDescription>
+            <DialogTitle>{t("upstreams.import.title")}</DialogTitle>
+            <DialogDescription>{t("upstreams.import.desc")}</DialogDescription>
           </DialogHeader>
 
           <Tabs defaultValue="text">
             <TabsList>
-              <TabsTrigger value="text">粘贴文本</TabsTrigger>
-              <TabsTrigger value="url">订阅链接</TabsTrigger>
+              <TabsTrigger value="text">{t("upstreams.import.tabText")}</TabsTrigger>
+              <TabsTrigger value="url">{t("upstreams.import.tabUrl")}</TabsTrigger>
             </TabsList>
 
             <TabsContent value="text" className="space-y-2 pt-2">
               <Textarea
-                aria-label="节点文本"
+                aria-label={t("upstreams.import.textLabel")}
                 className="min-h-[160px] font-mono text-xs"
                 value={importText}
                 onChange={(e) => setImportText(e.target.value)}
@@ -1293,13 +1321,15 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 onClick={() => runImport(false)}
               >
                 {importing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                <span className="inline-block min-w-16 text-center">{importing ? "导入中…" : "导入文本"}</span>
+                <span className="inline-block min-w-16 text-center">
+                  {importing ? t("upstreams.import.importing") : t("upstreams.import.importText")}
+                </span>
               </Button>
             </TabsContent>
 
             <TabsContent value="url" className="space-y-2 pt-2">
               <Input
-                aria-label="订阅链接"
+                aria-label={t("upstreams.import.urlLabel")}
                 className="font-mono text-xs"
                 value={importURL}
                 onChange={(e) => setImportURL(e.target.value)}
@@ -1312,7 +1342,9 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 onClick={() => runImport(true)}
               >
                 {importing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                <span className="inline-block min-w-16 text-center">{importing ? "拉取中…" : "拉取并导入"}</span>
+                <span className="inline-block min-w-16 text-center">
+                  {importing ? t("upstreams.import.fetching") : t("upstreams.import.fetchImport")}
+                </span>
               </Button>
             </TabsContent>
           </Tabs>
@@ -1321,19 +1353,19 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-xs" aria-live="polite">
               <div className="flex flex-wrap gap-2">
                 <Badge variant="secondary" className="bg-foreground text-background">
-                  新增 {result.added}
+                  {t("upstreams.import.added", { n: result.added })}
                 </Badge>
                 <Badge variant="secondary" className="bg-muted text-foreground">
-                  重复 {result.duplicates.length}
+                  {t("upstreams.import.duplicates", { n: result.duplicates.length })}
                 </Badge>
                 <Badge variant="secondary" className="border border-foreground/40 font-medium text-foreground">
-                  跳过 {result.problems.length}
+                  {t("upstreams.import.problems", { n: result.problems.length })}
                 </Badge>
-                <Badge variant="outline">识别 {result.total}</Badge>
+                <Badge variant="outline">{t("upstreams.import.total", { n: result.total })}</Badge>
               </div>
               {result.duplicates.length > 0 ? (
                 <details>
-                  <summary className="cursor-pointer text-muted-foreground">重复项</summary>
+                  <summary className="cursor-pointer text-muted-foreground">{t("upstreams.import.dupTitle")}</summary>
                   <ul className="mt-1 max-h-24 overflow-y-auto font-mono">
                     {result.duplicates.map((d, i) => (
                       <li key={i}>{d}</li>
@@ -1343,11 +1375,17 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
               ) : null}
               {result.problems.length > 0 ? (
                 <details>
-                  <summary className="cursor-pointer text-muted-foreground">跳过明细</summary>
-                  <ul className="mt-1 max-h-24 overflow-y-auto font-mono">
-                    {result.problems.map((d, i) => (
-                      <li key={i}>{d}</li>
-                    ))}
+                  <summary className="cursor-pointer text-muted-foreground">{t("upstreams.import.problemTitle")}</summary>
+                  <ul className="mt-1 max-h-32 space-y-1 overflow-y-auto">
+                    {result.problems.map((d, i) => {
+                      const hint = explainProblem(d, lang);
+                      return (
+                        <li key={i} className="space-y-0.5">
+                          <p className="text-foreground">{hint.message}</p>
+                          {hint.hint ? <p className="text-muted-foreground">{hint.hint}</p> : null}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </details>
               ) : null}
@@ -1356,7 +1394,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setImportOpen(false)}>
-              关闭
+              {t("common.close")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1365,12 +1403,12 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       <AlertDialog open={!!deleting} onOpenChange={(v) => !v && setDeleting(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除上游「{deleting?.name}」？</AlertDialogTitle>
-            <AlertDialogDescription>仍被账户引用时无法删除。</AlertDialogDescription>
+            <AlertDialogTitle>{t("upstreams.delete.title", { name: deleting?.name ?? "" })}</AlertDialogTitle>
+            <AlertDialogDescription>{t("upstreams.delete.desc")}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction onClick={remove}>删除</AlertDialogAction>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={remove}>{t("common.delete")}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1378,14 +1416,14 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
       <AlertDialog open={bulkConfirmDelete} onOpenChange={(v) => !v && setBulkConfirmDelete(false)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>批量删除 {sel.selected.size} 个上游？</AlertDialogTitle>
-            <AlertDialogDescription>仍被账户引用的上游会跳过并在结果中列出原因。</AlertDialogDescription>
+            <AlertDialogTitle>{t("common.bulkDelete", { n: sel.selected.size })}</AlertDialogTitle>
+            <AlertDialogDescription>{t("upstreams.bulkDelete.desc")}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={() => runBulk("delete")} disabled={bulkBusy}>
               {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-              删除
+              {t("common.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

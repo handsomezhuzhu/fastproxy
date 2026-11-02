@@ -7,7 +7,7 @@ import { defineConfig, devices } from "@playwright/test";
  * CI starts it before the suite and passes BASE_URL + ADMIN_PASSWORD, e.g.
  *
  *   CONFIG=/tmp/fp-e2e/fastproxy.db ADMIN_ADDR=127.0.0.1:7788 \
- *   ADMIN_PASSWORD=e2e-admin-pass /tmp/fastproxy &
+ *   ADMIN_PASSWORD=e2e-admin-pass PORT_RANGE=10001-10050 /tmp/fastproxy &
  *   BASE_URL=http://127.0.0.1:7788 ADMIN_PASSWORD=e2e-admin-pass npx playwright test
  *
  * Locally, build the UI, start the Go binary the same way, then `npm run e2e`.

@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { useT } from "@/i18n";
 
 export function PageHeader({
   title,
@@ -231,40 +232,41 @@ export function PaginationControls({
   total: number;
   onChange: (page: number, pageSize: number) => void;
 }) {
+  const t = useT();
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const to = Math.min(total, page * pageSize);
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <p className="text-xs tabular-nums text-muted-foreground">
-        第 {from}-{to} / 共 {total} 条
+        {t("pagination.range", { from, to, total })}
       </p>
       <div className="flex items-center gap-2">
         <Select
-          items={["20", "50", "100"].map((v) => ({ value: v, label: `${v} / 页` }))}
+          items={["20", "50", "100"].map((v) => ({ value: v, label: t("pagination.perPage", { n: v }) }))}
           value={String(pageSize)}
           onValueChange={(v) => onChange(1, Number(v))}
         >
-          <SelectTrigger className="w-24" aria-label="每页行数">
+          <SelectTrigger className="w-24" aria-label={t("pagination.pageSize")}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             {["20", "50", "100"].map((v) => (
               <SelectItem key={v} value={v}>
-                {v} / 页
+                {t("pagination.perPage", { n: v })}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
         <span className="text-xs tabular-nums text-muted-foreground">
-          第 {page} / {pageCount} 页
+          {t("pagination.page", { page, pages: pageCount })}
         </span>
         <Button
           variant="outline"
           size="icon-sm"
           onClick={() => onChange(page - 1, pageSize)}
           disabled={page <= 1}
-          aria-label="上一页"
+          aria-label={t("pagination.prev")}
         >
           <ChevronLeft className="size-4" aria-hidden="true" />
         </Button>
@@ -273,7 +275,7 @@ export function PaginationControls({
           size="icon-sm"
           onClick={() => onChange(page + 1, pageSize)}
           disabled={page >= pageCount}
-          aria-label="下一页"
+          aria-label={t("pagination.next")}
         >
           <ChevronRight className="size-4" aria-hidden="true" />
         </Button>

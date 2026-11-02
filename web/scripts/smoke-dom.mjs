@@ -17,6 +17,14 @@ const dom = new JSDOM(
   { url: "http://localhost:7788/", pretendToBeVisual: true }
 );
 const { window } = dom;
+// 固定中文环境：i18n 首次按 navigator.language 判断；同时预置 localStorage，
+// 保证断言文案稳定（英文用户首次自然得到 en，e2e 覆盖切换）。
+try {
+  window.localStorage.setItem("fp-lang", "zh");
+} catch {
+  /* storage unavailable */
+}
+Object.defineProperty(window.navigator, "language", { value: "zh-CN", configurable: true });
 
 const defineGlobal = (k, v) =>
   Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
@@ -58,14 +66,17 @@ const settings = {
   log_level: "info",
   log_buffer: 1000,
   log_retention_days: 7,
-  allow_direct: true,
   dial_timeout_sec: 15,
   handshake_timeout_sec: 60,
   probe_enabled: true,
   probe_interval_sec: 300,
   probe_timeout_sec: 8,
+  probe_concurrency: 6,
   probe_target: "api.ipify.org",
 };
+
+/** v2：/api/data 带 port_range（容器 PORT_RANGE），新建端口必须在该范围内。 */
+const portRange = { min: 10001, max: 10050 };
 
 let data, logEntries;
 const fixturePath = path.resolve("scripts/fixture.json");
@@ -79,6 +90,7 @@ const now = Math.floor(Date.now() / 1000);
 const sampleData = {
   version: "v0.4.0",
   settings,
+  port_range: portRange,
   upstreams: [
     {
       id: "u1",
@@ -172,6 +184,14 @@ async function fakeFetch(url) {
   if (u.includes("/api/data")) return jsonBody(data);
   if (u.includes("/api/stats")) return jsonBody({ status: data.status });
   if (u.includes("/api/logs")) return jsonBody({ entries: logEntries });
+  // 后端尚未合并 /api/singbox/status：模拟 404，仪表盘状态卡必须优雅降级。
+  if (u.includes("/api/singbox/status"))
+    return Promise.resolve({
+      ok: false,
+      status: 404,
+      json: () => Promise.resolve({ error: "not found" }),
+      text: () => Promise.resolve("not found"),
+    });
   return jsonBody({ ok: true });
 }
 defineGlobal("fetch", fakeFetch);
@@ -211,8 +231,18 @@ console.log("root children:", root.childElementCount);
 console.log("html length:", html.length);
 console.log("has sidebar:", html.includes("FastProxy"));
 console.log("has dashboard:", html.includes("仪表盘"));
+// v2 断言：跟随系统主题（jsdom matchMedia=false → light）、sing-box 状态卡降级、无旧接口字段。
+console.log("theme follows system:", window.document.documentElement.classList.contains("dark") === false);
+console.log("singbox unavailable fallback:", html.includes("后端暂未提供状态"));
+console.log("no stale allow_direct UI:", !html.includes("允许直连"));
 if (!html.length) {
   console.log("DOM IS EMPTY (black screen reproduced)");
+  process.exit(1);
+}
+const z = html.includes("仪表盘");
+const s = html.includes("后端暂未提供状态");
+if (!z || !s) {
+  console.log("EXPECTED MARKERS MISSING:", { dashboardTitle: z, singboxFallback: s });
   process.exit(1);
 }
 process.exit(errors.length ? 1 : 0);

@@ -50,6 +50,7 @@ import {
   usePagination,
   useSelection,
 } from "@/components/page";
+import { useI18n } from "@/i18n";
 import { bytes } from "@/lib/utils";
 import type { CopyPreset } from "@/components/CopyWizard";
 
@@ -64,6 +65,7 @@ export function AccountsPage({
   reload: () => Promise<void>;
   onCopy: (p: CopyPreset) => void;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<Account | null>(null);
   const [form, setForm] = React.useState({
@@ -90,7 +92,7 @@ export function AccountsPage({
   const upstreamName = (id: string) => data.upstreams.find((u) => u.id === id)?.name ?? "–";
   const portLabel = (id: string) => {
     const p = data.ports.find((x) => x.id === id);
-    return p ? `端口 ${p.port}` : "–";
+    return p ? t("copy.portOption", { port: p.port }) : "–";
   };
 
   function openCreate() {
@@ -115,7 +117,7 @@ export function AccountsPage({
   async function save(e: React.FormEvent) {
     e.preventDefault();
     if (!form.port_id) {
-      setError("请选择绑定端口");
+      setError(t("accounts.error.portRequired"));
       return;
     }
     setBusy(true);
@@ -130,11 +132,11 @@ export function AccountsPage({
     try {
       if (editing) await api.updateAccount(editing.id, body);
       else await api.createAccount(body);
-      toast.success("账户已保存");
+      toast.success(t("accounts.saved"));
       setOpen(false);
       await reload();
     } catch (err: any) {
-      setError(err?.message || "保存失败");
+      setError(err?.message || t("common.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -145,7 +147,7 @@ export function AccountsPage({
       await api.toggleAccount(a.id, enabled);
       await reload();
     } catch (err: any) {
-      toast.error(err?.message || "操作失败");
+      toast.error(err?.message || t("common.operationFailed"));
     }
   }
 
@@ -153,15 +155,19 @@ export function AccountsPage({
     if (!deleting) return;
     try {
       await api.deleteAccount(deleting.id);
-      toast.success(`账户 ${deleting.username} 已删除`);
+      toast.success(t("accounts.deleted", { name: deleting.username }));
       setDeleting(null);
       await reload();
     } catch (err: any) {
-      toast.error(err?.message || "删除失败");
+      toast.error(err?.message || t("common.deleteFailed"));
     }
   }
 
-  const actionLabels: Record<BulkAction, string> = { enable: "启用", disable: "禁用", delete: "删除" };
+  const actionLabels: Record<BulkAction, string> = {
+    enable: t("common.enable"),
+    disable: t("common.disable"),
+    delete: t("common.delete"),
+  };
 
   async function runBulk(action: BulkAction) {
     const ids = [...sel.selected];
@@ -172,15 +178,15 @@ export function AccountsPage({
       const failed = r.errors ?? [];
       const done = r.updated ?? Math.max(0, ids.length - failed.length);
       if (failed.length > 0) {
-        toast.error(`${failed.length} 个账户${actionLabels[action]}失败：${failed[0].error}`);
-        if (done > 0) toast.success(`已${actionLabels[action]} ${done} 个账户`);
+        toast.error(t("accounts.bulkFailed", { n: failed.length, action: actionLabels[action], err: failed[0].error }));
+        if (done > 0) toast.success(t("accounts.bulkEach", { n: done, action: actionLabels[action] }));
       } else {
-        toast.success(`已${actionLabels[action]} ${done} 个账户`);
+        toast.success(t("accounts.bulkEach", { n: done, action: actionLabels[action] }));
       }
       sel.clear();
       await reload();
     } catch (err: any) {
-      toast.error(err?.message || "批量操作失败");
+      toast.error(err?.message || t("common.bulkFailed"));
     } finally {
       setBulkBusy(false);
       setBulkConfirmDelete(false);
@@ -199,9 +205,9 @@ export function AccountsPage({
   const pageAllSelected = pageIDs.length > 0 && pageIDs.every((id) => sel.selected.has(id));
   const pageSomeSelected = pageIDs.some((id) => sel.selected.has(id));
 
-  const portItems = data.ports.map((p) => ({ value: p.id, label: `端口 ${p.port}` }));
+  const portItems = data.ports.map((p) => ({ value: p.id, label: t("copy.portOption", { port: p.port }) }));
   const upstreamItems = [
-    { value: "", label: "直连（默认）" },
+    { value: "", label: t("common.redirect") },
     ...data.upstreams.map((u) => ({ value: u.id, label: `${u.name}（${u.type} · ${u.host}）` })),
   ];
 
@@ -209,27 +215,27 @@ export function AccountsPage({
 
   return (
     <div className="space-y-5">
-      <PageHeader
-        title="账户"
-        description="HTTP 与 SOCKS5 共用账号密码；每个端口自带一个默认账号。"
-      />
+      <PageHeader title={t("accounts.title")} description={t("accounts.description")} />
 
       {data.accounts.length === 0 ? (
         <EmptyState
           icon={<Users className="size-5" aria-hidden="true" />}
-          title="还没有账户"
-          description="新建端口线路会自动生成默认账号，也可以手动新增。"
+          title={t("accounts.empty.title")}
+          description={t("accounts.empty.desc")}
           action={
             <Button onClick={openCreate} disabled={data.ports.length === 0}>
-              <Plus className="size-4" aria-hidden="true" /> 新增账户
+              <Plus className="size-4" aria-hidden="true" /> {t("accounts.create")}
             </Button>
           }
         />
       ) : (
         <>
-          <Toolbar count={`${data.accounts.length} 个账户`} detail={`启用 ${enabledCount}`}>
+          <Toolbar
+            count={t("accounts.count", { n: data.accounts.length })}
+            detail={t("accounts.enabledCount", { n: enabledCount })}
+          >
             <Button size="sm" onClick={openCreate} disabled={data.ports.length === 0}>
-              <Plus className="size-4" aria-hidden="true" /> 新增账户
+              <Plus className="size-4" aria-hidden="true" /> {t("accounts.create")}
             </Button>
           </Toolbar>
 
@@ -238,19 +244,19 @@ export function AccountsPage({
               className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2"
               role="status"
             >
-              <span className="text-sm tabular-nums">已选 {sel.selected.size} 项 ·</span>
+              <span className="text-sm tabular-nums">{t("common.selected", { n: sel.selected.size })} ·</span>
               <Button size="sm" variant="outline" onClick={() => askBulk("enable")} disabled={bulkBusy}>
-                启用
+                {t("common.enable")}
               </Button>
               <Button size="sm" variant="outline" onClick={() => askBulk("disable")} disabled={bulkBusy}>
-                禁用
+                {t("common.disable")}
               </Button>
               <Button size="sm" variant="destructive" onClick={() => askBulk("delete")} disabled={bulkBusy}>
                 {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                删除
+                {t("common.delete")}
               </Button>
-              <Button size="sm" variant="ghost" onClick={sel.clear} aria-label="取消选择">
-                取消
+              <Button size="sm" variant="ghost" onClick={sel.clear} aria-label={t("common.clearSelection")}>
+                {t("common.cancel")}
               </Button>
             </div>
           ) : null}
@@ -264,19 +270,19 @@ export function AccountsPage({
                     checked={pageAllSelected}
                     indeterminate={!pageAllSelected && pageSomeSelected}
                     onCheckedChange={(v) => sel.toggleMany(pageIDs, v)}
-                    label="全选当前页"
+                    label={t("common.selectAllPage")}
                   />
                 </TableHead>
-                <TableHead className="w-16">启用</TableHead>
-                <TableHead>用户名</TableHead>
-                <TableHead>密码</TableHead>
-                <TableHead>端口</TableHead>
-                <TableHead>上游</TableHead>
-                <TableHead className="text-right">连接</TableHead>
-                <TableHead className="text-right">流量</TableHead>
-                <TableHead>备注</TableHead>
+                <TableHead className="w-16">{t("common.enabled")}</TableHead>
+                <TableHead>{t("accounts.col.username")}</TableHead>
+                <TableHead>{t("accounts.col.password")}</TableHead>
+                <TableHead>{t("common.port")}</TableHead>
+                <TableHead>{t("common.upstream")}</TableHead>
+                <TableHead className="text-right">{t("accounts.col.conns")}</TableHead>
+                <TableHead className="text-right">{t("accounts.col.traffic")}</TableHead>
+                <TableHead>{t("common.remark")}</TableHead>
                 <TableHead className="w-12">
-                  <span className="sr-only">操作</span>
+                  <span className="sr-only">{t("common.actions")}</span>
                 </TableHead>
               </TableRow>
             </TableHeader>
@@ -293,22 +299,22 @@ export function AccountsPage({
                         className="size-3.5 accent-primary focus-visible:outline-2 focus-visible:outline-ring"
                         checked={checked}
                         disabled={!selectable(a)}
-                        title={selectable(a) ? undefined : "默认账号随端口删除"}
+                        title={selectable(a) ? undefined : t("accounts.defaultTip")}
                         onChange={(e) => sel.toggle(a.id, e.target.checked)}
-                        aria-label={`选择 账户 ${a.username}`}
+                        aria-label={`${t("common.account")} ${a.username}`}
                       />
                     </TableCell>
                     <TableCell>
                       <Switch
                         checked={a.enabled}
                         onCheckedChange={(v: boolean) => toggle(a, v)}
-                        aria-label={`账户 ${a.username} 启用开关`}
+                        aria-label={`${t("common.account")} ${a.username} ${t("common.enabled")}`}
                       />
                     </TableCell>
                     <TableCell>
                       <span className="flex items-center gap-1.5">
                         <span className="font-medium">{a.username}</span>
-                        {a.is_default ? <Badge variant="outline">默认</Badge> : null}
+                        {a.is_default ? <Badge variant="outline">{t("accounts.default")}</Badge> : null}
                       </span>
                     </TableCell>
                     <TableCell>
@@ -320,7 +326,7 @@ export function AccountsPage({
                           variant="ghost"
                           size="icon-xs"
                           onClick={() => setRevealed((r) => ({ ...r, [a.id]: !r[a.id] }))}
-                          aria-label={shown ? "隐藏密码" : "显示密码"}
+                          aria-label={shown ? t("accounts.hidePassword") : t("accounts.showPassword")}
                         >
                           {shown ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
                         </Button>
@@ -337,7 +343,7 @@ export function AccountsPage({
                       {a.upstream_id ? (
                         upstreamName(a.upstream_id)
                       ) : (
-                        <span className="text-muted-foreground">直连</span>
+                        <span className="text-muted-foreground">{t("common.redirect")}</span>
                       )}
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
@@ -353,22 +359,22 @@ export function AccountsPage({
                       <DropdownMenu>
                         <DropdownMenuTrigger
                           className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                          aria-label={`账户 ${a.username} 操作菜单`}
+                          aria-label={`${t("common.account")} ${a.username} ${t("common.actions")}`}
                         >
                           <Ellipsis className="size-4" aria-hidden="true" />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-40">
                           <DropdownMenuItem onClick={() => openEdit(a)}>
-                            <Pencil className="size-4" aria-hidden="true" /> 编辑
+                            <Pencil className="size-4" aria-hidden="true" /> {t("common.edit")}
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => onCopy({ dim: "account", id: a.id })}>
-                            <Copy className="size-4" aria-hidden="true" /> 复制接入
+                            <Copy className="size-4" aria-hidden="true" /> {t("shell.copyAccess")}
                           </DropdownMenuItem>
                           {!a.is_default ? (
                             <>
                               <DropdownMenuSeparator />
                               <DropdownMenuItem variant="destructive" onClick={() => setDeleting(a)}>
-                                <Trash2 className="size-4" aria-hidden="true" /> 删除
+                                <Trash2 className="size-4" aria-hidden="true" /> {t("common.delete")}
                               </DropdownMenuItem>
                             </>
                           ) : null}
@@ -394,11 +400,13 @@ export function AccountsPage({
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editing ? `编辑账户 ${editing.username}` : "新增账户"}</DialogTitle>
-            <DialogDescription>HTTP 与 SOCKS5 共用同一账号密码。</DialogDescription>
+            <DialogTitle>
+              {editing ? t("accounts.dialog.edit", { name: editing.username }) : t("accounts.dialog.create")}
+            </DialogTitle>
+            <DialogDescription>{t("accounts.dialog.desc")}</DialogDescription>
           </DialogHeader>
           <form onSubmit={save} className="space-y-4">
-            <Field label="用户名（全局唯一）" htmlFor="acc-username">
+            <Field label={t("accounts.field.username")} htmlFor="acc-username">
               <Input
                 id="acc-username"
                 name="username"
@@ -409,20 +417,26 @@ export function AccountsPage({
                 placeholder="alice"
               />
             </Field>
-            <Field label="密码" htmlFor="acc-password" hint="支持 ${VAR} 环境变量引用，明文不落盘。">
+            <Field label={t("common.password")} htmlFor="acc-password" hint={t("accounts.field.passwordHint")}>
               <Input
                 id="acc-password"
                 name="password"
                 autoComplete="new-password"
                 value={form.password}
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
-                placeholder="账户密码"
+                placeholder={t("accounts.field.passwordPlaceholder")}
               />
             </Field>
             <Field
-              label="绑定端口"
+              label={t("accounts.field.port")}
               htmlFor="acc-port"
-              hint={editing?.is_default ? "默认账号随端口生成，端口不可修改。" : data.ports.length === 0 ? "请先创建端口线路。" : undefined}
+              hint={
+                editing?.is_default
+                  ? t("accounts.field.portDefault")
+                  : data.ports.length === 0
+                    ? t("accounts.field.portNone")
+                    : undefined
+              }
             >
               <FormSelect
                 id="acc-port"
@@ -432,7 +446,7 @@ export function AccountsPage({
                 disabled={!!editing?.is_default}
               />
             </Field>
-            <Field label="上游绑定" htmlFor="acc-upstream">
+            <Field label={t("accounts.field.upstream")} htmlFor="acc-upstream">
               <FormSelect
                 id="acc-upstream"
                 value={form.upstream_id}
@@ -440,12 +454,12 @@ export function AccountsPage({
                 items={upstreamItems}
               />
             </Field>
-            <Field label="备注" htmlFor="acc-remark">
+            <Field label={t("common.remark")} htmlFor="acc-remark">
               <Input
                 id="acc-remark"
                 value={form.remark}
                 onChange={(e) => setForm({ ...form, remark: e.target.value })}
-                placeholder="客户A / 用途"
+                placeholder={t("accounts.field.remarkPlaceholder")}
               />
             </Field>
             {error ? (
@@ -455,11 +469,13 @@ export function AccountsPage({
             ) : null}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-                取消
+                {t("common.cancel")}
               </Button>
               <Button type="submit" disabled={busy || data.ports.length === 0}>
                 {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                <span className="inline-block min-w-16 text-center">{busy ? "保存中…" : "保存"}</span>
+                <span className="inline-block min-w-16 text-center">
+                  {busy ? t("common.saving") : t("common.save")}
+                </span>
               </Button>
             </DialogFooter>
           </form>
@@ -469,12 +485,12 @@ export function AccountsPage({
       <AlertDialog open={!!deleting} onOpenChange={(v) => !v && setDeleting(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除账户 {deleting?.username}？</AlertDialogTitle>
-            <AlertDialogDescription>删除后该账户无法再通过任何端口认证。</AlertDialogDescription>
+            <AlertDialogTitle>{t("accounts.delete.title", { name: deleting?.username ?? "" })}</AlertDialogTitle>
+            <AlertDialogDescription>{t("accounts.delete.desc")}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction onClick={remove}>删除</AlertDialogAction>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={remove}>{t("common.delete")}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -482,14 +498,14 @@ export function AccountsPage({
       <AlertDialog open={bulkConfirmDelete} onOpenChange={(v) => !v && setBulkConfirmDelete(false)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>批量删除 {sel.selected.size} 个账户？</AlertDialogTitle>
-            <AlertDialogDescription>删除后这些账户无法再通过任何端口认证。</AlertDialogDescription>
+            <AlertDialogTitle>{t("common.bulkDelete", { n: sel.selected.size })}</AlertDialogTitle>
+            <AlertDialogDescription>{t("accounts.bulkDelete.desc")}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={() => runBulk(bulkAction ?? "delete")} disabled={bulkBusy}>
               {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-              删除
+              {t("common.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

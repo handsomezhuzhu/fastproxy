@@ -15,6 +15,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { FormSelect } from "@/components/page";
 import { toast } from "sonner";
+import { useI18n } from "@/i18n";
+import type { T } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { Account, Data, Port } from "@/api";
 
@@ -27,36 +29,41 @@ type Dim = "port" | "account";
 
 type Format = {
   id: string;
-  label: string;
-  build: (port: number, user: string, pass: string) => string;
+  labelKey: string;
+  build: (port: number, user: string, pass: string, t: T) => string;
 };
 
 const FORMATS: Format[] = [
-  { id: "http", label: "HTTP 代理 URL", build: (p, u, pw) => `http://${enc(u)}:${enc(pw)}@${HOST}:${p}` },
+  { id: "http", labelKey: "copy.format.http", build: (p, u, pw) => `http://${enc(u)}:${enc(pw)}@${HOST}:${p}` },
   {
     id: "socks5",
-    label: "SOCKS5 代理 URL",
+    labelKey: "copy.format.socks5",
     build: (p, u, pw) => `socks5h://${enc(u)}:${enc(pw)}@${HOST}:${p}`,
   },
   {
     id: "curl-http",
-    label: "curl（HTTP）",
+    labelKey: "copy.format.curlHttp",
     build: (p, u, pw) => `curl -x "http://${enc(u)}:${enc(pw)}@${HOST}:${p}" https://api.ipify.org`,
   },
   {
     id: "curl-socks5",
-    label: "curl（SOCKS5）",
-    build: (p, u, pw) =>
-      `curl --proxy "socks5h://${enc(u)}:${enc(pw)}@${HOST}:${p}" https://api.ipify.org`,
+    labelKey: "copy.format.curlSocks5",
+    build: (p, u, pw) => `curl --proxy "socks5h://${enc(u)}:${enc(pw)}@${HOST}:${p}" https://api.ipify.org`,
   },
   {
     id: "split",
-    label: "分字段",
-    build: (p, u, pw) => `主机: ${HOST}\n端口: ${p}\n账号: ${u}\n密码: ${pw}`,
+    labelKey: "copy.format.split",
+    build: (p, u, pw, t) =>
+      [
+        `${t("copy.splitLabels.host")}: ${HOST}`,
+        `${t("copy.splitLabels.port")}: ${p}`,
+        `${t("copy.splitLabels.user")}: ${u}`,
+        `${t("copy.splitLabels.pass")}: ${pw}`,
+      ].join("\n"),
   },
   {
     id: "json",
-    label: "JSON 配置",
+    labelKey: "copy.format.json",
     build: (p, u, pw) =>
       JSON.stringify({ host: HOST, port: p, username: u, password: pw, protocol: "http" }, null, 2),
   },
@@ -73,6 +80,7 @@ export function CopyWizard({
   data: Data;
   preset: CopyPreset;
 }) {
+  const { t } = useI18n();
   const ports = React.useMemo(() => data.ports.filter((p) => p.enabled), [data.ports]);
   const accounts = React.useMemo(() => data.accounts.filter((a) => a.enabled), [data.accounts]);
 
@@ -139,11 +147,11 @@ export function CopyWizard({
   }, [dim, portID, accountID, selected, ports, accounts, eligibleAccounts, eligiblePorts]);
 
   const fmt = FORMATS.find((f) => f.id === format) ?? FORMATS[0];
-  const text = pairs.map((p) => fmt.build(p.port, p.user, p.pass)).join(format === "json" ? ",\n" : "\n\n");
+  const text = pairs.map((p) => fmt.build(p.port, p.user, p.pass, t)).join(format === "json" ? ",\n" : "\n\n");
 
   const portItems = ports.map((p) => ({
     value: p.id,
-    label: `端口 ${p.port}${p.remark ? ` · ${p.remark}` : ""}`,
+    label: `${t("copy.portOption", { port: p.port })}${p.remark ? ` · ${p.remark}` : ""}`,
   }));
   const accountItems = accounts.map((a) => ({
     value: a.id,
@@ -158,7 +166,7 @@ export function CopyWizard({
         }))
       : eligiblePorts(accounts.find((x) => x.id === accountID)).map((p) => ({
           id: p.id,
-          label: `端口 ${p.port}`,
+          label: t("copy.portOption", { port: p.port }),
         }));
 
   const allOn = candidates.length > 0 && candidates.every((c) => selected[c.id]);
@@ -168,10 +176,10 @@ export function CopyWizard({
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      toast.success(`已复制 ${pairs.length} 条接入信息`);
+      toast.success(t("copy.done", { n: pairs.length }));
       window.setTimeout(() => setCopied(false), 1800);
     } catch {
-      toast.error("复制失败，请手动选择文本复制");
+      toast.error(t("common.copyFailed"));
     }
   }
 
@@ -179,15 +187,13 @@ export function CopyWizard({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>复制接入信息</DialogTitle>
-          <DialogDescription>
-            选择维度 → 选择对象 → 选择格式，一键复制给客户端使用。
-          </DialogDescription>
+          <DialogTitle>{t("copy.title")}</DialogTitle>
+          <DialogDescription>{t("copy.desc")}</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-5">
           <section aria-labelledby="step-1" className="space-y-2">
-            <Label id="step-1">第 1 步 · 复制维度</Label>
+            <Label id="step-1">{t("copy.step1")}</Label>
             <Tabs
               value={dim}
               onValueChange={(v) => {
@@ -198,17 +204,17 @@ export function CopyWizard({
               }}
             >
               <TabsList>
-                <TabsTrigger value="port">按端口</TabsTrigger>
-                <TabsTrigger value="account">按账户</TabsTrigger>
+                <TabsTrigger value="port">{t("copy.byPort")}</TabsTrigger>
+                <TabsTrigger value="account">{t("copy.byAccount")}</TabsTrigger>
               </TabsList>
             </Tabs>
           </section>
 
           <section aria-labelledby="step-2" className="space-y-2">
-            <Label id="step-2">第 2 步 · 选择{dim === "port" ? "端口" : "账户"}</Label>
+            <Label id="step-2">{dim === "port" ? t("copy.step2Port") : t("copy.step2Account")}</Label>
             {dim === "port" ? (
               <FormSelect
-                aria-label="选择端口"
+                aria-label={t("copy.selectPort")}
                 value={portID}
                 items={portItems}
                 onValueChange={(id) => {
@@ -219,7 +225,7 @@ export function CopyWizard({
               />
             ) : (
               <FormSelect
-                aria-label="选择账户"
+                aria-label={t("copy.selectAccount")}
                 value={accountID}
                 items={accountItems}
                 onValueChange={(id) => {
@@ -233,7 +239,7 @@ export function CopyWizard({
             <div className="rounded-lg border bg-muted/30 p-3">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-xs text-muted-foreground">
-                  {dim === "port" ? "可用账户（可多选）" : "可用端口（可多选）"}
+                  {dim === "port" ? t("copy.availableAccounts") : t("copy.availablePorts")}
                 </span>
                 <Button
                   type="button"
@@ -243,13 +249,13 @@ export function CopyWizard({
                     setSelected(allOn ? {} : Object.fromEntries(candidates.map((c) => [c.id, true])))
                   }
                 >
-                  {allOn ? "取消全选" : "全选"}
+                  {allOn ? t("copy.clearAll") : t("copy.selectAll")}
                 </Button>
               </div>
               <ScrollArea className="max-h-32">
                 <div className="grid grid-cols-2 gap-x-3 gap-y-1">
                   {candidates.length === 0 ? (
-                    <p className="col-span-2 py-2 text-xs text-muted-foreground">暂无可选项</p>
+                    <p className="col-span-2 py-2 text-xs text-muted-foreground">{t("copy.noOptions")}</p>
                   ) : (
                     candidates.map((c) => (
                       <label
@@ -274,7 +280,7 @@ export function CopyWizard({
           </section>
 
           <section aria-labelledby="step-3" className="space-y-2">
-            <Label id="step-3">第 3 步 · 复制格式</Label>
+            <Label id="step-3">{t("copy.step3")}</Label>
             <div className="grid grid-cols-2 gap-2">
               {FORMATS.map((f) => (
                 <button
@@ -293,7 +299,7 @@ export function CopyWizard({
                       : "hover:bg-muted"
                   )}
                 >
-                  {f.label}
+                  {t(f.labelKey)}
                 </button>
               ))}
             </div>
@@ -302,11 +308,11 @@ export function CopyWizard({
           <section className="space-y-2">
             <div className="flex items-center justify-between">
               <Label htmlFor="copy-preview" aria-live="polite">
-                预览（{pairs.length} 条 · 主机 {HOST}）
+                {t("copy.preview", { n: pairs.length, host: HOST })}
               </Label>
               <Button size="sm" variant="ghost" onClick={copy} disabled={!text}>
                 {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
-                {copied ? "已复制" : "复制"}
+                {copied ? t("common.copied") : t("common.copy")}
               </Button>
             </div>
             <Textarea
@@ -315,18 +321,18 @@ export function CopyWizard({
               rows={7}
               value={text}
               className="font-mono text-xs"
-              placeholder="选择端口与账户后生成接入信息…"
+              placeholder={t("copy.previewEmpty")}
             />
           </section>
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            关闭
+            {t("common.close")}
           </Button>
           <Button onClick={copy} disabled={!text}>
             <Copy className="size-4" aria-hidden="true" />
-            复制全部
+            {t("copy.copyAll")}
           </Button>
         </DialogFooter>
       </DialogContent>

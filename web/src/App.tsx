@@ -4,13 +4,15 @@ import {
   Gauge,
   Loader2,
   LogOut,
+  MonitorSmartphone,
   Moon,
   PanelLeft,
   RefreshCw,
   Sun,
   Zap,
 } from "lucide-react";
-import { api, type Data } from "@/api";
+import { api } from "@/api";
+import type { Data } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -27,6 +29,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarContent, NAV_ITEMS } from "@/components/AppSidebar";
 import { CopyWizard, type CopyPreset } from "@/components/CopyWizard";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { I18nProvider, useI18n } from "@/i18n";
+import { useColorMode } from "@/lib/theme";
 import { LoginPage } from "@/pages/Login";
 import { DashboardPage } from "@/pages/Dashboard";
 import { PortsPage } from "@/pages/Ports";
@@ -42,44 +46,23 @@ function readHash(): Page {
   return (NAV_ITEMS.some((n) => n.id === h) ? h : "dashboard") as Page;
 }
 
-// useTheme handles dark/light switching with persistence (shadcn 模板明暗主题).
-function useTheme() {
-  const [theme, setTheme] = React.useState<"dark" | "light">(() => {
-    try {
-      // 显式走 window.localStorage：jsdom（smoke 冒烟）环境下裸 localStorage 会触发
-      // Node 实验性 --localstorage-file 告警并被错误捕获。
-      return window.localStorage.getItem("fp-theme") === "dark" ? "dark" : "light";
-    } catch {
-      return "light";
-    }
-  });
-  React.useEffect(() => {
-    const root = document.documentElement;
-    root.classList.toggle("dark", theme === "dark");
-    root.style.colorScheme = theme;
-    document
-      .querySelector('meta[name="theme-color"]')
-      ?.setAttribute("content", theme === "dark" ? "#171717" : "#ffffff");
-    try {
-      window.localStorage.setItem("fp-theme", theme);
-    } catch {
-      /* storage unavailable */
-    }
-  }, [theme]);
-  return {
-    theme,
-    toggle: () => setTheme((t) => (t === "dark" ? "light" : "dark")),
-  };
+export default function App() {
+  return (
+    <I18nProvider>
+      <AppShell />
+    </I18nProvider>
+  );
 }
 
-export default function App() {
+function AppShell() {
+  const { t } = useI18n();
   const [session, setSession] = React.useState<{ auth: boolean } | null>(null);
   const [data, setData] = React.useState<Data | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [page, setPage] = React.useState<Page>(readHash);
   const [copyOpen, setCopyOpen] = React.useState(false);
   const [copyPreset, setCopyPreset] = React.useState<CopyPreset>(null);
-  const { theme, toggle } = useTheme();
+  const { mode, resolved, setMode, toggle } = useColorMode();
   const [navOpen, setNavOpen] = React.useState(false);
 
   const reload = React.useCallback(async () => {
@@ -92,10 +75,10 @@ export default function App() {
         setSession({ auth: false });
         setData(null);
       } else {
-        setLoadError(e?.message || "加载配置失败");
+        setLoadError(e?.message || t("shell.loadFailed"));
       }
     }
-  }, []);
+  }, [t]);
 
   React.useEffect(() => {
     let alive = true;
@@ -148,14 +131,14 @@ export default function App() {
   }
 
   if (!session) {
-    return <BootScreen text="正在连接控制台…" />;
+    return <BootScreen text={t("shell.booting")} />;
   }
 
   if (!session.auth) {
     return (
       <>
         <LoginPage onSuccess={() => api.session().then(setSession).then(() => reload())} />
-        <Toaster theme="dark" position="bottom-right" richColors closeButton />
+        <Toaster theme={resolved} position="bottom-right" richColors closeButton />
       </>
     );
   }
@@ -170,13 +153,13 @@ export default function App() {
                 <RefreshCw className="size-5" aria-hidden="true" />
               </div>
               <div className="space-y-1">
-                <h1 className="text-base font-semibold">加载配置失败</h1>
+                <h1 className="text-base font-semibold">{t("shell.loadFailed")}</h1>
                 <p className="break-all text-xs text-muted-foreground">{loadError}</p>
               </div>
               <div className="flex justify-center gap-2">
-                <Button onClick={() => reload()}>重试</Button>
+                <Button onClick={() => reload()}>{t("common.retry")}</Button>
                 <Button variant="outline" onClick={logout}>
-                  <LogOut className="size-4" aria-hidden="true" /> 重新登录
+                  <LogOut className="size-4" aria-hidden="true" /> {t("shell.relogin")}
                 </Button>
               </div>
             </CardContent>
@@ -184,11 +167,16 @@ export default function App() {
         </div>
       );
     }
-    return <BootScreen text="正在加载配置…" />;
+    return <BootScreen text={t("shell.loadingConfig")} />;
   }
 
-  const title = NAV_ITEMS.find((n) => n.id === page)?.label ?? "";
+  const title = t(NAV_ITEMS.find((n) => n.id === page)?.labelKey ?? "nav.dashboard");
   const activeConns = data.status.ports.reduce((sum, p) => sum + p.conns_cur, 0);
+  const followSystem = mode === "system";
+  const themeNext = resolved === "dark" ? t("shell.theme.toLight") : t("shell.theme.toDark");
+  const themeLabel = followSystem
+    ? t("shell.theme.system", { next: themeNext })
+    : t(resolved === "dark" ? "shell.theme.dark" : "shell.theme.light", { next: themeNext });
 
   return (
     <TooltipProvider>
@@ -206,7 +194,7 @@ export default function App() {
         {/* Mobile drawer */}
         <Sheet open={navOpen} onOpenChange={setNavOpen}>
           <SheetContent side="left" className="w-64 gap-0 border-neutral-800 bg-neutral-950 p-0 text-neutral-100">
-            <SheetTitle className="sr-only">导航菜单</SheetTitle>
+            <SheetTitle className="sr-only">{t("shell.navMenu")}</SheetTitle>
             <SidebarContent
               version={data.version}
               page={page}
@@ -222,7 +210,7 @@ export default function App() {
               variant="ghost"
               size="icon-sm"
               className="md:hidden"
-              aria-label="打开导航菜单"
+              aria-label={t("shell.openNav")}
               onClick={() => setNavOpen(true)}
             >
               <PanelLeft className="size-4" aria-hidden="true" />
@@ -234,7 +222,7 @@ export default function App() {
             <Breadcrumb className="min-w-0">
               <BreadcrumbList className="flex-nowrap">
                 <BreadcrumbItem className="hidden sm:inline-flex">
-                  <span className="text-muted-foreground">控制台</span>
+                  <span className="text-muted-foreground">{t("shell.console")}</span>
                 </BreadcrumbItem>
                 <BreadcrumbSeparator className="hidden sm:list-item" />
                 <BreadcrumbItem>
@@ -245,26 +233,38 @@ export default function App() {
 
             <div className="flex-1" />
 
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={toggle}
-              aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
-            >
-              {theme === "dark" ? (
-                <Sun className="size-4" aria-hidden="true" />
-              ) : (
-                <Moon className="size-4" aria-hidden="true" />
-              )}
-            </Button>
             <div className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
               <Activity className="size-3.5" aria-hidden="true" />
-              <span className="tabular-nums">{activeConns} 个活跃连接</span>
+              <span className="tabular-nums">{t("shell.activeConns", { n: activeConns })}</span>
             </div>
             <Button variant="outline" size="sm" onClick={() => openCopy(null)} className="hidden sm:inline-flex">
               <Gauge className="size-4" aria-hidden="true" />
-              复制接入
+              {t("shell.copyAccess")}
             </Button>
+
+            {/* 主题：跟随系统 / 亮 / 暗 三态；主按钮仍是单图标 toggle */}
+            <div className="flex items-center">
+              {followSystem ? (
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={t("shell.theme.hint")}
+                  title={t("shell.theme.hint")}
+                  aria-pressed={true}
+                  onClick={() => setMode("system")}
+                  className="text-muted-foreground"
+                >
+                  <MonitorSmartphone className="size-3.5" aria-hidden="true" />
+                </Button>
+              ) : null}
+              <Button variant="ghost" size="icon-sm" onClick={toggle} aria-label={themeLabel} title={themeLabel}>
+                {resolved === "dark" ? (
+                  <Sun className="size-4" aria-hidden="true" />
+                ) : (
+                  <Moon className="size-4" aria-hidden="true" />
+                )}
+              </Button>
+            </div>
           </header>
 
           <main className="mx-auto w-full max-w-[1440px] flex-1 space-y-4 px-4 py-4 md:space-y-6 md:px-6 md:py-6">
@@ -291,7 +291,7 @@ export default function App() {
         </div>
 
         <CopyWizard open={copyOpen} onOpenChange={setCopyOpen} data={data} preset={copyPreset} />
-        <Toaster theme={theme} position="bottom-right" richColors closeButton />
+        <Toaster theme={resolved} position="bottom-right" richColors closeButton />
       </div>
     </TooltipProvider>
   );

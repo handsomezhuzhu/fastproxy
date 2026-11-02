@@ -25,6 +25,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState, FormSelect, PageHeader, PaginationControls, Toolbar } from "@/components/page";
+import { useI18n } from "@/i18n";
 import { bytes, clock } from "@/lib/utils";
 
 function statusVariant(status?: string) {
@@ -35,6 +36,7 @@ function statusVariant(status?: string) {
 }
 
 export function LogsPage({ data }: { data: Data }) {
+  const { t, lang } = useI18n();
   // Server-side pagination state
   const [entries, setEntries] = React.useState<LogEntry[] | null>(null);
   const [total, setTotal] = React.useState(0);
@@ -79,20 +81,20 @@ export function LogsPage({ data }: { data: Data }) {
 
   React.useEffect(() => {
     if (!auto) return;
-    const t = window.setInterval(() => load(), 4000);
-    return () => window.clearInterval(t);
+    const timer = window.setInterval(() => load(), 4000);
+    return () => window.clearInterval(timer);
   }, [auto, load]);
 
   async function clearLogs() {
     setClearing(true);
     try {
       await api.clearLogs();
-      toast.success("连接日志已清空");
+      toast.success(t("logs.cleared"));
       setClearOpen(false);
       setPage(1);
       await load();
     } catch (err: any) {
-      toast.error(err?.message || "清空失败");
+      toast.error(err?.message || t("logs.clearFailed"));
     } finally {
       setClearing(false);
     }
@@ -100,53 +102,53 @@ export function LogsPage({ data }: { data: Data }) {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="连接日志" description="每次连接一条结构化记录，默认保留 7 天。" />
+      <PageHeader title={t("logs.title")} description={t("logs.description")} />
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <FormSelect
           id="log-level"
-          aria-label="最低日志级别"
+          aria-label={t("logs.levelLabel")}
           value={level}
           onValueChange={setLevel}
           items={[
-            { value: "debug", label: "全部级别" },
-            { value: "info", label: "info 及以上" },
-            { value: "warn", label: "warn 及以上" },
-            { value: "error", label: "仅 error" },
+            { value: "debug", label: t("logs.level.all") },
+            { value: "info", label: t("logs.level.info") },
+            { value: "warn", label: t("logs.level.warn") },
+            { value: "error", label: t("logs.level.error") },
           ]}
         />
         <FormSelect
           id="log-port"
-          aria-label="按端口筛选"
+          aria-label={t("logs.filterPort")}
           value={port}
           onValueChange={setPort}
           items={[
-            { value: "", label: "全部端口" },
-            ...data.ports.map((p) => ({ value: String(p.port), label: `端口 ${p.port}` })),
+            { value: "", label: t("logs.filterPortAll") },
+            ...data.ports.map((p) => ({ value: String(p.port), label: t("copy.portOption", { port: p.port }) })),
           ]}
         />
         <FormSelect
           id="log-account"
-          aria-label="按账户筛选"
+          aria-label={t("logs.filterAccount")}
           value={account}
           onValueChange={setAccount}
           items={[
-            { value: "", label: "全部账户" },
+            { value: "", label: t("logs.filterAccountAll") },
             ...data.accounts.map((a) => ({ value: a.username, label: a.username })),
           ]}
         />
         <FormSelect
           id="log-limit"
-          aria-label="每页条数"
+          aria-label={t("logs.pageSize")}
           value={String(pageSize)}
           onValueChange={(v) => {
             setPageSize(Number(v));
             setPage(1);
           }}
           items={[
-            { value: "20", label: "每页 20 条" },
-            { value: "50", label: "每页 50 条" },
-            { value: "100", label: "每页 100 条" },
+            { value: "20", label: t("logs.perPage", { n: 20 }) },
+            { value: "50", label: t("logs.perPage", { n: 50 }) },
+            { value: "100", label: t("logs.perPage", { n: 100 }) },
           ]}
         />
       </div>
@@ -166,10 +168,13 @@ export function LogsPage({ data }: { data: Data }) {
         </div>
       ) : (
         <>
-          <Toolbar count={`${total} 条记录`} detail={auto ? "每 4 秒自动刷新" : undefined}>
+          <Toolbar
+            count={t("logs.count", { n: total })}
+            detail={auto ? t("logs.autoDetail") : undefined}
+          >
             <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Switch checked={auto} onCheckedChange={setAuto} aria-label="自动刷新日志" size="sm" />
-              自动刷新
+              <Switch checked={auto} onCheckedChange={setAuto} aria-label={t("logs.autoLabel")} size="sm" />
+              {t("logs.auto")}
             </label>
             <Button variant="outline" size="sm" onClick={load} disabled={loading}>
               {loading ? (
@@ -177,7 +182,7 @@ export function LogsPage({ data }: { data: Data }) {
               ) : (
                 <RefreshCw className="size-4" aria-hidden="true" />
               )}
-              刷新
+              {t("common.refresh")}
             </Button>
             <Button
               variant="outline"
@@ -186,15 +191,15 @@ export function LogsPage({ data }: { data: Data }) {
               disabled={total === 0}
             >
               <Trash2 className="size-4" aria-hidden="true" />
-              清空日志
+              {t("logs.clear")}
             </Button>
           </Toolbar>
 
           {entries.length === 0 ? (
             <EmptyState
               icon={<ScrollText className="size-5" aria-hidden="true" />}
-              title="暂无日志"
-              description="客户端产生连接后，记录会实时出现在这里。"
+              title={t("logs.empty.title")}
+              description={t("logs.empty.desc")}
             />
           ) : (
             <>
@@ -202,16 +207,16 @@ export function LogsPage({ data }: { data: Data }) {
                 <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>时间</TableHead>
-                    <TableHead>级别</TableHead>
-                    <TableHead>端口</TableHead>
-                    <TableHead>账户</TableHead>
-                    <TableHead>客户端</TableHead>
-                    <TableHead>协议</TableHead>
-                    <TableHead>目标</TableHead>
-                    <TableHead>状态</TableHead>
-                    <TableHead className="text-right">流量</TableHead>
-                    <TableHead className="text-right">耗时</TableHead>
+                    <TableHead>{t("logs.col.time")}</TableHead>
+                    <TableHead>{t("logs.col.level")}</TableHead>
+                    <TableHead>{t("common.port")}</TableHead>
+                    <TableHead>{t("common.account")}</TableHead>
+                    <TableHead>{t("logs.col.client")}</TableHead>
+                    <TableHead>{t("logs.col.proto")}</TableHead>
+                    <TableHead>{t("logs.col.target")}</TableHead>
+                    <TableHead>{t("logs.col.status")}</TableHead>
+                    <TableHead className="text-right">{t("logs.col.traffic")}</TableHead>
+                    <TableHead className="text-right">{t("logs.col.duration")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -220,7 +225,7 @@ export function LogsPage({ data }: { data: Data }) {
                     return (
                       <TableRow key={`${e.time}-${i}`} className={e.level === "warn" || e.level === "error" ? "bg-muted/40" : ""}>
                         <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums text-muted-foreground">
-                          {clock(e.time)}
+                          {clock(e.time, lang)}
                         </TableCell>
                         <TableCell>
                           <Badge
@@ -281,16 +286,14 @@ export function LogsPage({ data }: { data: Data }) {
       <AlertDialog open={clearOpen} onOpenChange={setClearOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>清空全部连接日志？</AlertDialogTitle>
-            <AlertDialogDescription>
-              将删除全部 {total} 条结构化记录，无法恢复。
-            </AlertDialogDescription>
+            <AlertDialogTitle>{t("logs.clear.title")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("logs.clear.desc", { n: total })}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={clearLogs} disabled={clearing}>
               {clearing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-              清空
+              {t("logs.clear.action")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -3,9 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#ffffff" />
     <title>FastProxy 控制台</title>
+    <!--
+      首屏防闪白：渲染前先按 localStorage / 系统偏好确定暗亮。
+      规则与 src/lib/theme.ts 保持一致：无配置（或 system）→ 跟随 prefers-color-scheme。
+    -->
+    <script>
+      (function () {
+        var mode = "system";
+        try {
+          mode = localStorage.getItem("fp-theme") || "system";
+        } catch (e) {}
+        var dark =
+          mode === "dark" ||
+          (mode !== "light" &&
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches);
+        var root = document.documentElement;
+        root.classList.toggle("dark", !!dark);
+        root.style.colorScheme = dark ? "dark" : "light";
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute("content", dark ? "#171717" : "#ffffff");
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

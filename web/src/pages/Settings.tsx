@@ -13,6 +13,26 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Field, FormSelect, PageHeader } from "@/components/page";
+import { useI18n } from "@/i18n";
+
+/** v2：Settings 不再有 allow_direct，发送前剔除该字段，避免旧后端/新后端字段冲突。 */
+function toPayload(form: Settings): Settings {
+  const { access_log, log_level, log_buffer, log_retention_days, dial_timeout_sec, handshake_timeout_sec, probe_enabled, probe_interval_sec, probe_timeout_sec, probe_concurrency, probe_target } = form;
+  return {
+    access_log,
+    log_level,
+    log_buffer: Number(log_buffer),
+    log_retention_days: Number(log_retention_days),
+    dial_timeout_sec: Number(dial_timeout_sec),
+    handshake_timeout_sec: Number(handshake_timeout_sec),
+    probe_enabled,
+    probe_interval_sec: Number(probe_interval_sec),
+    probe_timeout_sec: Number(probe_timeout_sec),
+    // 并发数限制 1-32，与检测请求的并发上限一致。
+    probe_concurrency: Math.min(32, Math.max(1, Math.floor(Number(probe_concurrency) || 1))),
+    probe_target: probe_target.trim(),
+  };
+}
 
 export function SettingsPage({
   data,
@@ -23,6 +43,7 @@ export function SettingsPage({
   reload: () => Promise<void>;
   onLoggedOut: () => void;
 }) {
+  const { t } = useI18n();
   const [form, setForm] = React.useState<Settings>(data.settings);
   const [saving, setSaving] = React.useState(false);
 
@@ -32,20 +53,11 @@ export function SettingsPage({
     e.preventDefault();
     setSaving(true);
     try {
-      await api.saveSettings({
-        ...form,
-        log_buffer: Number(form.log_buffer),
-        log_retention_days: Number(form.log_retention_days),
-        dial_timeout_sec: Number(form.dial_timeout_sec),
-        handshake_timeout_sec: Number(form.handshake_timeout_sec),
-        probe_interval_sec: Number(form.probe_interval_sec),
-        probe_timeout_sec: Number(form.probe_timeout_sec),
-        probe_concurrency: Number(form.probe_concurrency),
-      });
-      toast.success("系统设置已保存");
+      await api.saveSettings(toPayload(form));
+      toast.success(t("settings.saved"));
       await reload();
     } catch (err: any) {
-      toast.error(err?.message || "保存失败");
+      toast.error(err?.message || t("common.saveFailed"));
     } finally {
       setSaving(false);
     }
@@ -59,16 +71,16 @@ export function SettingsPage({
   async function changePassword(e: React.FormEvent) {
     e.preventDefault();
     if (newPassword !== confirmPassword) {
-      toast.error("两次输入的新密码不一致");
+      toast.error(t("settings.pwd.mismatch"));
       return;
     }
     setPwdBusy(true);
     try {
       await api.changePassword(oldPassword, newPassword);
-      toast.success("密码已修改，请重新登录");
+      toast.success(t("settings.pwd.done"));
       onLoggedOut();
     } catch (err: any) {
-      toast.error(err?.message || "修改失败");
+      toast.error(err?.message || t("settings.pwd.failed"));
     } finally {
       setPwdBusy(false);
     }
@@ -76,42 +88,30 @@ export function SettingsPage({
 
   return (
     <div className="space-y-5">
-      <PageHeader title="系统设置" description="全局配置：日志、超时、直连策略、探测与管理密码。" />
+      <PageHeader title={t("settings.title")} description={t("settings.description")} />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>转发与日志</CardTitle>
-            <CardDescription>保存后新连接立即生效，无需重启服务。</CardDescription>
+            <CardTitle>{t("settings.fwd.title")}</CardTitle>
+            <CardDescription>{t("settings.fwd.desc")}</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={saveSettings} className="space-y-5">
               <div className="flex items-center justify-between gap-4">
                 <div className="min-w-0">
-                  <p className="text-sm font-medium">记录连接日志</p>
-                  <p className="text-xs text-muted-foreground">关闭后仅记录失败连接。</p>
+                  <p className="text-sm font-medium">{t("settings.accessLog")}</p>
+                  <p className="text-xs text-muted-foreground">{t("settings.accessLogHint")}</p>
                 </div>
                 <Switch
                   checked={form.access_log}
                   onCheckedChange={(v: boolean) => setForm({ ...form, access_log: v })}
-                  aria-label="记录连接日志"
-                />
-              </div>
-
-              <div className="flex items-center justify-between gap-4">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium">允许直连端口</p>
-                  <p className="text-xs text-muted-foreground">端口未绑定上游时从本机直接出口。</p>
-                </div>
-                <Switch
-                  checked={form.allow_direct}
-                  onCheckedChange={(v: boolean) => setForm({ ...form, allow_direct: v })}
-                  aria-label="允许直连端口"
+                  aria-label={t("settings.accessLog")}
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <Field label="日志级别" htmlFor="set-level">
+                <Field label={t("settings.logLevel")} htmlFor="set-level">
                   <FormSelect
                     id="set-level"
                     value={form.log_level}
@@ -124,7 +124,7 @@ export function SettingsPage({
                     ]}
                   />
                 </Field>
-                <Field label="日志保留（天）" htmlFor="set-retention">
+                <Field label={t("settings.logRetention")} htmlFor="set-retention">
                   <Input
                     id="set-retention"
                     type="number"
@@ -135,7 +135,7 @@ export function SettingsPage({
                     onChange={(e) => setForm({ ...form, log_retention_days: Number(e.target.value) })}
                   />
                 </Field>
-                <Field label="连接超时（秒）" htmlFor="set-dial">
+                <Field label={t("settings.dialTimeout")} htmlFor="set-dial">
                   <Input
                     id="set-dial"
                     type="number"
@@ -146,7 +146,7 @@ export function SettingsPage({
                     onChange={(e) => setForm({ ...form, dial_timeout_sec: Number(e.target.value) })}
                   />
                 </Field>
-                <Field label="握手超时（秒）" htmlFor="set-handshake">
+                <Field label={t("settings.handshakeTimeout")} htmlFor="set-handshake">
                   <Input
                     id="set-handshake"
                     type="number"
@@ -162,19 +162,17 @@ export function SettingsPage({
               <div className="space-y-4 border-t pt-4">
                 <div className="flex items-center justify-between gap-4">
                   <div className="min-w-0">
-                    <p className="text-sm font-medium">自动探测</p>
-                    <p className="text-xs text-muted-foreground">
-                      定时检测上游健康状态、延迟与出口 IP，并更新本机出口 IP。
-                    </p>
+                    <p className="text-sm font-medium">{t("settings.probe")}</p>
+                    <p className="text-xs text-muted-foreground">{t("settings.probeHint")}</p>
                   </div>
                   <Switch
                     checked={form.probe_enabled}
                     onCheckedChange={(v: boolean) => setForm({ ...form, probe_enabled: v })}
-                    aria-label="自动探测上游"
+                    aria-label={t("settings.probe")}
                   />
                 </div>
                 <div className="grid grid-cols-3 gap-3">
-                  <Field label="探测间隔（秒）" htmlFor="set-probe-interval">
+                  <Field label={t("settings.probeInterval")} htmlFor="set-probe-interval">
                     <Input
                       id="set-probe-interval"
                       type="number"
@@ -185,7 +183,7 @@ export function SettingsPage({
                       onChange={(e) => setForm({ ...form, probe_interval_sec: Number(e.target.value) })}
                     />
                   </Field>
-                  <Field label="探测超时（秒）" htmlFor="set-probe-timeout">
+                  <Field label={t("settings.probeTimeout")} htmlFor="set-probe-timeout">
                     <Input
                       id="set-probe-timeout"
                       type="number"
@@ -196,7 +194,7 @@ export function SettingsPage({
                       onChange={(e) => setForm({ ...form, probe_timeout_sec: Number(e.target.value) })}
                     />
                   </Field>
-                  <Field label="检测并发数" htmlFor="set-probe-concurrency">
+                  <Field label={t("settings.probeConcurrency")} htmlFor="set-probe-concurrency">
                     <Input
                       id="set-probe-concurrency"
                       type="number"
@@ -209,9 +207,9 @@ export function SettingsPage({
                   </Field>
                   <div className="col-span-3">
                     <Field
-                      label="探测目标（域名）"
+                      label={t("settings.probeTarget")}
                       htmlFor="set-probe-target"
-                      hint="通过上游请求该域名获取出口 IP，依次尝试 HTTP 80 / HTTPS 443。"
+                      hint={t("settings.probeTargetHint")}
                     >
                       <Input
                         id="set-probe-target"
@@ -228,7 +226,9 @@ export function SettingsPage({
 
               <Button type="submit" className="w-full" disabled={saving}>
                 {saving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                <span className="inline-block min-w-24 text-center">{saving ? "保存中…" : "保存系统设置"}</span>
+                <span className="inline-block min-w-24 text-center">
+                  {saving ? t("common.saving") : t("settings.save")}
+                </span>
               </Button>
             </form>
           </CardContent>
@@ -237,12 +237,12 @@ export function SettingsPage({
         <div className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>修改管理密码</CardTitle>
-              <CardDescription>修改后所有会话失效，需要重新登录。</CardDescription>
+              <CardTitle>{t("settings.pwd.title")}</CardTitle>
+              <CardDescription>{t("settings.pwd.desc")}</CardDescription>
             </CardHeader>
             <CardContent>
               <form onSubmit={changePassword} className="space-y-3">
-                <Field label="原密码" htmlFor="pwd-old">
+                <Field label={t("settings.pwd.old")} htmlFor="pwd-old">
                   <Input
                     id="pwd-old"
                     type="password"
@@ -251,7 +251,7 @@ export function SettingsPage({
                     onChange={(e) => setOldPassword(e.target.value)}
                   />
                 </Field>
-                <Field label="新密码（至少 6 位）" htmlFor="pwd-new">
+                <Field label={t("settings.pwd.new")} htmlFor="pwd-new">
                   <Input
                     id="pwd-new"
                     type="password"
@@ -260,7 +260,7 @@ export function SettingsPage({
                     onChange={(e) => setNewPassword(e.target.value)}
                   />
                 </Field>
-                <Field label="确认新密码" htmlFor="pwd-confirm">
+                <Field label={t("settings.pwd.confirm")} htmlFor="pwd-confirm">
                   <Input
                     id="pwd-confirm"
                     type="password"
@@ -271,7 +271,9 @@ export function SettingsPage({
                 </Field>
                 <Button type="submit" variant="secondary" className="w-full" disabled={pwdBusy || !newPassword}>
                   {pwdBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                  <span className="inline-block min-w-16 text-center">{pwdBusy ? "处理中…" : "修改密码"}</span>
+                  <span className="inline-block min-w-16 text-center">
+                    {pwdBusy ? t("settings.pwd.busy") : t("settings.pwd.submit")}
+                  </span>
                 </Button>
               </form>
             </CardContent>

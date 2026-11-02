@@ -36,7 +36,8 @@ if (login.status !== 200) {
 const data = await call("/api/data");
 const logs = await call("/api/logs?limit=50&level=debug");
 const fixture = {
-  data: data.json,
+  // v2：port_range 由后端提供；老后端没有则补默认值，保证 fixture 与 UI 类型一致。
+  data: data.json ? { port_range: { min: 10001, max: 10050 }, ...data.json } : data.json,
   logs: logs.json,
 };
 const fs = await import("node:fs");

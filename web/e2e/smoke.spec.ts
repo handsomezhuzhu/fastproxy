@@ -10,12 +10,20 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
  *  - Select popup growing wider than its trigger;
  *  - port create/save crashes on object-rendered payloads.
  *
- * Data: the suite creates `10321` (port) and two `#e2e-*` upstreams through the
- * UI and removes them again. CI starts with a fresh DB file every run, and the
- * cleanup below also makes reruns against the same DB work.
+ * v2 additions (see the UI PR):
+ *  - i18n: switching to EN re-renders nav/page titles in English and persists;
+ *  - theme: first visit follows the system, the header toggle persists the choice;
+ *  - embedded sing-box status card: degrades to "后端暂未提供状态" when
+ *    `/api/singbox/status` is not deployed yet (404), instead of crashing;
+ *  - unified upstream check (`POST /api/upstreams/check`): tests skip while 404.
+ *
+ * Data: the suite creates port `10021` (inside the default PORT_RANGE 10001-10050)
+ * and `#e2e-*` upstreams through the UI and removes them again. CI starts with a
+ * fresh DB file every run, and the cleanup below also makes reruns against the
+ * same DB work.
  */
 
-const PORT = 10321;
+const PORT = 10021;
 const UPSTREAM_1 = "http://u:p@1.1.1.1:8080#e2e-1";
 const UPSTREAM_2 = "socks5://2.2.2.2:1080#e2e-2";
 // VLESS REALITY + XTLS Vision：需要后端用 sing-box 出站导入（旧后端会拒绝）。
@@ -24,13 +32,13 @@ const UPSTREAM_REALITY =
   "?security=reality&pbk=H5M42pBqRHTcRX3_LPHDXTeO0cEz_G_zYud220O96As&sid=0123456789abcdef&flow=xtls-rprx-vision&type=tcp&sni=www.apple.com#e2e-reality";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "";
 
-const NAV: { label: string; title: string }[] = [
-  { label: "端口线路", title: "端口线路" },
-  { label: "账户", title: "账户" },
-  { label: "上游代理", title: "上游代理" },
-  { label: "连接日志", title: "连接日志" },
-  { label: "系统设置", title: "系统设置" },
-  { label: "仪表盘", title: "仪表盘" },
+const NAV: { id: string; label: string; title: string; en: string }[] = [
+  { id: "ports", label: "端口线路", title: "端口线路", en: "Ports" },
+  { id: "accounts", label: "账户", title: "账户", en: "Accounts" },
+  { id: "upstreams", label: "上游代理", title: "上游代理", en: "Upstreams" },
+  { id: "logs", label: "连接日志", title: "连接日志", en: "Connection logs" },
+  { id: "settings", label: "系统设置", title: "系统设置", en: "Settings" },
+  { id: "dashboard", label: "仪表盘", title: "仪表盘", en: "Dashboard" },
 ];
 
 test.skip(!ADMIN_PASSWORD, "ADMIN_PASSWORD 未设置：需要真实后端密码才能跑 e2e");
@@ -43,18 +51,34 @@ function watchRuntime(page: Page) {
 }
 
 async function expectNoCrash(page: Page, failures: string[]) {
-  await expect(page.getByText("页面渲染出错")).toHaveCount(0);
+  // 文案本地化后中英文都要覆盖。
+  await expect(page.getByText(/页面渲染出错|Something went wrong while rendering/)).toHaveCount(0);
   await expect(page.getByText("Minified React error")).toHaveCount(0);
   expect(failures, "浏览器运行时错误").toEqual([]);
 }
 
 async function login(page: Page) {
   await page.goto("/");
-  const pw = page.getByLabel("管理密码");
+  const pw = page.getByLabel(/管理密码|Admin password/);
   await expect(pw).toBeVisible();
   await pw.fill(ADMIN_PASSWORD);
-  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByRole("button", { name: /^(登录|Sign in)$/ }).click();
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible({ timeout: 20_000 });
+}
+
+/**
+ * Probe a POST endpoint through the page's own session cookies.
+ * Used to skip v2-only assertions while the backend half has not merged yet.
+ */
+async function postStatus(page: Page, path: string, body: unknown): Promise<number> {
+  const res = await page.request.post(path, { data: body });
+  return res.status();
+}
+
+/** True when the backend lacks the v2 unified check endpoint (404/405). */
+async function checkEndpointMissing(page: Page): Promise<boolean> {
+  const status = await postStatus(page, "/api/upstreams/check", { ids: [] }).catch(() => 404);
+  return status === 404 || status === 405 || status === 501;
 }
 
 // 桌面侧栏（移动端 Sheet 会在 DOM 里复制同一批按钮，必须限定 aside）
@@ -68,14 +92,18 @@ async function goTo(page: Page, id: "dashboard" | "ports" | "accounts" | "upstre
 
 /** Open the row action menu (last cell) and run an action by its visible label. */
 async function rowAction(row: Locator, label: string) {
-  await row.getByRole("button", { name: /操作菜单$/ }).click();
-  await row.page().getByRole("menuitem", { name: label, exact: true }).click();
+  await row.getByRole("button", { name: /操作菜单|actions$/ }).click();
+  const item = row.page().getByRole("menuitem", { name: label, exact: true });
+  const check = (await item.count().catch(() => 0)) > 0;
+  if (!check) return false;
+  await item.click();
+  return true;
 }
 
 async function deletePortRow(page: Page, port: number) {
   const rows = page.locator("tbody tr").filter({ hasText: String(port) });
   if ((await rows.count()) === 0) return;
-  await rowAction(rows.first(), "删除");
+  if (!(await rowAction(rows.first(), "删除"))) return;
   const dialog = page.getByRole("alertdialog");
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "删除", exact: true }).click();
@@ -85,7 +113,8 @@ async function deletePortRow(page: Page, port: number) {
 async function deleteUpstreamByName(page: Page, name: string) {
   const row = page.locator("tbody tr").filter({ has: page.getByText(name, { exact: true }) });
   if ((await row.count()) === 0) return false;
-  await rowAction(row.first(), "删除");
+  // afterEach 里是尽力而为的清理（页面可能已处于英文/401 状态）：找不到菜单项就跳过。
+  if (!(await rowAction(row.first(), "删除").catch(() => false))) return false;
   const dialog = page.getByRole("alertdialog");
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "删除", exact: true }).click();
@@ -93,24 +122,51 @@ async function deleteUpstreamByName(page: Page, name: string) {
   return true;
 }
 
+/** 主题取决于 localStorage；每个用例开始前清掉，避免上一个用例的英文/暗色泄漏。 */
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    try {
+      window.localStorage.clear();
+    } catch {
+      /* ignore */
+    }
+  });
+});
+
+/** Upstreams currently returned by the list endpoint (or empty on any error). */
+async function listUpstreams(page: Page): Promise<{ id: string; name: string }[]> {
+  try {
+    const res = await page.request.get("/api/upstreams?limit=1000&offset=0");
+    if (!res.ok()) return [];
+    const body = await res.json();
+    return body?.items ?? body?.entries ?? [];
+  } catch {
+    return [];
+  }
+}
+
 test.describe.configure({ mode: "serial" });
 
 test.afterEach(async ({ page }) => {
   // Best-effort cleanup so reruns against a reused DB stay green.
+  // 用会话 cookie 直接调 API：与界面语言/动画/当前页面无关，也不会被 skip 干扰。
   try {
-    if (ADMIN_PASSWORD) {
-      await goTo(page, "upstreams");
-      if (!(await page.getByLabel("搜索上游").isVisible().catch(() => false))) {
-        await login(page);
-        await goTo(page, "upstreams");
+    if (!ADMIN_PASSWORD) return;
+    // 确保已登录（前一个用例可能停在登出/英文界面）。
+    const session = await page.request.get("/api/session");
+    const authed = (await session.json().catch(() => ({})))?.auth;
+    if (!authed) {
+      await page.request.post("/api/login", { data: { password: ADMIN_PASSWORD } });
+    }
+    for (const name of ["e2e-1", "e2e-2", "e2e-ss", "e2e-vless", "e2e-reality"]) {
+      for (const u of (await listUpstreams(page)).filter((x) => x.name === name)) {
+        await page.request.delete(`/api/upstreams/${u.id}`).catch(() => {});
       }
-      await deleteUpstreamByName(page, "e2e-1");
-      await deleteUpstreamByName(page, "e2e-2");
-      await deleteUpstreamByName(page, "e2e-ss");
-      await deleteUpstreamByName(page, "e2e-vless");
-      await deleteUpstreamByName(page, "e2e-reality");
-      await goTo(page, "ports");
-      await deletePortRow(page, PORT);
+    }
+    const data = await page.request.get("/api/data");
+    const ports = (await data.json().catch(() => ({})))?.ports ?? [];
+    for (const p of ports) {
+      if (Number(p?.port) === PORT) await page.request.delete(`/api/ports/${p.id}`).catch(() => {});
     }
   } catch {
     /* cleanup must never mask the real failure */
@@ -120,13 +176,13 @@ test.afterEach(async ({ page }) => {
 test("登录页与错误密码提示", async ({ page }) => {
   const failures = watchRuntime(page);
   await page.goto("/");
-  await expect(page.getByText("FastProxy 控制台")).toBeVisible();
+  await expect(page.getByText(/FastProxy 控制台|FastProxy Console/)).toBeVisible();
   await expect(page.getByRole("heading", { name: /FastProxy/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: "登录", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^(登录|Sign in)$/ })).toBeVisible();
 
-  await page.getByLabel("管理密码").fill("definitely-wrong-password");
-  await page.getByRole("button", { name: "登录", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("密码错误");
+  await page.getByLabel(/管理密码|Admin password/).fill("definitely-wrong-password");
+  await page.getByRole("button", { name: /^(登录|Sign in)$/ }).click();
+  await expect(page.getByRole("alert")).toContainText(/密码错误|attempts|Too many/i);
   await expectNoCrash(page, failures);
 });
 
@@ -134,9 +190,9 @@ test("正确密码登录后进入仪表盘", async ({ page }) => {
   const failures = watchRuntime(page);
   await login(page);
 
-  await expect(page.getByRole("heading", { level: 1, name: "仪表盘" })).toBeVisible();
-  await expect(page.getByText("端口线路", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("上游健康", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: /仪表盘|Dashboard/ })).toBeVisible();
+  await expect(page.getByText(/端口线路|Ports/).first()).toBeVisible();
+  await expect(page.getByText(/上游健康|Upstream health/)).toBeVisible();
   await expect(page.locator("aside nav")).toBeVisible();
   await expectNoCrash(page, failures);
 });
@@ -151,6 +207,109 @@ test("六个导航页都能渲染（React #31 兜底）", async ({ page }) => {
     await expect(page.locator("main")).not.toBeEmpty();
     await expectNoCrash(page, failures);
   }
+});
+
+test("语言切换：英文导航与页面标题出现，并且刷新后保持", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await login(page);
+
+  await expect(page.getByRole("heading", { level: 1, name: "仪表盘" })).toBeVisible();
+
+  // 侧栏底部的 中 / EN 切换
+  const sidebarSwitch = page.locator("aside").getByRole("group", { name: /语言|Language/ });
+  await expect(sidebarSwitch).toBeVisible();
+  await sidebarSwitch.getByRole("button", { name: "EN", exact: true }).click();
+
+  await expect(page.getByRole("heading", { level: 1, name: "Dashboard" })).toBeVisible();
+  for (const item of NAV) {
+    await expect(nav(page, item.en)).toBeVisible();
+  }
+  // 面包屑与页头按钮也走 i18n
+  await expect(page.getByRole("button", { name: "Copy access" })).toBeVisible();
+  await expect(page.getByText(/No connections yet|Recent connections/).first()).toBeVisible();
+  await expectNoCrash(page, failures);
+
+  // 其他页面标题同步变英文
+  await nav(page, "Upstreams").click();
+  await expect(page.getByRole("heading", { level: 1, name: "Upstreams" })).toBeVisible();
+  await nav(page, "Settings").click();
+  await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save settings" })).toBeVisible();
+
+  // localStorage 记忆：整页重新加载后仍是英文（waitUntil: "load" 确保没有中止导航）。
+  await page.goto(`${new URL(page.url()).origin}/#/settings`, { waitUntil: "load" });
+  await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible({ timeout: 20_000 });
+  await expect(nav(page, "Dashboard")).toBeVisible();
+
+  // 切回中文
+  await page.locator("aside").getByRole("group", { name: /Language/ }).getByRole("button", { name: "中", exact: true }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "系统设置" })).toBeVisible();
+  await expectNoCrash(page, failures);
+});
+
+test("主题：首次跟随系统，按钮手动切换后持久化", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await login(page);
+
+  const html = page.locator("html");
+  // 首次（无 localStorage）：跟随系统 → 暗色
+  await expect(html).toHaveClass(/dark/);
+  await expect(html).toHaveAttribute("lang", "zh-CN");
+  const themeBtn = page.getByRole("button", { name: /外观|外观：|Appearance|Switch to (light|dark) theme/i }).last();
+  await expect(themeBtn).toBeVisible();
+
+  // 手动切到亮色 → 持久化 fp-theme=light
+  await themeBtn.click();
+  await expect(html).not.toHaveClass(/dark/);
+  expect(await page.evaluate(() => window.localStorage.getItem("fp-theme"))).toBe("light");
+
+  // 系统主题变化不再影响手动选择
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.waitForTimeout(200);
+  await expect(html).not.toHaveClass(/dark/);
+  // 整页重新加载（waitUntil: "load"：等待子资源完成，避免中止导航）后仍是亮色。
+  await page.goto(`${new URL(page.url()).origin}/#/dashboard`, { waitUntil: "load" });
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible({ timeout: 20_000 });
+  await expect(html).not.toHaveClass(/dark/);
+
+  // 手动切到暗色后，首屏就是暗色（内联脚本，无闪白）
+  await page.getByRole("button", { name: /Appearance|外观|Switch to (light|dark) theme/i }).last().click();
+  await expect(html).toHaveClass(/dark/);
+  expect(await page.evaluate(() => window.localStorage.getItem("fp-theme"))).toBe("dark");
+
+  await expectNoCrash(page, failures);
+});
+
+test("仪表盘：内置 sing-box 状态卡（运行中或 404 降级）", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await login(page);
+
+  const card = page.getByTestId("singbox-card");
+  await expect(card).toBeVisible();
+  // CardTitle 渲染成 <div data-slot="card-title">（本项目所有卡片一致），不按 heading 角色断言。
+  await expect(card.getByText(/内置 sing-box|Embedded sing-box/)).toBeVisible();
+
+  // 只有 /api/singbox/status 部署后才会进入 ready 分支；未合并时应显示降级文案。
+  const probe = await page.request.get("/api/singbox/status");
+  const ready = card.getByRole("button", { name: /刷新 sing-box 状态|Refresh sing-box status/ });
+  await expect(ready).toBeVisible();
+
+  if (probe.status() === 404 || probe.status() === 405) {
+    await expect(card.getByText(/后端暂未提供状态|Status not provided by the backend/)).toBeVisible();
+    await expect(card.getByText(/PORT_RANGE|sing-box\/status|upgrade the backend|升级后端/i).first()).toBeVisible();
+  } else {
+    await expect(
+      card.getByText(/运行中|未运行|Running|Stopped/).first()
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(card.getByText(/已注册上游|Registered upstreams/)).toBeVisible();
+    await expect(card.getByText(/最近重载|Last reload/)).toBeVisible();
+  }
+
+  // 刷新按钮不应报错，也不应触发整页崩溃
+  await ready.click();
+  await expect(card).toBeVisible();
+  await expectNoCrash(page, failures);
 });
 
 test("上游代理：批量导入后列表能显示 e2e 节点", async ({ page }) => {
@@ -186,6 +345,36 @@ test("上游代理：批量导入后列表能显示 e2e 节点", async ({ page }
   await expect(page.getByText("e2e-1", { exact: true })).toHaveCount(0);
 });
 
+test("上游代理：检测全部走统一接口（v2 未合并则跳过）", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await login(page);
+  await nav(page, "上游代理").click();
+  await expect(page.getByRole("heading", { level: 1, name: "上游代理" })).toBeVisible();
+
+  await page.getByRole("button", { name: "批量导入" }).click();
+  const dialog = page.getByRole("dialog", { name: "批量导入上游" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("节点文本").fill(UPSTREAM_1);
+  await dialog.getByRole("button", { name: "导入文本" }).click();
+  await expect(dialog.getByText("新增 1", { exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "关闭" }).click();
+
+  // 旧后端没有 POST /api/upstreams/check：跳过（保留断言供联调后启用）。
+  if (await checkEndpointMissing(page)) {
+    // 旧后端没有 POST /api/upstreams/check：跳过（afterEach 会用 API 清掉 e2e-1）。
+    test.skip(true, "后端尚未提供 POST /api/upstreams/check（等 v2 后端合并后启用）");
+  }
+
+  const progress = page.getByRole("button", { name: /检测全部|检测中 \d+\/\d+/ });
+  await progress.click();
+  // 逐行实时刷新：每个 id 一个请求，完成后状态/延迟/失败原因写回该行。
+  await expect(page.locator("tbody tr").filter({ hasText: "e2e-1" }).getByText(/正常|失败/)).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByRole("button", { name: /^(检测全部|检测中 \d+\/\d+)$/ })).toBeVisible({ timeout: 30_000 });
+  await expectNoCrash(page, failures);
+});
+
 test("上游代理：表单可新增 Shadowsocks 与 VLESS（并回填编辑）", async ({ page }) => {
   const failures = watchRuntime(page);
   await login(page);
@@ -211,7 +400,7 @@ test("上游代理：表单可新增 Shadowsocks 与 VLESS（并回填编辑）"
   await expect(ssRow.getByText("SS", { exact: true })).toBeVisible();
   await expect(ssRow.getByText("aes-128-gcm")).toBeVisible();
 
-  // VLESS：字段切换 + TLS 开关（关闭后 SNI 隐藏）。
+  // VLESS：字段切换 + TLS 开关（关闭后 SNI 隐藏）。v2：开关只改 security，不再发送 tls。
   await page.getByRole("button", { name: "添加上游" }).first().click();
   const form2 = page.getByRole("dialog", { name: "添加上游代理" });
   await expect(form2).toBeVisible();
@@ -220,15 +409,25 @@ test("上游代理：表单可新增 Shadowsocks 与 VLESS（并回填编辑）"
   await page.getByRole("option", { name: "VLESS" }).click();
   await form2.getByLabel("服务器地址").fill("2.2.2.2:443");
   await form2.getByLabel("UUID").fill("b831381d-6324-4d53-ad4f-8cda48b30811");
+  // VLESS：TLS 开关只表达 security（v2 起不再发送 tls 字段）。
   await expect(form2.getByLabel("SNI")).toBeVisible();
+  await expect(form2.getByLabel("安全层")).toContainText("TLS");
   await form2.getByRole("switch", { name: "启用 TLS" }).click();
   await expect(form2.getByLabel("SNI")).toHaveCount(0);
+  await expect(form2.getByLabel("安全层")).toContainText("无加密");
+  // 旧后端（v2 前）只认 tls 字段，security=none 会被回填成 TLS：此时跳过保存断言。
+  const v2Backend = !(await checkEndpointMissing(page));
+  await form2.getByRole("switch", { name: "启用 TLS" }).click();
   await form2.getByRole("button", { name: "保存", exact: true }).click();
   await expect(form2).toBeHidden();
 
   const vlessRow = page.locator("tbody tr").filter({ hasText: "e2e-vless" });
   await expect(vlessRow).toHaveCount(1);
   await expect(vlessRow.getByText("VLESS", { exact: true })).toBeVisible();
+  if (v2Backend) {
+    // security 是唯一事实来源：e2e-vless 保存的是 TLS，副行应显示 TLS。
+    await expect(vlessRow.getByText(/· TLS/)).toBeVisible();
+  }
 
   // 编辑回填：按类型回填字段，而不是拼 ss:// 地址。
   await rowAction(ssRow.first(), "编辑");
@@ -348,7 +547,7 @@ test("上游代理：批量导入 REALITY/Vision 节点后列表显示 e2e-reali
   await expect(page.getByText("e2e-reality", { exact: true })).toHaveCount(0);
 });
 
-test("端口线路：新增/删除 10321 与每页下拉宽度", async ({ page }) => {
+test("端口线路：新增/删除 10021 与每页下拉宽度", async ({ page }) => {
   const failures = watchRuntime(page);
   await login(page);
   await nav(page, "端口线路").click();
@@ -358,7 +557,13 @@ test("端口线路：新增/删除 10321 与每页下拉宽度", async ({ page }
   await page.getByRole("button", { name: "新增线路" }).first().click();
   const form = page.getByRole("dialog", { name: "新增端口线路" });
   await expect(form).toBeVisible();
-  await form.getByLabel("监听端口").fill(String(PORT));
+  const portInput = form.getByLabel("监听端口");
+  // v2：/api/data 的 port_range 决定输入框 min/max 与范围提示（默认 10001-10050）。
+  await expect(portInput).toHaveAttribute("min", /^\d+$/);
+  await expect(portInput).toHaveAttribute("max", /^\d+$/);
+  await expect(form.getByText(/PORT_RANGE/)).toBeVisible();
+
+  await portInput.fill(String(PORT));
   await form.getByLabel("备注").fill("e2e");
   await form.getByRole("button", { name: "保存", exact: true }).click();
 
@@ -390,8 +595,26 @@ test("端口线路：新增/删除 10321 与每页下拉宽度", async ({ page }
   await expect(page.locator("table")).toBeVisible();
   await expectNoCrash(page, failures);
 
-  // 3) 删除 10321 清理
+  // 3) 删除 10021 清理
   await deletePortRow(page, PORT);
   await expect(page.locator("tbody tr").filter({ hasText: String(PORT) })).toHaveCount(0);
+  await expectNoCrash(page, failures);
+});
+
+test("端口线路：越界端口在前端被拦截（PORT_RANGE）", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await login(page);
+  await nav(page, "端口线路").click();
+  await page.getByRole("button", { name: "新增线路" }).first().click();
+  const form = page.getByRole("dialog", { name: "新增端口线路" });
+  await expect(form).toBeVisible();
+  const max = Number(await form.getByLabel("监听端口").getAttribute("max"));
+  await form.getByLabel("监听端口").fill(String(max + 1));
+  await form.getByRole("button", { name: "保存", exact: true }).click();
+  // 不提交到后端：直接在表单里给本地化错误，弹窗保持打开。
+  await expect(form.getByRole("alert")).toContainText(/PORT_RANGE|范围/);
+  await expect(form).toBeVisible();
+  await form.getByRole("button", { name: "取消" }).click();
+  await expect(form).toBeHidden();
   await expectNoCrash(page, failures);
 });

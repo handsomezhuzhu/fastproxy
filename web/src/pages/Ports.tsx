@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Check, Copy, Ellipsis, Loader2, Network, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { api, type Account, type Data, type Port } from "@/api";
+import { api, DEFAULT_PORT_RANGE, type Account, type Data, type Port, type PortRange } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -49,10 +49,16 @@ import {
   usePagination,
   useSelection,
 } from "@/components/page";
+import { useI18n } from "@/i18n";
 import { bytes } from "@/lib/utils";
 import type { CopyPreset } from "@/components/CopyWizard";
 
 type BulkAction = "enable" | "disable" | "delete";
+
+/** Backend answers 400 for out-of-range ports; recognise both the structured and free-text forms. */
+function looksOutOfRange(msg: string): boolean {
+  return /port_range|port range|端口.*范围|范围.*端口|out of range|超出/i.test(msg || "");
+}
 
 export function PortsPage({
   data,
@@ -63,6 +69,8 @@ export function PortsPage({
   reload: () => Promise<void>;
   onCopy: (p: CopyPreset) => void;
 }) {
+  const { t } = useI18n();
+  const range: PortRange = data.port_range ?? DEFAULT_PORT_RANGE;
   const [open, setOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<Port | null>(null);
   const [form, setForm] = React.useState({ port: "", remark: "" });
@@ -99,15 +107,24 @@ export function PortsPage({
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    setBusy(true);
     setError("");
+    const num = Number(form.port);
+    if (!Number.isInteger(num) || num < 1 || num > 65535) {
+      setError(t("ports.error.invalid"));
+      return;
+    }
+    if (num < range.min || num > range.max) {
+      setError(t("ports.error.outOfRange", { min: range.min, max: range.max }));
+      return;
+    }
+    setBusy(true);
     try {
       if (editing) {
-        const res = await api.updatePort(editing.id, { port: Number(form.port), remark: form.remark });
-        if (res.warning) toast.warning(`已保存，但监听失败：${res.warning}`);
-        else toast.success("端口线路已保存");
+        const res = await api.updatePort(editing.id, { port: num, remark: form.remark });
+        if (res.warning) toast.warning(t("ports.savedWarn", { warn: res.warning }));
+        else toast.success(t("ports.saved"));
       } else {
-        const res = await api.createPort({ port: Number(form.port), remark: form.remark });
+        const res = await api.createPort({ port: num, remark: form.remark });
         // saved.port 可能是完整 Port 对象（React error #31 修复：不得直接渲染对象）
         const savedPort = res.saved?.port;
         const portNum =
@@ -120,15 +137,21 @@ export function PortsPage({
           setCreated({ port: portNum, account: acc });
           setCopied(false);
         } else if (res.warning) {
-          toast.warning(`已保存，但监听失败：${res.warning}`);
+          toast.warning(t("ports.savedWarn", { warn: res.warning }));
         } else {
-          toast.success("端口线路已创建");
+          toast.success(t("ports.created"));
         }
       }
       setOpen(false);
       await reload();
     } catch (err: any) {
-      setError(err?.message || "保存失败");
+      const msg = err?.message || t("common.saveFailed");
+      // 后端越界 400：优先显示本地化的范围说明，原始信息附在括号里。
+      setError(
+        looksOutOfRange(msg)
+          ? t("ports.error.backendRange", { min: range.min, max: range.max })
+          : msg
+      );
     } finally {
       setBusy(false);
     }
@@ -138,10 +161,10 @@ export function PortsPage({
     setToggling(true);
     try {
       await api.togglePort(p.id, enabled);
-      toast.success(enabled ? `端口 ${p.port} 已启用` : `端口 ${p.port} 已停用`);
+      toast.success(enabled ? t("ports.toggledOn", { port: p.port }) : t("ports.toggledOff", { port: p.port }));
       await reload();
     } catch (err: any) {
-      toast.error(err?.message || "操作失败");
+      toast.error(err?.message || t("common.operationFailed"));
     } finally {
       setToggling(false);
     }
@@ -151,28 +174,37 @@ export function PortsPage({
     if (!deleting) return;
     try {
       await api.deletePort(deleting.id);
-      toast.success(`端口 ${deleting.port} 已删除`);
+      toast.success(t("ports.deleted", { port: deleting.port }));
       setDeleting(null);
       await reload();
     } catch (err: any) {
-      toast.error(err?.message || "删除失败");
+      toast.error(err?.message || t("common.deleteFailed"));
     }
   }
 
   async function copyAccount() {
     if (!created) return;
-    const text = `主机: ${window.location.hostname}\n端口: ${created.port}\n账号: ${created.account.username}\n密码: ${created.account.password}`;
+    const text = t("ports.copy.desc", {
+      host: window.location.hostname,
+      port: created.port,
+      user: created.account.username,
+      pass: created.account.password,
+    });
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      toast.success("接入信息已复制");
+      toast.success(t("ports.copy.done"));
       window.setTimeout(() => setCopied(false), 1800);
     } catch {
-      toast.error("复制失败，请手动选择文本复制");
+      toast.error(t("common.copyFailed"));
     }
   }
 
-  const actionLabels: Record<BulkAction, string> = { enable: "启用", disable: "禁用", delete: "删除" };
+  const actionLabels: Record<BulkAction, string> = {
+    enable: t("common.enable"),
+    disable: t("common.disable"),
+    delete: t("common.delete"),
+  };
 
   async function runBulk(action: BulkAction) {
     const ids = [...sel.selected];
@@ -183,16 +215,16 @@ export function PortsPage({
       const failed = r.errors ?? [];
       const done = r.updated ?? Math.max(0, ids.length - failed.length);
       if (failed.length > 0) {
-        toast.error(`${failed.length} 个端口${actionLabels[action]}失败：${failed[0].error}`);
-        if (done > 0) toast.success(`已${actionLabels[action]} ${done} 个端口`);
+        toast.error(t("ports.bulkFailed", { n: failed.length, action: actionLabels[action], err: failed[0].error }));
+        if (done > 0) toast.success(t("ports.bulkEach", { n: done, action: actionLabels[action] }));
       } else {
-        toast.success(`已${actionLabels[action]} ${done} 个端口`);
+        toast.success(t("ports.bulkEach", { n: done, action: actionLabels[action] }));
       }
       sel.clear();
       await reload();
     } catch (err: any) {
       // 后端批量接口未上线（404）或其他错误：友好提示，不清空选择
-      toast.error(err?.message || "批量操作失败");
+      toast.error(err?.message || t("common.bulkFailed"));
     } finally {
       setBulkBusy(false);
       setBulkConfirmDelete(false);
@@ -211,27 +243,27 @@ export function PortsPage({
 
   return (
     <div className="space-y-5">
-      <PageHeader
-        title="端口线路"
-        description="每个端口同时支持 HTTP 与 SOCKS5 接入，创建时自动生成默认账号。"
-      />
+      <PageHeader title={t("ports.title")} description={t("ports.description")} />
 
       {data.ports.length === 0 ? (
         <EmptyState
           icon={<Network className="size-5" aria-hidden="true" />}
-          title="还没有端口线路"
-          description="新建第一个监听端口，默认账号一并生成。"
+          title={t("ports.empty.title")}
+          description={t("ports.empty.desc", { min: range.min, max: range.max })}
           action={
             <Button onClick={openCreate}>
-              <Plus className="size-4" aria-hidden="true" /> 新增线路
+              <Plus className="size-4" aria-hidden="true" /> {t("ports.create")}
             </Button>
           }
         />
       ) : (
         <>
-          <Toolbar count={`${data.ports.length} 条线路`} detail={`监听中 ${listening}`}>
+          <Toolbar
+            count={t("ports.count", { n: data.ports.length })}
+            detail={t("ports.listening", { n: listening })}
+          >
             <Button size="sm" onClick={openCreate}>
-              <Plus className="size-4" aria-hidden="true" /> 新增线路
+              <Plus className="size-4" aria-hidden="true" /> {t("ports.create")}
             </Button>
           </Toolbar>
 
@@ -240,19 +272,19 @@ export function PortsPage({
               className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2"
               role="status"
             >
-              <span className="text-sm tabular-nums">已选 {sel.selected.size} 项 ·</span>
+              <span className="text-sm tabular-nums">{t("common.selected", { n: sel.selected.size })} ·</span>
               <Button size="sm" variant="outline" onClick={() => askBulk("enable")} disabled={bulkBusy}>
-                启用
+                {t("common.enable")}
               </Button>
               <Button size="sm" variant="outline" onClick={() => askBulk("disable")} disabled={bulkBusy}>
-                禁用
+                {t("common.disable")}
               </Button>
               <Button size="sm" variant="destructive" onClick={() => askBulk("delete")} disabled={bulkBusy}>
                 {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                删除
+                {t("common.delete")}
               </Button>
-              <Button size="sm" variant="ghost" onClick={sel.clear} aria-label="取消选择">
-                取消
+              <Button size="sm" variant="ghost" onClick={sel.clear} aria-label={t("common.clearSelection")}>
+                {t("common.cancel")}
               </Button>
             </div>
           ) : null}
@@ -266,18 +298,18 @@ export function PortsPage({
                     checked={pageAllSelected}
                     indeterminate={!pageAllSelected && pageSomeSelected}
                     onCheckedChange={(v) => sel.toggleMany(pageIDs, v)}
-                    label="全选当前页"
+                    label={t("common.selectAllPage")}
                   />
                 </TableHead>
-                <TableHead className="w-16">启用</TableHead>
-                <TableHead>端口</TableHead>
-                <TableHead>状态</TableHead>
-                <TableHead className="text-right">账户</TableHead>
-                <TableHead className="text-right">连接</TableHead>
-                <TableHead className="text-right">流量</TableHead>
-                <TableHead>备注</TableHead>
+                <TableHead className="w-16">{t("ports.col.enabled")}</TableHead>
+                <TableHead>{t("common.port")}</TableHead>
+                <TableHead>{t("ports.col.status")}</TableHead>
+                <TableHead className="text-right">{t("ports.col.accounts")}</TableHead>
+                <TableHead className="text-right">{t("ports.col.conns")}</TableHead>
+                <TableHead className="text-right">{t("ports.col.traffic")}</TableHead>
+                <TableHead>{t("ports.col.remark")}</TableHead>
                 <TableHead className="w-12">
-                  <span className="sr-only">操作</span>
+                  <span className="sr-only">{t("common.actions")}</span>
                 </TableHead>
               </TableRow>
             </TableHeader>
@@ -294,7 +326,7 @@ export function PortsPage({
                         className="size-3.5 accent-primary focus-visible:outline-2 focus-visible:outline-ring"
                         checked={checked}
                         onChange={(e) => sel.toggle(p.id, e.target.checked)}
-                        aria-label={`选择 端口 ${p.port}`}
+                        aria-label={`${t("common.port")} ${p.port}`}
                       />
                     </TableCell>
                     <TableCell>
@@ -302,7 +334,7 @@ export function PortsPage({
                         checked={p.enabled}
                         disabled={toggling}
                         onCheckedChange={(v: boolean) => toggle(p, v)}
-                        aria-label={`端口 ${p.port} 启用开关`}
+                        aria-label={t("ports.col.enabled")}
                       />
                     </TableCell>
                     <TableCell>
@@ -313,11 +345,11 @@ export function PortsPage({
                     </TableCell>
                     <TableCell>
                       {!p.enabled ? (
-                        <DotBadge tone="muted">已停用</DotBadge>
+                        <DotBadge tone="muted">{t("ports.status.disabled")}</DotBadge>
                       ) : s?.listening ? (
-                        <DotBadge tone="ok">监听中</DotBadge>
+                        <DotBadge tone="ok">{t("ports.status.listening")}</DotBadge>
                       ) : (
-                        <DotBadge tone="fail" title={s?.error}>未监听</DotBadge>
+                        <DotBadge tone="fail" title={s?.error}>{t("ports.status.notListening")}</DotBadge>
                       )}
                       {s?.error ? (
                         <p className="mt-1 max-w-[220px] truncate text-xs text-destructive" title={s.error}>
@@ -339,20 +371,20 @@ export function PortsPage({
                       <DropdownMenu>
                         <DropdownMenuTrigger
                           className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                          aria-label={`端口 ${p.port} 操作菜单`}
+                          aria-label={`${t("common.port")} ${p.port} ${t("common.actions")}`}
                         >
                           <Ellipsis className="size-4" aria-hidden="true" />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-40">
                           <DropdownMenuItem onClick={() => openEdit(p)}>
-                            <Pencil className="size-4" aria-hidden="true" /> 编辑
+                            <Pencil className="size-4" aria-hidden="true" /> {t("common.edit")}
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => onCopy({ dim: "port", id: p.id })}>
-                            <Copy className="size-4" aria-hidden="true" /> 复制接入
+                            <Copy className="size-4" aria-hidden="true" /> {t("shell.copyAccess")}
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem variant="destructive" onClick={() => setDeleting(p)}>
-                            <Trash2 className="size-4" aria-hidden="true" /> 删除
+                            <Trash2 className="size-4" aria-hidden="true" /> {t("common.delete")}
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -376,44 +408,55 @@ export function PortsPage({
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editing ? `编辑线路 · 端口 ${editing.port}` : "新增端口线路"}</DialogTitle>
-            <DialogDescription>端口仅开放入口，系统自动生成默认账号。</DialogDescription>
+            <DialogTitle>
+              {editing ? t("ports.dialog.edit", { port: editing.port }) : t("ports.dialog.create")}
+            </DialogTitle>
+            <DialogDescription>{t("ports.dialog.desc")}</DialogDescription>
           </DialogHeader>
           <form onSubmit={save} className="space-y-4">
-            <Field label="监听端口" htmlFor="port-input">
+            <Field
+              label={t("ports.field.port")}
+              htmlFor="port-input"
+              hint={t("ports.field.rangeHint", { min: range.min, max: range.max })}
+            >
               <Input
                 id="port-input"
                 name="port"
                 type="number"
                 inputMode="numeric"
-                min={1}
-                max={65535}
+                min={range.min}
+                max={range.max}
+                step={1}
                 required
                 value={form.port}
                 onChange={(e) => setForm({ ...form, port: e.target.value })}
-                placeholder="10201"
+                placeholder={String(range.min + 20)}
+                aria-invalid={!!error}
+                aria-describedby={error ? "port-error" : undefined}
               />
             </Field>
-            <Field label="备注" htmlFor="port-remark">
+            <Field label={t("common.remark")} htmlFor="port-remark">
               <Input
                 id="port-remark"
                 value={form.remark}
                 onChange={(e) => setForm({ ...form, remark: e.target.value })}
-                placeholder="业务线A / 客户专用"
+                placeholder={t("ports.field.remarkPlaceholder")}
               />
             </Field>
             {error ? (
-              <p className="text-xs text-destructive" role="alert">
+              <p id="port-error" className="text-xs text-destructive" role="alert">
                 {error}
               </p>
             ) : null}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-                取消
+                {t("common.cancel")}
               </Button>
               <Button type="submit" disabled={busy}>
                 {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                <span className="inline-block min-w-16 text-center">{busy ? "保存中…" : "保存"}</span>
+                <span className="inline-block min-w-16 text-center">
+                  {busy ? t("common.saving") : t("common.save")}
+                </span>
               </Button>
             </DialogFooter>
           </form>
@@ -423,30 +466,28 @@ export function PortsPage({
       <Dialog open={!!created} onOpenChange={(v) => !v && setCreated(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>默认账号已生成</DialogTitle>
-            <DialogDescription>
-              端口 {created?.port} 已创建，请把下面的默认账号交给客户端使用。
-            </DialogDescription>
+            <DialogTitle>{t("ports.created.title")}</DialogTitle>
+            <DialogDescription>{t("ports.created.desc", { port: created?.port ?? "" })}</DialogDescription>
           </DialogHeader>
           {created ? (
             <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
               <div className="flex items-center justify-between gap-4 text-sm">
-                <span className="text-muted-foreground">用户名</span>
+                <span className="text-muted-foreground">{t("common.username")}</span>
                 <code className="font-mono">{created.account.username}</code>
               </div>
               <div className="flex items-center justify-between gap-4 text-sm">
-                <span className="text-muted-foreground">密码</span>
+                <span className="text-muted-foreground">{t("common.password")}</span>
                 <code className="font-mono">{created.account.password}</code>
               </div>
             </div>
           ) : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreated(null)}>
-              知道了
+              {t("common.gotIt")}
             </Button>
             <Button onClick={copyAccount}>
               {copied ? <Check className="size-4" aria-hidden="true" /> : <Copy className="size-4" aria-hidden="true" />}
-              {copied ? "已复制" : "一键复制"}
+              {copied ? t("common.copied") : t("ports.created.copyAll")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -455,14 +496,12 @@ export function PortsPage({
       <AlertDialog open={!!deleting} onOpenChange={(v) => !v && setDeleting(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除端口 {deleting?.port}？</AlertDialogTitle>
-            <AlertDialogDescription>
-              默认账号将一并删除；若仍有其他绑定账户需先删除。
-            </AlertDialogDescription>
+            <AlertDialogTitle>{t("ports.delete.title", { port: deleting?.port ?? "" })}</AlertDialogTitle>
+            <AlertDialogDescription>{t("ports.delete.desc")}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction onClick={remove}>删除</AlertDialogAction>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={remove}>{t("common.delete")}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -470,16 +509,14 @@ export function PortsPage({
       <AlertDialog open={bulkConfirmDelete} onOpenChange={(v) => !v && setBulkConfirmDelete(false)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>批量删除 {sel.selected.size} 个端口？</AlertDialogTitle>
-            <AlertDialogDescription>
-              其默认账号将一并删除；仍有其他绑定账户的端口会跳过并报错。
-            </AlertDialogDescription>
+            <AlertDialogTitle>{t("common.bulkDelete", { n: sel.selected.size })}</AlertDialogTitle>
+            <AlertDialogDescription>{t("ports.bulkDelete.desc")}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={() => runBulk(bulkAction ?? "delete")} disabled={bulkBusy}>
               {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-              删除
+              {t("common.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

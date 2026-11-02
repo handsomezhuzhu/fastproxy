@@ -49,11 +49,20 @@ func main() {
 		log.Fatalf("ADMIN_ADDR 端口无效: %q", portStr)
 	}
 
-	store, err := config.Open(cfgPath, adminPort)
+	// Inbound port window: startup-level configuration, validated before
+	// anything touches the database (an invalid value must abort the boot).
+	portRange, err := config.ParsePortRange(os.Getenv("PORT_RANGE"))
+	if err != nil {
+		log.Fatalf("%v（示例：PORT_RANGE=10001-10050，或单端口 PORT_RANGE=10080；默认 %s）",
+			err, config.DefaultPortRange)
+	}
+
+	store, err := config.OpenWithPortRange(cfgPath, adminPort, portRange)
 	if err != nil {
 		log.Fatalf("读取配置 %s 失败: %v", cfgPath, err)
 	}
 	defer store.Close()
+	log.Printf("线路端口范围: %s", store.PortRange())
 
 	// Structured logger: SQLite is authoritative (queryable history, retention
 	// pruning); the in-memory ring covers the interval before batch flush.
@@ -124,15 +133,15 @@ func main() {
 		log.Printf("部分端口启动失败: %v", err)
 	}
 
-	// Embedded sing-box: fastproxy carries VMess plus VLESS with REALITY,
-	// XTLS Vision, WebSocket or gRPC. Each such upstream gets a loopback
-	// SOCKS5 inbound inside the embedded box; proxy.DialTunnel reaches it
-	// through proxy.SingBoxDialer. A failure here is not fatal: plain
-	// VLESS/TLS, HTTP, SOCKS5 and Shadowsocks keep working natively.
+	// Embedded sing-box: every VLESS and VMess upstream is tunnelled through
+	// it (each gets a loopback SOCKS5 inbound inside the box; proxy.DialTunnel
+	// reaches it through proxy.SingBoxDialer). A failure here is not fatal:
+	// HTTP, SOCKS5 and Shadowsocks keep working natively, while VLESS/VMess
+	// upstreams report the box error.
 	sbMgr := singbox.New(store, logger)
 	defer sbMgr.Close()
 	if err := sbMgr.Start(context.Background()); err != nil {
-		logger.Warnf("内置 sing-box 启动失败（VMess/REALITY 上游将不可用）: %v", err)
+		logger.Warnf("内置 sing-box 启动失败（VLESS/VMess 上游将不可用）: %v", err)
 	} else if ports := sbMgr.Ports(); len(ports) > 0 {
 		log.Printf("内置 sing-box 已为 %d 个上游提供出站", len(ports))
 	}
@@ -148,6 +157,22 @@ func main() {
 	// Admin panel + API.
 	adm := admin.NewServer(store, mgr, logger, prober, version)
 	adm.SetSingBox(sbMgr)
+	policy, problems := admin.EnvLoginPolicy()
+	for _, p := range problems {
+		logger.Warnf("%v", p)
+	}
+	adm.SetLoginPolicy(policy.MaxAttempts, policy.Lock)
+	logger.Infof("登录限制: 连续失败 %d 次后锁定 %s", policy.MaxAttempts, policy.Lock)
+	// Reverse proxy support: only peers in TRUSTED_PROXIES may supply
+	// X-Forwarded-For/Proto (see docs/REVERSE_PROXY.md).
+	trusted, err := admin.TrustedProxiesFromEnv()
+	if err != nil {
+		log.Fatalf("%v（示例：TRUSTED_PROXIES=127.0.0.1/32,172.16.0.0/12）", err)
+	}
+	adm.SetTrustedProxies(trusted)
+	if len(trusted) > 0 {
+		logger.Infof("已信任反向代理: %s", os.Getenv(admin.TrustedProxiesEnv))
+	}
 	httpServer := &http.Server{
 		Addr:              adminAddr,
 		Handler:           adm.Handler(),

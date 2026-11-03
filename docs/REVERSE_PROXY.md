@@ -69,8 +69,40 @@ server {
 
 ## OpenResty
 
-与 Nginx 相同；若使用 `lua-resty` 做鉴权/WAF，把 `X-Forwarded-*` 头补齐即可。
-OpenResty 默认的 `proxy_buffering on` 会让未来的 SSE 实时日志不实时，务必在面板 location 关闭。
+OpenResty 的 `nginx.conf` 与上面的 Nginx 完全一致（同一套 `proxy_pass` / 头 / Upgrade / 超时配置），
+额外注意两点：
+
+1. 默认 `proxy_buffering on` 会让未来的 SSE 实时日志不实时，面板 location 必须 `proxy_buffering off`；
+2. 若在 `access_by_lua_block` 里做鉴权/WAF，放行后要保证 `X-Forwarded-For` 仍然追加
+   （`$proxy_add_x_forwarded_for`），不要把客户端提供的头原样传给 FastProxy：
+
+```nginx
+location / {
+    access_by_lua_block { require("panel_guard").check() }   # 自定义鉴权/WAF
+
+    proxy_pass http://127.0.0.1:7788;
+    proxy_http_version 1.1;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade           $http_upgrade;
+    proxy_set_header Connection        $connection_upgrade;
+
+    proxy_buffering off;      # SSE / 流式响应不缓冲
+    proxy_cache off;
+    proxy_connect_timeout 10s;
+    proxy_send_timeout    60s;
+    proxy_read_timeout    60s;   # SSE 需更长，可单独提高到 1h
+}
+```
+
+若未来启用了 SSE（`/api/logs/stream` 之类），在对应 location 再加：
+
+```nginx
+proxy_read_timeout 3600s;
+proxy_set_header Connection '';
+```
 
 ## 安全要点
 

@@ -773,7 +773,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
               <Input
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
-                className="h-7 w-44 pl-8 text-xs"
+                className="h-9 w-56 pl-8 text-sm"
                 placeholder={t("upstreams.searchPlaceholder")}
                 aria-label={t("upstreams.searchLabel")}
               />
@@ -841,7 +841,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             />
           ) : (
             <>
-              <div className="overflow-hidden rounded-xl border">
+              <div className="overflow-hidden rounded-lg border">
                 <Table>
                 <TableHeader>
                   <TableRow>
@@ -891,7 +891,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                           </div>
                         </TableCell>
                         <TableCell>
-                          <div className="font-mono text-xs">{u.host}</div>
+                          <div className="font-mono text-[13px]">{u.host}</div>
                           {u.type === "shadowsocks" ? (
                             <div className="max-w-[180px] truncate font-mono text-xs text-muted-foreground">
                               {u.method || t("upstreams.methodUnset")}
@@ -917,12 +917,12 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                         </TableCell>
                         <TableCell>
                           {u.exit_ip ? (
-                            <span className="font-mono text-xs tabular-nums">{u.exit_ip}</span>
+                            <span className="font-mono text-[13px] tabular-nums">{u.exit_ip}</span>
                           ) : (
                             <span className="text-xs text-muted-foreground">–</span>
                           )}
                         </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums">{refs(u.id)}</TableCell>
+                        <TableCell className="text-right text-[13px] tabular-nums">{refs(u.id)}</TableCell>
                         <TableCell>
                           <DropdownMenu>
                             <DropdownMenuTrigger

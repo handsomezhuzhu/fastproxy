@@ -289,7 +289,7 @@ export function PortsPage({
             </div>
           ) : null}
 
-          <div className="overflow-hidden rounded-xl border">
+          <div className="overflow-hidden rounded-lg border">
             <Table>
             <TableHeader>
               <TableRow>
@@ -358,10 +358,10 @@ export function PortsPage({
                       ) : null}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{bound}</TableCell>
-                    <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
+                    <TableCell className="whitespace-nowrap text-right text-sm tabular-nums">
                       {s?.conns_cur ?? 0} / {s?.conns_total ?? 0}
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
+                    <TableCell className="whitespace-nowrap text-right text-sm tabular-nums">
                       ↑{bytes(s?.bytes_out ?? 0)} ↓{bytes(s?.bytes_in ?? 0)}
                     </TableCell>
                     <TableCell className="max-w-[160px] truncate text-xs text-muted-foreground">

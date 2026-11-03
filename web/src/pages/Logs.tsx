@@ -203,7 +203,7 @@ export function LogsPage({ data }: { data: Data }) {
             />
           ) : (
             <>
-              <div className="overflow-hidden rounded-xl border">
+              <div className="overflow-hidden rounded-lg border">
                 <Table>
                 <TableHeader>
                   <TableRow>

@@ -261,7 +261,7 @@ export function AccountsPage({
             </div>
           ) : null}
 
-          <div className="overflow-hidden rounded-xl border">
+          <div className="overflow-hidden rounded-lg border">
             <Table>
             <TableHeader>
               <TableRow>
@@ -332,24 +332,24 @@ export function AccountsPage({
                         </Button>
                       </span>
                     </TableCell>
-                    <TableCell className="text-xs">
+                    <TableCell className="text-sm">
                       {a.is_default ? (
                         <span className="text-muted-foreground">{portLabel(a.port_id)}</span>
                       ) : (
                         portLabel(a.port_id)
                       )}
                     </TableCell>
-                    <TableCell className="text-xs">
+                    <TableCell className="text-sm">
                       {a.upstream_id ? (
                         upstreamName(a.upstream_id)
                       ) : (
                         <span className="text-muted-foreground">{t("common.redirect")}</span>
                       )}
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
+                    <TableCell className="whitespace-nowrap text-right text-sm tabular-nums">
                       {s?.conns_cur ?? 0} / {s?.conns_total ?? 0}
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
+                    <TableCell className="whitespace-nowrap text-right text-sm tabular-nums">
                       ↑{bytes(s?.bytes_out ?? 0)} ↓{bytes(s?.bytes_in ?? 0)}
                     </TableCell>
                     <TableCell className="max-w-[140px] truncate text-xs text-muted-foreground">

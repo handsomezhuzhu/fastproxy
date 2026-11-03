@@ -1,7 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { ThemeProvider } from "next-themes";
-import "@fontsource-variable/geist";
+import "@fontsource-variable/inter";
+import "@fontsource-variable/geist-mono";
 import App from "./App";
 import { THEME_STORAGE_KEY } from "./lib/theme";
 import "./index.css";

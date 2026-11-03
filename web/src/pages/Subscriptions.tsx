@@ -220,7 +220,7 @@ export function SubscriptionsPage({ reload }: { reload: () => Promise<void> }) {
             </Button>
           </Toolbar>
 
-          <div className="overflow-hidden rounded-xl border">
+          <div className="overflow-hidden rounded-lg border">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -246,12 +246,12 @@ export function SubscriptionsPage({ reload }: { reload: () => Promise<void> }) {
                       ) : null}
                     </TableCell>
                     <TableCell>
-                      <div className="max-w-[280px] truncate font-mono text-xs" title={s.url}>
+                      <div className="max-w-[280px] truncate font-mono text-[13px]" title={s.url}>
                         {s.url}
                       </div>
                     </TableCell>
-                    <TableCell className="text-xs tabular-nums">{s.node_count}</TableCell>
-                    <TableCell className="text-xs tabular-nums">
+                    <TableCell className="text-sm tabular-nums">{s.node_count}</TableCell>
+                    <TableCell className="text-sm tabular-nums">
                       {Math.round(s.interval_sec / 60)} {t("subscriptions.minutes")}
                     </TableCell>
                     <TableCell>{subscriptionStatus(s, t)}</TableCell>

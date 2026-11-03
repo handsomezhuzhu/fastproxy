@@ -63,14 +63,14 @@ export function SidebarContent({
 }) {
   const t = useI18n().t;
   return (
-    <div className="flex h-full flex-col text-neutral-100">
+    <div className="flex h-full flex-col text-sidebar-foreground">
       <div className="flex items-center gap-2.5 px-4 py-5">
-        <div className="flex size-8 items-center justify-center rounded-lg bg-white text-neutral-950">
+        <div className="flex size-8 items-center justify-center rounded-lg bg-foreground text-background">
           <Zap className="size-4" aria-hidden="true" />
         </div>
         <div className="min-w-0">
-          <div className="truncate text-sm font-semibold leading-tight text-white">FastProxy</div>
-          <div className="text-xs text-neutral-400" translate="no">
+          <div className="truncate text-sm font-semibold leading-tight text-sidebar-foreground">FastProxy</div>
+          <div className="text-xs text-sidebar-foreground/60" translate="no">
             v{version}
           </div>
         </div>
@@ -79,7 +79,7 @@ export function SidebarContent({
       <nav aria-label={t("shell.mainNav")} className="flex-1 space-y-5 overflow-y-auto px-3">
         {NAV_GROUPS.map((group) => (
           <div key={group.labelKey}>
-            <p className="px-2.5 pb-1.5 text-xs font-medium text-neutral-500">{t(group.labelKey)}</p>
+            <p className="px-2.5 pb-1.5 text-xs font-medium text-sidebar-foreground/50">{t(group.labelKey)}</p>
             <ul className="space-y-0.5">
               {group.items.map((item) => {
                 const active = page === item.id;
@@ -91,10 +91,10 @@ export function SidebarContent({
                       aria-current={active ? "page" : undefined}
                       className={cn(
                         "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors duration-200",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring/50",
                         active
-                          ? "bg-white/10 font-medium text-white"
-                          : "text-neutral-400 hover:bg-white/5 hover:text-white"
+                          ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                          : "text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                       )}
                     >
                       {item.icon}
@@ -109,19 +109,19 @@ export function SidebarContent({
       </nav>
 
       <div className="space-y-3 p-3">
-        <div className="flex items-center gap-2.5 rounded-lg border border-neutral-800 bg-white/5 p-3">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-white/10 text-white">
+        <div className="flex items-center gap-2.5 rounded-lg border border-sidebar-border bg-sidebar-accent/50 p-3">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-sidebar-accent text-sidebar-accent-foreground">
             <ShieldCheck className="size-4" aria-hidden="true" />
           </div>
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium leading-tight text-white">{t("shell.admin")}</p>
-            <p className="text-xs text-neutral-400">{t("shell.online")}</p>
+            <p className="text-sm font-medium leading-tight text-sidebar-foreground">{t("shell.admin")}</p>
+            <p className="text-xs text-sidebar-foreground/60">{t("shell.online")}</p>
           </div>
           <button
             type="button"
             onClick={onLogout}
             aria-label={t("shell.logout")}
-            className="rounded-md p-1.5 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+            className="rounded-md p-1.5 text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring/50"
           >
             <LogOut className="size-4" aria-hidden="true" />
           </button>

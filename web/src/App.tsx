@@ -179,7 +179,7 @@ function AppShell() {
     <TooltipProvider>
       <div className="flex min-h-screen bg-background">
         {/* Desktop sidebar（恒定深色，品牌一致性） */}
-        <aside className="sticky top-0 hidden h-screen w-64 shrink-0 border-r border-neutral-800 bg-neutral-950 text-neutral-100 md:block">
+        <aside className="sticky top-0 hidden h-screen w-64 shrink-0 border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:block">
           <SidebarContent
             version={data.version}
             page={page}
@@ -190,7 +190,7 @@ function AppShell() {
 
         {/* Mobile drawer */}
         <Sheet open={navOpen} onOpenChange={setNavOpen}>
-          <SheetContent side="left" className="w-64 gap-0 border-neutral-800 bg-neutral-950 p-0 text-neutral-100">
+          <SheetContent side="left" className="w-64 gap-0 border-sidebar-border bg-sidebar p-0 text-sidebar-foreground">
             <SheetTitle className="sr-only">{t("shell.navMenu")}</SheetTitle>
             <SidebarContent
               version={data.version}

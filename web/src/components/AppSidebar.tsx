@@ -7,9 +7,7 @@ import {
   Rss,
   ScrollText,
   Settings as SettingsIcon,
-  ShieldCheck,
   Users,
-  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
@@ -64,15 +62,10 @@ export function SidebarContent({
   const t = useI18n().t;
   return (
     <div className="flex h-full flex-col text-sidebar-foreground">
-      <div className="flex items-center gap-2.5 px-4 py-5">
-        <div className="flex size-8 items-center justify-center rounded-lg bg-foreground text-background">
-          <Zap className="size-4" aria-hidden="true" />
-        </div>
-        <div className="min-w-0">
-          <div className="truncate text-sm font-semibold leading-tight text-sidebar-foreground">FastProxy</div>
-          <div className="text-xs text-sidebar-foreground/60" translate="no">
-            v{version}
-          </div>
+      <div className="px-4 py-5">
+        <div className="truncate text-sm font-semibold leading-tight text-sidebar-foreground">FastProxy</div>
+        <div className="mt-0.5 text-xs text-sidebar-foreground/60" translate="no">
+          v{version}
         </div>
       </div>
 
@@ -108,24 +101,15 @@ export function SidebarContent({
         ))}
       </nav>
 
-      <div className="space-y-3 p-3">
-        <div className="flex items-center gap-2.5 rounded-lg border border-sidebar-border bg-sidebar-accent/50 p-3">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-sidebar-accent text-sidebar-accent-foreground">
-            <ShieldCheck className="size-4" aria-hidden="true" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium leading-tight text-sidebar-foreground">{t("shell.admin")}</p>
-            <p className="text-xs text-sidebar-foreground/60">{t("shell.online")}</p>
-          </div>
-          <button
-            type="button"
-            onClick={onLogout}
-            aria-label={t("shell.logout")}
-            className="rounded-md p-1.5 text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring/50"
-          >
-            <LogOut className="size-4" aria-hidden="true" />
-          </button>
-        </div>
+      <div className="p-3">
+        <button
+          type="button"
+          onClick={onLogout}
+          className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-sidebar-foreground/65 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring/50"
+        >
+          <LogOut className="size-4" aria-hidden="true" />
+          <span className="truncate">{t("shell.logout")}</span>
+        </button>
       </div>
     </div>
   );

@@ -53,6 +53,77 @@ func TestSubscriptionCRUDAndEncryptedURL(t *testing.T) {
 	}
 }
 
+func TestSubscriptionRejectsDuplicateURL(t *testing.T) {
+	s := tempStore(t, 7788)
+	const rawURL = "https://example.com/sub?token=same"
+	first, err := s.UpsertSubscription("", &Subscription{
+		Name: "first", URL: rawURL, Enabled: true, IntervalSec: 600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertSubscription("", &Subscription{
+		Name: "second", URL: rawURL, Enabled: true, IntervalSec: 600,
+	}); err == nil {
+		t.Fatal("creating a second subscription with the same URL must fail")
+	}
+	// Editing the existing subscription must still accept its own URL.
+	if _, err := s.UpsertSubscription(first.ID, &Subscription{
+		Name: "renamed", URL: rawURL, Enabled: true, IntervalSec: 900,
+	}); err != nil {
+		t.Fatalf("updating own subscription URL should be allowed: %v", err)
+	}
+	if _, err := s.UpsertSubscription("", &Subscription{
+		Name: "third", URL: rawURL + "-other", Enabled: true, IntervalSec: 600,
+	}); err != nil {
+		t.Fatalf("a different URL should be allowed: %v", err)
+	}
+}
+
+// TestReplaceSubscriptionNodesSkipsExistingUpstream makes sure a refresh does
+// not create a second row for a node that already exists in the pool (manual
+// upstream or another subscription).
+func TestReplaceSubscriptionNodesSkipsExistingUpstream(t *testing.T) {
+	s := tempStore(t, 7788)
+	manual, err := s.UpsertUpstream("", &Upstream{
+		Name: "manual", Type: UpstreamHTTP, Host: "1.1.1.1:8080",
+		Username: "u", Password: "p",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := s.UpsertSubscription("", &Subscription{
+		Name: "sub", URL: "https://example.com/sub", Enabled: true, IntervalSec: 600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := s.ReplaceSubscriptionNodes(sub.ID, []*Upstream{{
+		Name: "from-sub", Type: UpstreamHTTP, Host: "1.1.1.1:8080",
+		Username: "u", Password: "p",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Added != 0 || res.Updated != 1 {
+		t.Fatalf("existing node should be recognized, not added: %+v", res)
+	}
+	if n := len(s.Upstreams()); n != 1 {
+		t.Fatalf("refresh must not duplicate an existing upstream, got %d", n)
+	}
+	list, err := s.ListSubscriptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].NodeCount != 0 {
+		t.Fatalf("existing manual node must stay unowned: %+v", list)
+	}
+	if got := s.Upstreams()[0]; got.ID != manual.ID || got.Name != "manual" {
+		t.Fatalf("manual upstream was modified: %+v", got)
+	}
+}
+
 func TestReplaceSubscriptionNodesDiff(t *testing.T) {
 	s := tempStore(t, 7788)
 	sub, err := s.UpsertSubscription("", &Subscription{Name: "s", URL: "https://example.com/s", Enabled: true, IntervalSec: 600})

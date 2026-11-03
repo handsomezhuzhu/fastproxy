@@ -166,6 +166,11 @@ func (s *Store) UpsertSubscription(id string, in *Subscription) (*Subscription, 
 	if err := validateSubscription(in); err != nil {
 		return nil, err
 	}
+	if dup, err := s.subscriptionURLExists(in.URL, id); err != nil {
+		return nil, err
+	} else if dup {
+		return nil, errors.New("该订阅地址已存在，请直接刷新现有订阅，避免重复节点")
+	}
 	sealed, err := sealSecret(in.URL)
 	if err != nil {
 		return nil, err
@@ -195,6 +200,21 @@ func (s *Store) UpsertSubscription(id string, in *Subscription) (*Subscription, 
 		return nil, err
 	}
 	return s.getSubscriptionLocked(in.ID)
+}
+
+// subscriptionURLExists reports whether another subscription already uses the
+// same URL (the URL may contain a token, so compare decrypted plaintext).
+func (s *Store) subscriptionURLExists(raw, excludeID string) (bool, error) {
+	subs, err := s.ListSubscriptions()
+	if err != nil {
+		return false, err
+	}
+	for _, sub := range subs {
+		if sub.ID != excludeID && sub.URL == raw {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Store) getSubscriptionLocked(id string) (*Subscription, error) {
@@ -321,6 +341,14 @@ func (s *Store) ReplaceSubscriptionNodes(subID string, candidates []*Upstream) (
 	}
 	rows.Close()
 
+	// Keys of every existing upstream (manual or another subscription). A
+	// subscription refresh must not insert a second row for a node that is
+	// already in the pool.
+	allByKey := map[string]string{}
+	for _, u := range s.Upstreams() {
+		allByKey[upstreamDedupKey(u)] = u.ID
+	}
+
 	keep := map[string]bool{}
 	seen := map[string]bool{}
 	for _, candidate := range candidates {
@@ -345,6 +373,14 @@ func (s *Store) ReplaceSubscriptionNodes(subID string, candidates []*Upstream) (
 				continue
 			}
 			keep[m.upstreamID] = true
+			res.Updated++
+			continue
+		}
+
+		// Already present as a manual upstream or another subscription's node:
+		// recognize it but do not create a duplicate or take ownership (a later
+		// subscription removal must not delete a manually added node).
+		if _, ok := allByKey[key]; ok {
 			res.Updated++
 			continue
 		}

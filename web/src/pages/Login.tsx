@@ -1,8 +1,7 @@
 import * as React from "react";
-import { Loader2, Zap } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { api } from "@/api";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLanguageToggle } from "@/components/LanguageSwitch";
@@ -11,9 +10,9 @@ import { useI18n } from "@/i18n";
 
 /**
  * 登录页。
- * 连续失败后后端返回 429 `{error, retry_after_sec}`：显示“尝试过多，请 X 秒后重试”，
- * 按钮禁用并本地倒计时，结束自动恢复（不刷新页面）。
- * 后端未返回 retry_after_sec 时按 30 秒兜底，避免按钮永远禁用。
+ * 登录失败后端返回 429 `{error, retry_after_sec}`，提示尝试过多，按 X 秒后重试；
+ * 按钮置灰并显示倒计时，到期自动恢复（不刷新页面）。
+ * 如果响应未带 retry_after_sec，则按 30 秒兜底，避免按钮永久禁用。
  */
 export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
   const { t } = useI18n();
@@ -34,7 +33,7 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
 
   React.useEffect(() => {
     if (!lockedUntil || remaining > 0) return;
-    // 倒计时结束：解除锁定并清掉锁定提示。
+    // 倒计时结束，清除锁定提示。
     setLockedUntil(0);
     setError("");
   }, [lockedUntil, remaining]);
@@ -57,65 +56,66 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
       } else {
         setError(err?.message || t("login.failed"));
         setBusy(false);
-        // 密码错误后也刷新一次 session，确保按钮状态始终可重试。
       }
     } finally {
-      // 成功时组件很快被卸载，这里兜底避免异常路径一直转圈。
+      // 成功时会立刻卸载，这里兜底避免异常路径一直转圈。
       setBusy(false);
     }
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center bg-background p-6">
+    <div className="relative flex min-h-screen items-center justify-center bg-background px-4 py-10">
       <div className="absolute right-4 top-4 flex items-center gap-2">
         <ThemeSwitch />
         <AuthLanguageToggle />
       </div>
-      <div className="w-full max-w-sm space-y-4">
-        <Card className="rounded-xl border shadow-sm">
-          <CardContent className="p-6">
-            <div className="mb-6 flex flex-col items-center gap-3 text-center">
-              <div className="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-                <Zap className="size-6" aria-hidden="true" />
-              </div>
-              <div>
-                <h1 className="text-lg font-semibold tracking-tight">{t("login.title")}</h1>
-                <p className="mt-1 text-xs text-muted-foreground">{t("login.subtitle")}</p>
-              </div>
+
+      <div className="w-full max-w-[400px]">
+        <div className="rounded-xl border bg-card px-6 py-8 shadow-sm sm:px-8">
+          <div className="flex flex-col items-center text-center">
+            <div className="text-[15px] font-semibold tracking-tight">FastProxy</div>
+            <h1 className="mt-6 text-xl font-semibold tracking-tight">{t("login.title")}</h1>
+            <p className="mt-1.5 text-sm text-muted-foreground text-pretty">{t("login.subtitle")}</p>
+          </div>
+
+          <form onSubmit={submit} className="mt-7 space-y-4">
+            <div className="space-y-2">
+              <Label
+                htmlFor="admin-password"
+                className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground"
+              >
+                {t("login.password")}
+              </Label>
+              <Input
+                id="admin-password"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                autoFocus
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={t("login.placeholder")}
+                spellCheck={false}
+                aria-invalid={!!error}
+                aria-describedby={error ? "login-error" : undefined}
+                className="h-11 rounded-lg bg-background px-3"
+              />
             </div>
-            <form onSubmit={submit} className="space-y-5">
-              <div className="space-y-2">
-                <Label htmlFor="admin-password">{t("login.password")}</Label>
-                <Input
-                  id="admin-password"
-                  name="password"
-                  type="password"
-                  autoComplete="current-password"
-                  autoFocus
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder={t("login.placeholder")}
-                  spellCheck={false}
-                  aria-invalid={!!error}
-                  aria-describedby={error ? "login-error" : undefined}
-                />
-              </div>
-              {error ? (
-                <p id="login-error" role="alert" className="text-xs text-destructive">
-                  {error}
-                </p>
-              ) : null}
-              <Button className="w-full" type="submit" disabled={busy || locked || !password}>
-                {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-                {locked
-                  ? t("login.lockedShort", { sec: remaining })
-                  : busy
-                    ? t("login.submitting")
-                    : t("login.submit")}
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
+            {error ? (
+              <p id="login-error" role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            ) : null}
+            <Button className="h-11 w-full" type="submit" disabled={busy || locked || !password}>
+              {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+              {locked
+                ? t("login.lockedShort", { sec: remaining })
+                : busy
+                  ? t("login.submitting")
+                  : t("login.submit")}
+            </Button>
+          </form>
+        </div>
       </div>
     </div>
   );

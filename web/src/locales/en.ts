@@ -133,6 +133,8 @@ export const en = {
   "dashboard.logs.empty": "No connections yet",
   "dashboard.logs.emptyDesc": "Once ports and accounts are configured, client connections appear here.",
   "dashboard.singbox.title": "Embedded sing-box",
+  "dashboard.singbox.statusTitle": "Runtime status",
+  "dashboard.singbox.pageDesc": "View the embedded outbound runtime status, reload count and recent logs.",
   "dashboard.singbox.desc": "Runs VLESS / VMess / REALITY outbounds; reloads when the registered upstreams change.",
   "dashboard.singbox.running": "Running",
   "dashboard.singbox.stopped": "Stopped",
@@ -444,6 +446,7 @@ export const en = {
   "copy.portOption": "Port {port}",
 
   "nav.subscriptions": "Subscriptions",
+  "nav.singbox": "Embedded sing-box",
   "subscriptions.title": "Subscriptions",
   "subscriptions.desc": "Save subscription URLs; nodes are fetched on a schedule and diffed into the upstream pool. Manual upstreams are never touched.",
   "subscriptions.count": "{n} subscriptions",

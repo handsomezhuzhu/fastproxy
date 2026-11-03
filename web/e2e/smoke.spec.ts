@@ -36,6 +36,7 @@ const NAV: { id: string; label: string; title: string; en: string }[] = [
   { id: "ports", label: "端口线路", title: "端口线路", en: "Ports" },
   { id: "accounts", label: "账户", title: "账户", en: "Accounts" },
   { id: "upstreams", label: "上游代理", title: "上游代理", en: "Upstreams" },
+  { id: "singbox", label: "内置 sing-box", title: "内置 sing-box", en: "Embedded sing-box" },
   { id: "logs", label: "连接日志", title: "连接日志", en: "Connection logs" },
   { id: "settings", label: "系统设置", title: "系统设置", en: "Settings" },
   { id: "dashboard", label: "仪表盘", title: "仪表盘", en: "Dashboard" },
@@ -196,6 +197,43 @@ test("登录页与错误密码提示", async ({ page }) => {
   await expectNoCrash(page, failures);
 });
 
+test("登录页：管理密码标签足够大，卡片内不再有闪电图标", async ({ page }) => {
+  await page.goto("/");
+  const label = page.locator('label[for="admin-password"]');
+  await expect(label).toBeVisible();
+  const size = await label.evaluate((el) => Number.parseFloat(getComputedStyle(el).fontSize));
+  expect(size, "登录标签字号").toBeGreaterThanOrEqual(13);
+
+  // 登录卡片里只保留文字标题，不允许再出现品牌图标（主题/语言按钮在卡片外）。
+  const card = page.locator('form[novalidate], form').first().locator("xpath=..");
+  await expect(card.locator("svg")).toHaveCount(0);
+});
+
+test("侧栏：仅品牌/版本/退出，导航字号可读", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await login(page);
+
+  const aside = page.locator("aside");
+  await expect(aside.getByText("FastProxy", { exact: true })).toBeVisible();
+  await expect(aside.locator('[translate="no"]')).toHaveText(/^v\S+$/);
+  // 旧的“管理员 / 在线”卡片已移除。
+  await expect(aside.getByText(/管理员|Administrator/)).toHaveCount(0);
+  await expect(aside.getByText(/^(在线|Online)$/)).toHaveCount(0);
+  await expect(aside.getByRole("button", { name: /退出登录|Sign out/ })).toBeVisible();
+
+  const ports = aside.getByRole("button", { name: "端口线路", exact: true });
+  await expect(ports).toBeVisible();
+  // 内置 sing-box 是资源区的一级导航，不再挂在左下角。
+  await expect(aside.getByRole("button", { name: "内置 sing-box", exact: true })).toBeVisible();
+  const navSize = await ports.evaluate((el) => Number.parseFloat(getComputedStyle(el).fontSize));
+  expect(navSize, "侧栏导航字号").toBeGreaterThanOrEqual(15);
+  const groupSize = await aside
+    .getByText("资源", { exact: true })
+    .evaluate((el) => Number.parseFloat(getComputedStyle(el).fontSize));
+  expect(groupSize, "侧栏分组字号").toBeGreaterThanOrEqual(13);
+  await expectNoCrash(page, failures);
+});
+
 test("正确密码登录后进入仪表盘", async ({ page }) => {
   const failures = watchRuntime(page);
   await login(page);
@@ -207,7 +245,7 @@ test("正确密码登录后进入仪表盘", async ({ page }) => {
   await expectNoCrash(page, failures);
 });
 
-test("六个导航页都能渲染（React #31 兜底）", async ({ page }) => {
+test("七个导航页都能渲染（React #31 兜底）", async ({ page }) => {
   const failures = watchRuntime(page);
   await login(page);
 
@@ -295,34 +333,34 @@ test("主题：三态（跟随系统/亮/暗）切换并持久化", async ({ pag
   await expectNoCrash(page, failures);
 });
 
-test("仪表盘：内置 sing-box 状态卡（运行中或 404 降级）", async ({ page }) => {
+test("内置 sing-box 页面：状态、刷新与详情", async ({ page }) => {
   const failures = watchRuntime(page);
   await login(page);
 
-  const card = page.getByTestId("singbox-card");
-  await expect(card).toBeVisible();
-  // CardTitle 渲染成 <div data-slot="card-title">（本项目所有卡片一致），不按 heading 角色断言。
-  await expect(card.getByText(/内置 sing-box|Embedded sing-box/)).toBeVisible();
+  // 和账户/上游代理同级的一级导航。
+  await nav(page, "内置 sing-box").click();
+  await expect(page.getByRole("heading", { level: 1, name: "内置 sing-box" })).toBeVisible();
 
-  // 只有 /api/singbox/status 部署后才会进入 ready 分支；未合并时应显示降级文案。
+  const panel = page.getByTestId("singbox-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel.getByText(/运行状态|Runtime status/)).toBeVisible();
+
   const probe = await page.request.get("/api/singbox/status");
-  const ready = card.getByRole("button", { name: /刷新 sing-box 状态|Refresh sing-box status/ });
-  await expect(ready).toBeVisible();
+  const refresh = panel.getByRole("button", { name: /刷新 sing-box 状态|Refresh sing-box status/ });
+  await expect(refresh).toBeVisible();
 
   if (probe.status() === 404 || probe.status() === 405) {
-    await expect(card.getByText(/后端暂未提供状态|Status not provided by the backend/)).toBeVisible();
-    await expect(card.getByText(/PORT_RANGE|sing-box\/status|upgrade the backend|升级后端/i).first()).toBeVisible();
+    await expect(panel.getByText(/后端暂未提供状态|Status not provided by the backend/)).toBeVisible();
+    await expect(panel.getByText(/PORT_RANGE|sing-box\/status|upgrade the backend|升级后端/i).first()).toBeVisible();
   } else {
-    await expect(
-      card.getByText(/运行中|未运行|Running|Stopped/).first()
-    ).toBeVisible({ timeout: 15_000 });
-    await expect(card.getByText(/已注册上游|Registered upstreams/)).toBeVisible();
-    await expect(card.getByText(/最近重载|Last reload/)).toBeVisible();
+    await expect(panel.getByText(/运行中|未运行|Running|Stopped/).first()).toBeVisible({ timeout: 15_000 });
+    await expect(panel.getByText(/已注册上游|Registered upstreams/)).toBeVisible();
+    await expect(panel.getByText(/最近重载|Last reload/)).toBeVisible();
   }
 
-  // 刷新按钮不应报错，也不应触发整页崩溃
-  await ready.click();
-  await expect(card).toBeVisible();
+  // 刷新按钮不应报错，也不应触发整页崩溃。
+  await refresh.click();
+  await expect(panel).toBeVisible();
   await expectNoCrash(page, failures);
 });
 
@@ -357,6 +395,77 @@ test("上游代理：批量导入后列表能显示 e2e 节点", async ({ page }
   await deleteUpstreamByName(page, "e2e-1");
   await deleteUpstreamByName(page, "e2e-2");
   await expect(page.locator("tbody tr").filter({ hasText: "e2e-1" })).toHaveCount(0);
+});
+
+test("上游代理：同一批节点重复导入不会新增", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await login(page);
+  await nav(page, "上游代理").click();
+  await expect(page.getByRole("heading", { level: 1, name: "上游代理" })).toBeVisible();
+
+  const importText = async (expectAdded: string) => {
+    await page.getByRole("button", { name: "批量导入" }).first().click();
+    const dialog = page.getByRole("dialog", { name: "批量导入上游" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel("节点文本").fill(UPSTREAM_1);
+    await dialog.getByRole("button", { name: "导入文本" }).click();
+    await expect(dialog.getByText(expectAdded, { exact: true })).toBeVisible();
+    return dialog;
+  };
+
+  const first = await importText("新增 1");
+  await first.getByRole("button", { name: "关闭" }).click();
+  await expect(first).toBeHidden();
+  await expect(page.locator("tbody tr").filter({ hasText: "e2e-1" })).toHaveCount(1);
+
+  // 第二次导入同一节点：只报告重复，不新增行。
+  const second = await importText("新增 0");
+  await expect(second.getByText(/重复 1|Duplicates 1/)).toBeVisible();
+  await second.getByRole("button", { name: "关闭" }).click();
+  await expect(second).toBeHidden();
+  await expect(page.locator("tbody tr").filter({ hasText: "e2e-1" })).toHaveCount(1);
+  await expectNoCrash(page, failures);
+});
+
+test("订阅：相同地址不能重复创建", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await login(page);
+  await nav(page, "订阅").click();
+  await expect(page.getByRole("heading", { level: 1, name: "订阅管理" })).toBeVisible();
+
+  const url = "https://example.invalid/sub?token=e2e-dup";
+
+  // 第一次：正常创建。
+  await page.getByRole("button", { name: "添加订阅" }).first().click();
+  const first = page.getByRole("dialog", { name: "添加订阅" });
+  await expect(first).toBeVisible();
+  await first.getByLabel("名称").fill("e2e-sub-dup");
+  await first.getByLabel("订阅地址").fill(url);
+  await first.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(first).toBeHidden();
+  await expect(page.locator("tbody tr").filter({ hasText: "e2e-sub-dup" })).toHaveCount(1);
+
+  // 第二次：同一 URL，后端拒绝，表单保留错误。
+  await page.getByRole("button", { name: "添加订阅" }).first().click();
+  const second = page.getByRole("dialog", { name: "添加订阅" });
+  await expect(second).toBeVisible();
+  await second.getByLabel("名称").fill("e2e-sub-dup-2");
+  await second.getByLabel("订阅地址").fill(url);
+  await second.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(second.getByRole("alert")).toContainText(/已存在|already exists/);
+  await expect(second).toBeVisible();
+  await second.getByRole("button", { name: "取消" }).click();
+  await expect(second).toBeHidden();
+  await expect(page.locator("tbody tr").filter({ hasText: "e2e-sub-dup-2" })).toHaveCount(0);
+
+  // Cleanup through the API.
+  const list = await (await page.request.get("/api/subscriptions")).json();
+  const sub = (list.items ?? []).find((x: { name: string }) => x.name === "e2e-sub-dup");
+  expect(sub).toBeTruthy();
+  await page.request.delete(`/api/subscriptions/${sub.id}?delete_nodes=true`);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator("tbody tr").filter({ hasText: "e2e-sub-dup" })).toHaveCount(0);
+  await expectNoCrash(page, failures);
 });
 
 test("上游代理：检测全部走统一接口（v2 未合并则跳过）", async ({ page }) => {

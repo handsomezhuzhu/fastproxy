@@ -72,6 +72,68 @@ func TestCheckUpstreamsEndpoint(t *testing.T) {
 	}
 }
 
+// TestSubscriptionAPIDuplicateURL checks the API refuses a second
+// subscription with the same decrypted URL and keeps exactly one row.
+func TestSubscriptionAPIDuplicateURL(t *testing.T) {
+	s := testServer(t)
+	const body = `{"name":"first","url":"https://example.com/sub?token=same","enabled":false,"interval_sec":600}`
+	if rec := s.do(t, http.MethodPost, "/api/subscriptions", body); rec.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	dup := `{"name":"second","url":"https://example.com/sub?token=same","enabled":false,"interval_sec":600}`
+	rec := s.do(t, http.MethodPost, "/api/subscriptions", dup)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "已存在") {
+		t.Fatalf("duplicate should be rejected: %d %s", rec.Code, rec.Body.String())
+	}
+	list := s.do(t, http.MethodGet, "/api/subscriptions", "")
+	var out struct {
+		Items []struct {
+			Name string `json:"name"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Total != 1 || len(out.Items) != 1 || out.Items[0].Name != "first" {
+		t.Fatalf("duplicate create must not add a row: %+v", out)
+	}
+}
+
+// TestImportAPIDeduplicates checks POST /api/upstreams/import is idempotent
+// for the same node text.
+func TestImportAPIDeduplicates(t *testing.T) {
+	s := testServer(t)
+	const text = `{"text":"http://u:p@1.1.1.1:8080#dup"}`
+	first := s.do(t, http.MethodPost, "/api/upstreams/import", text)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first import: %d %s", first.Code, first.Body.String())
+	}
+	var r1 struct {
+		Added int `json:"added"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &r1); err != nil {
+		t.Fatal(err)
+	}
+	if r1.Added != 1 {
+		t.Fatalf("first import should add one node: %s", first.Body.String())
+	}
+	second := s.do(t, http.MethodPost, "/api/upstreams/import", text)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second import: %d %s", second.Code, second.Body.String())
+	}
+	var r2 struct {
+		Added      int      `json:"added"`
+		Duplicates []string `json:"duplicates"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &r2); err != nil {
+		t.Fatal(err)
+	}
+	if r2.Added != 0 || len(r2.Duplicates) != 1 {
+		t.Fatalf("second import must report a duplicate: %s", second.Body.String())
+	}
+}
+
 // TestRemovedProbeEndpoints checks the legacy routes are gone: only the
 // unified check endpoint exists and bulk no longer accepts action=check.
 func TestRemovedProbeEndpoints(t *testing.T) {

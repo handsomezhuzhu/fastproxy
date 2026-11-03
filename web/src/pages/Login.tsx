@@ -72,17 +72,15 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
 
       <div className="w-full max-w-[400px]">
         <div className="rounded-xl border bg-card px-6 py-8 shadow-sm sm:px-8">
-          <div className="flex flex-col items-center text-center">
-            <div className="text-[15px] font-semibold tracking-tight">FastProxy</div>
-            <h1 className="mt-6 text-xl font-semibold tracking-tight">{t("login.title")}</h1>
-            <p className="mt-1.5 text-sm text-muted-foreground text-pretty">{t("login.subtitle")}</p>
-          </div>
+          <h1 className="text-center text-[28px] font-semibold leading-9 tracking-tight">
+            {t("login.title")}
+          </h1>
 
-          <form onSubmit={submit} className="mt-7 space-y-4">
+          <form onSubmit={submit} className="mt-8 space-y-4">
             <div className="space-y-2">
               <Label
                 htmlFor="admin-password"
-                className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground"
+                className="text-[13px] font-medium uppercase tracking-[0.05em] text-muted-foreground"
               >
                 {t("login.password")}
               </Label>

@@ -245,8 +245,12 @@ export function LogsPage({ data }: { data: Data }) {
                         <TableCell className="text-xs">{e.account || "–"}</TableCell>
                         <TableCell className="font-mono text-xs text-muted-foreground">{e.client || "–"}</TableCell>
                         <TableCell className="text-xs">{e.proto || "–"}</TableCell>
-                        <TableCell className="max-w-[220px] truncate font-mono text-xs" title={e.target || e.msg}>
-                          {e.target || e.msg || "–"}
+                        <TableCell className="max-w-[220px] truncate text-xs" title={e.target || e.msg}>
+                          {e.target ? (
+                            <span className="font-mono">{e.target}</span>
+                          ) : (
+                            e.msg || "–"
+                          )}
                         </TableCell>
                         <TableCell>
                           {e.status ? (

@@ -36,10 +36,11 @@ import { PortsPage } from "@/pages/Ports";
 import { AccountsPage } from "@/pages/Accounts";
 import { UpstreamsPage } from "@/pages/Upstreams";
 import { SubscriptionsPage } from "@/pages/Subscriptions";
+import { SingboxPage } from "@/pages/Singbox";
 import { LogsPage } from "@/pages/Logs";
 import { SettingsPage } from "@/pages/Settings";
 
-export type Page = "dashboard" | "ports" | "accounts" | "upstreams" | "subscriptions" | "logs" | "settings";
+export type Page = "dashboard" | "ports" | "accounts" | "upstreams" | "subscriptions" | "singbox" | "logs" | "settings";
 
 function readHash(): Page {
   const h = window.location.hash.replace(/^#\/?/, "");
@@ -254,7 +255,8 @@ function AppShell() {
               {page === "ports" && <PortsPage data={data} reload={reload} onCopy={openCopy} />}
               {page === "accounts" && <AccountsPage data={data} reload={reload} onCopy={openCopy} />}
               {page === "upstreams" && <UpstreamsPage data={data} reload={reload} />}
-        {page === "subscriptions" && <SubscriptionsPage reload={reload} />}
+              {page === "subscriptions" && <SubscriptionsPage reload={reload} />}
+              {page === "singbox" && <SingboxPage />}
               {page === "logs" && <LogsPage data={data} />}
               {page === "settings" && (
                 <SettingsPage

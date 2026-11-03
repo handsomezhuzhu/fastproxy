@@ -159,4 +159,20 @@ func TestManagerReload(t *testing.T) {
 	if m.Running() {
 		t.Fatalf("box should stop when no upstream needs it: %v", m.Ports())
 	}
+
+	// Status exposes a JSON-friendly snapshot and keeps a bounded event log.
+	st := m.Status()
+	if st["running"] != false {
+		t.Fatalf("status after stop: %v", st)
+	}
+	if n, _ := st["reload_count"].(int); n < 3 {
+		t.Fatalf("reload_count = %v, want >= 3", st["reload_count"])
+	}
+	logs, _ := st["logs"].([]string)
+	if len(logs) == 0 || len(logs) > maxStatusEvents {
+		t.Fatalf("event log size %d", len(logs))
+	}
+	if st["upstreams"] == nil {
+		t.Fatal("upstreams must not be nil (JSON array expected)")
+	}
 }

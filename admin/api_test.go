@@ -1,11 +1,15 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/handsomezhuzhu/fastproxy/config"
 	"github.com/handsomezhuzhu/fastproxy/logx"
@@ -140,6 +144,47 @@ func TestUpstreamAPIRoundTrip(t *testing.T) {
 	if strings.Contains(rec.Body.String(), `"allow_direct"`) {
 		t.Fatalf("/api/data still exposes allow_direct: %s", rec.Body.String())
 	}
+}
+
+// fakeReloader is a minimal SingBoxReloader for status/reload tests.
+type fakeReloader struct {
+	err    error
+	status map[string]any
+}
+
+func (f *fakeReloader) Dial(config.Upstream, string, time.Duration) (net.Conn, error) {
+	return nil, errors.New("fake")
+}
+func (f *fakeReloader) Reload(context.Context) error { return f.err }
+func (f *fakeReloader) LastError() error             { return f.err }
+func (f *fakeReloader) Status() map[string]any       { return f.status }
+
+// TestSingBoxStatusEndpoint covers GET /api/singbox/status with and without an
+// installed manager, and the error surfaced in /api/data.
+func TestSingBoxStatusEndpoint(t *testing.T) {
+	s := testServer(t)
+	rec := s.do(t, http.MethodGet, "/api/singbox/status", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"running":false`) {
+		t.Fatalf("no manager: %d %s", rec.Code, rec.Body.String())
+	}
+
+	s.SetSingBox(&fakeReloader{status: map[string]any{
+		"running": true, "reload_count": 2,
+		"upstreams": []map[string]any{{"id": "x", "name": "X", "port": 20000}},
+		"logs":      []string{"line"},
+	}})
+	rec = s.do(t, http.MethodGet, "/api/singbox/status", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"reload_count":2`) {
+		t.Fatalf("with manager: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// A failing manager is reported through /api/data without breaking it.
+	s.SetSingBox(&fakeReloader{err: errors.New("boom"), status: map[string]any{"running": false}})
+	rec = s.do(t, http.MethodGet, "/api/data", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"singbox_error":"boom"`) {
+		t.Fatalf("data with error: %d %s", rec.Code, rec.Body.String())
+	}
+	t.Cleanup(func() { proxy.SingBoxDialer = nil })
 }
 
 // TestPortCreationHonoursRange checks that out-of-range ports are refused with

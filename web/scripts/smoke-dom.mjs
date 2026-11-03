@@ -223,26 +223,39 @@ await new Promise((r) => setTimeout(r, 1000));
 const root = window.document.getElementById("root");
 const html = root.innerHTML;
 
-if (errors.length) {
+// Node may emit its own --localstorage-file warning through console.error; it
+// is not an app runtime error and must not fail the black-screen guard.
+const runtimeErrors = errors.filter(
+  (e) => !e.includes("localstorage-file") && !e.includes("trace-warnings")
+);
+if (runtimeErrors.length) {
   console.log("=== RUNTIME ERRORS ===");
-  for (const e of errors) console.log(e, "\n---");
+  for (const e of runtimeErrors) console.log(e, "\n---");
 }
 console.log("root children:", root.childElementCount);
 console.log("html length:", html.length);
 console.log("has sidebar:", html.includes("FastProxy"));
 console.log("has dashboard:", html.includes("仪表盘"));
-// v2 断言：跟随系统主题（jsdom matchMedia=false → light）、sing-box 状态卡降级、无旧接口字段。
+// v2 断言：跟随系统主题（jsdom matchMedia=false → light）、无旧接口字段。
 console.log("theme follows system:", window.document.documentElement.classList.contains("dark") === false);
-console.log("singbox unavailable fallback:", html.includes("后端暂未提供状态"));
 console.log("no stale allow_direct UI:", !html.includes("允许直连"));
 if (!html.length) {
   console.log("DOM IS EMPTY (black screen reproduced)");
   process.exit(1);
 }
+
+// sing-box 已从仪表盘提升为独立导航页：切到 #/singbox 再检查 404 降级文案。
+window.location.hash = "#/singbox";
+window.dispatchEvent(new window.Event("hashchange"));
+await new Promise((r) => setTimeout(r, 800));
+const singboxHtml = root.innerHTML;
+console.log("has singbox nav:", html.includes("内置 sing-box"));
+console.log("singbox unavailable fallback:", singboxHtml.includes("后端暂未提供状态"));
+
 const z = html.includes("仪表盘");
-const s = html.includes("后端暂未提供状态");
+const s = singboxHtml.includes("后端暂未提供状态");
 if (!z || !s) {
   console.log("EXPECTED MARKERS MISSING:", { dashboardTitle: z, singboxFallback: s });
   process.exit(1);
 }
-process.exit(errors.length ? 1 : 0);
+process.exit(runtimeErrors.length ? 1 : 0);

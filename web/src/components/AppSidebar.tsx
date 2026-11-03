@@ -62,12 +62,15 @@ export function SidebarContent({
   onLogout: () => void;
 }) {
   const t = useI18n().t;
+  // Release builds pass the git tag (already prefixed with "v"); dev builds
+  // pass "dev". Avoid rendering "vv1.0.0-rc.4".
+  const versionLabel = version.startsWith("v") ? version : `v${version}`;
   return (
     <div className="flex h-full flex-col text-sidebar-foreground">
       <div className="px-4 py-5">
         <div className="truncate text-sm font-semibold leading-tight text-sidebar-foreground">FastProxy</div>
         <div className="mt-0.5 text-[13px] text-sidebar-foreground/60" translate="no">
-          v{version}
+          {versionLabel}
         </div>
       </div>
 

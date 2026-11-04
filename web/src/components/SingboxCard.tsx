@@ -69,7 +69,7 @@ export function SingboxCard({ titleKey = "dashboard.singbox.title" }: { titleKey
           <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
             <Box className="size-4" aria-hidden="true" />
           </div>
-          <div className="min-w-0 space-y-1">
+          <div className="flex flex-col min-w-0 gap-1">
             <div className="flex flex-wrap items-center gap-2">
               <CardTitle id="singbox-title">{t(titleKey)}</CardTitle>
               {state === "ready" && status ? (
@@ -96,9 +96,9 @@ export function SingboxCard({ titleKey = "dashboard.singbox.title" }: { titleKey
           </Button>
         </CardAction>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="flex flex-col gap-4">
         {state === "loading" ? (
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
             <Skeleton className="h-4 w-64" />
             <Skeleton className="h-16 w-full" />
           </div>
@@ -117,15 +117,15 @@ export function SingboxCard({ titleKey = "dashboard.singbox.title" }: { titleKey
         ) : status ? (
           <>
             <dl className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <div className="space-y-0.5">
+              <div className="flex flex-col gap-0.5">
                 <dt className="text-xs text-muted-foreground">{t("dashboard.singbox.upstreams")}</dt>
                 <dd className="text-sm font-medium tabular-nums">{upCount}</dd>
               </div>
-              <div className="space-y-0.5">
+              <div className="flex flex-col gap-0.5">
                 <dt className="text-xs text-muted-foreground">{t("dashboard.singbox.reloads")}</dt>
                 <dd className="text-sm font-medium tabular-nums">{status.reload_count ?? 0}</dd>
               </div>
-              <div className="space-y-0.5">
+              <div className="flex flex-col gap-0.5">
                 <dt className="text-xs text-muted-foreground">{t("dashboard.singbox.lastReload")}</dt>
                 <dd className="text-sm font-medium">
                   {status.last_reload_at
@@ -133,7 +133,7 @@ export function SingboxCard({ titleKey = "dashboard.singbox.title" }: { titleKey
                     : t("dashboard.singbox.never")}
                 </dd>
               </div>
-              <div className="space-y-0.5">
+              <div className="flex flex-col gap-0.5">
                 <dt className="text-xs text-muted-foreground">{t("dashboard.singbox.startedAt")}</dt>
                 <dd className="text-sm font-medium" title={dateTime(status.started_at ?? 0, lang)}>
                   {status.started_at
@@ -150,7 +150,7 @@ export function SingboxCard({ titleKey = "dashboard.singbox.title" }: { titleKey
               </p>
             ) : null}
 
-            <div className="space-y-1.5">
+            <div className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-medium text-muted-foreground">{t("dashboard.singbox.logs")}</p>
                 {logs.length > 5 ? (

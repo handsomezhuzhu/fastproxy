@@ -1,115 +1,83 @@
 import * as React from "react";
+import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
+import {
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart";
 import { bytes } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 import type { MetricPoint } from "@/api";
 
-const W = 1000;
-const H = 220;
-const PAD = 4;
-
-type Series = { key: string; color: string; values: number[]; max: number };
-
-function smoothPath(xs: number[], ys: number[]): string {
-  if (xs.length < 2) return "";
-  let d = `M ${xs[0].toFixed(2)} ${ys[0].toFixed(2)}`;
-  for (let i = 1; i < xs.length; i++) {
-    const mx = ((xs[i - 1] + xs[i]) / 2).toFixed(2);
-    d += ` C ${mx} ${ys[i - 1].toFixed(2)}, ${mx} ${ys[i].toFixed(2)}, ${xs[i].toFixed(2)} ${ys[i].toFixed(2)}`;
-  }
-  return d;
-}
-
-/** Pure-SVG smoothed area chart for 24h metrics. Each series is normalized to its own peak. */
+/** 24h connections + traffic area chart (shadcn Chart / Recharts). Each series uses its own Y axis. */
 export function MetricsChart({ points }: { points: MetricPoint[] }) {
-  const series = React.useMemo<Series[]>(() => {
-    const conns = points.map((p) => p.conns || 0);
-    const traffic = points.map((p) => (p.bytes_in || 0) + (p.bytes_out || 0));
-    return [
-      { key: "conns", color: "var(--chart-1)", values: conns, max: Math.max(1, ...conns) },
-      { key: "traffic", color: "var(--chart-2)", values: traffic, max: Math.max(1, ...traffic) },
-    ];
-  }, [points]);
-
-  const n = points.length;
-  const xs = React.useMemo(
-    () => points.map((_, i) => PAD + (i / Math.max(1, n - 1)) * (W - PAD * 2)),
-    [points, n]
+  const { t } = useI18n();
+  const chartConfig = React.useMemo(
+    () =>
+      ({
+        conns: { label: t("dashboard.chart.conns"), color: "var(--chart-1)" },
+        traffic: { label: t("dashboard.chart.traffic"), color: "var(--chart-2)" },
+      }) satisfies ChartConfig,
+    [t]
+  );
+  const rows = React.useMemo(
+    () =>
+      points.map((p) => ({
+        t: p.t,
+        conns: p.conns || 0,
+        traffic: (p.bytes_in || 0) + (p.bytes_out || 0),
+      })),
+    [points]
   );
 
-  const paths = series.map((s) => {
-    const ys = s.values.map((v) => H - PAD - (v / s.max) * (H - PAD * 2 - 24));
-    const line = smoothPath(xs, ys);
-    const area = `${line} L ${xs[xs.length - 1].toFixed(2)} ${H} L ${xs[0].toFixed(2)} ${H} Z`;
-    return { line, area };
-  });
-
-  const labelIdx = n > 0 ? [...new Set([0, Math.floor((n - 1) / 2), n - 1])] : [];
-
   return (
-    <div>
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        className="chart-animate h-[220px] w-full"
-        role="img"
-        aria-label="近 24 小时连接数与流量趋势图"
-        preserveAspectRatio="none"
-      >
+    <ChartContainer config={chartConfig} className="aspect-auto h-[250px] w-full">
+      <AreaChart data={rows} margin={{ left: 0, right: 0, top: 8 }}>
         <defs>
-          <linearGradient id="grad-conns" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--chart-1)" stopOpacity="0.22" />
-            <stop offset="100%" stopColor="var(--chart-1)" stopOpacity="0.02" />
+          <linearGradient id="fillConns" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="var(--color-conns)" stopOpacity={0.8} />
+            <stop offset="95%" stopColor="var(--color-conns)" stopOpacity={0.1} />
           </linearGradient>
-          <linearGradient id="grad-traffic" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--chart-2)" stopOpacity="0.10" />
-            <stop offset="100%" stopColor="var(--chart-2)" stopOpacity="0" />
+          <linearGradient id="fillTraffic" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="var(--color-traffic)" stopOpacity={0.6} />
+            <stop offset="95%" stopColor="var(--color-traffic)" stopOpacity={0.05} />
           </linearGradient>
         </defs>
-        {[0.25, 0.5, 0.75].map((f) => (
-          <line
-            key={f}
-            x1="0"
-            x2={W}
-            y1={H * f}
-            y2={H * f}
-            stroke="var(--border)"
-            strokeWidth="1"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-        {paths.map((p, i) => (
-          <path key={`a-${i}`} d={p.area} fill={`url(#grad-${series[i].key})`} />
-        ))}
-        {paths.map((p, i) => (
-          <path key={`l-${i}`}
-            d={p.line}
-            fill="none"
-            stroke={series[i].color}
-            strokeWidth="2"
-            strokeDasharray={series[i].key === "traffic" ? "6 4" : undefined}
-            vectorEffect="non-scaling-stroke"
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-        ))}
-        {points.map((p, i) => (
-          <rect
-            key={`h-${i}`}
-            x={xs[i] - (xs[1] - xs[0]) / 2 || 0}
-            y={0}
-            width={xs.length > 1 ? xs[1] - xs[0] : W}
-            height={H}
-            fill="transparent"
-          >
-            <title>{`${p.t} · 连接 ${p.conns || 0} · ↑ ${bytes(p.bytes_out || 0)} ↓ ${bytes(p.bytes_in || 0)}`}</title>
-          </rect>
-        ))}
-      </svg>
-      {n > 0 ? (
-        <div className="flex justify-between pt-2 text-xs tabular-nums text-muted-foreground">
-          {labelIdx.map((i) => (
-            <span key={i}>{points[i].t}</span>
-          ))}
-        </div>
-      ) : null}
-    </div>
+        <CartesianGrid vertical={false} />
+        <XAxis dataKey="t" tickLine={false} axisLine={false} tickMargin={8} minTickGap={32} />
+        <YAxis yAxisId="conns" hide />
+        <YAxis yAxisId="traffic" hide orientation="right" />
+        <ChartTooltip
+          cursor={false}
+          content={
+            <ChartTooltipContent
+              indicator="dot"
+              formatter={(value, name) => (
+                <div className="flex w-full items-center justify-between gap-4">
+                  <span className="text-muted-foreground">
+                    {chartConfig[name as keyof typeof chartConfig]?.label ?? name}
+                  </span>
+                  <span className="font-mono font-medium tabular-nums text-foreground">
+                    {name === "traffic" ? bytes(Number(value)) : Number(value)}
+                  </span>
+                </div>
+              )}
+            />
+          }
+        />
+        <Area
+          yAxisId="traffic"
+          dataKey="traffic"
+          type="natural"
+          fill="url(#fillTraffic)"
+          stroke="var(--color-traffic)"
+        />
+        <Area yAxisId="conns" dataKey="conns" type="natural" fill="url(#fillConns)" stroke="var(--color-conns)" />
+        <ChartLegend content={<ChartLegendContent />} />
+      </AreaChart>
+    </ChartContainer>
   );
 }

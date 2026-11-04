@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Loader2 } from "lucide-react";
+import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
 import { api, type Data, type Settings } from "@/api";
 import { Button } from "@/components/ui/button";
@@ -87,7 +87,7 @@ export function SettingsPage({
   }
 
   return (
-    <div className="space-y-5">
+    <div className="flex flex-col gap-5">
       <PageHeader title={t("settings.title")} description={t("settings.description")} />
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -97,7 +97,7 @@ export function SettingsPage({
             <CardDescription>{t("settings.fwd.desc")}</CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={saveSettings} className="space-y-5">
+            <form onSubmit={saveSettings} className="flex flex-col gap-5">
               <div className="flex items-center justify-between gap-4">
                 <div className="min-w-0">
                   <p className="text-sm font-medium">{t("settings.accessLog")}</p>
@@ -159,7 +159,7 @@ export function SettingsPage({
                 </Field>
               </div>
 
-              <div className="space-y-4 border-t pt-4">
+              <div className="flex flex-col gap-4 border-t pt-4">
                 <div className="flex items-center justify-between gap-4">
                   <div className="min-w-0">
                     <p className="text-sm font-medium">{t("settings.probe")}</p>
@@ -225,7 +225,7 @@ export function SettingsPage({
               </div>
 
               <Button type="submit" className="w-full" disabled={saving}>
-                {saving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {saving ? <Spinner data-icon="inline-start" /> : null}
                 <span className="inline-block min-w-24 text-center">
                   {saving ? t("common.saving") : t("settings.save")}
                 </span>
@@ -234,14 +234,14 @@ export function SettingsPage({
           </CardContent>
         </Card>
 
-        <div className="space-y-4">
+        <div className="flex flex-col gap-4">
           <Card>
             <CardHeader>
               <CardTitle>{t("settings.pwd.title")}</CardTitle>
               <CardDescription>{t("settings.pwd.desc")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={changePassword} className="space-y-4">
+              <form onSubmit={changePassword} className="flex flex-col gap-4">
                 <Field label={t("settings.pwd.old")} htmlFor="pwd-old">
                   <Input
                     id="pwd-old"
@@ -270,7 +270,7 @@ export function SettingsPage({
                   />
                 </Field>
                 <Button type="submit" variant="secondary" className="w-full" disabled={pwdBusy || !newPassword}>
-                  {pwdBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                  {pwdBusy ? <Spinner data-icon="inline-start" /> : null}
                   <span className="inline-block min-w-16 text-center">
                     {pwdBusy ? t("settings.pwd.busy") : t("settings.pwd.submit")}
                   </span>

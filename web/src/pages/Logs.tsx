@@ -1,5 +1,6 @@
 import * as React from "react";
-import { Loader2, RefreshCw, ScrollText, Trash2 } from "lucide-react";
+import { RefreshCw, ScrollText, Trash2 } from "lucide-react";
+import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
 import { api, type Data, type LogEntry } from "@/api";
 import { Badge } from "@/components/ui/badge";
@@ -101,7 +102,7 @@ export function LogsPage({ data }: { data: Data }) {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="flex flex-col gap-5">
       <PageHeader title={t("logs.title")} description={t("logs.description")} />
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -154,7 +155,7 @@ export function LogsPage({ data }: { data: Data }) {
       </div>
 
       {entries === null ? (
-        <div className="space-y-3">
+        <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between gap-3">
             <Skeleton className="h-5 w-32" />
             <div className="flex gap-2">
@@ -178,7 +179,7 @@ export function LogsPage({ data }: { data: Data }) {
             </label>
             <Button variant="outline" size="sm" onClick={load} disabled={loading}>
               {loading ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                <Spinner data-icon="inline-start" />
               ) : (
                 <RefreshCw className="size-4" aria-hidden="true" />
               )}
@@ -296,7 +297,7 @@ export function LogsPage({ data }: { data: Data }) {
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={clearLogs} disabled={clearing}>
-              {clearing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+              {clearing ? <Spinner data-icon="inline-start" /> : null}
               {t("logs.clear.action")}
             </AlertDialogAction>
           </AlertDialogFooter>

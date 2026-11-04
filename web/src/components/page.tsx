@@ -1,17 +1,38 @@
 import * as React from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
-import { Card, CardContent } from "@/components/ui/card";
+import {
+  Card,
+  CardAction,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import {
+  Field as UIField,
+  FieldDescription,
+  FieldLabel,
+} from "@/components/ui/field";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Label } from "@/components/ui/label";
 import { useT } from "@/i18n";
 
 export function PageHeader({
@@ -24,13 +45,11 @@ export function PageHeader({
   actions?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0">
-        <h1 className="text-balance text-2xl font-medium leading-9 tracking-normal md:text-[28px] md:leading-10">
-          {title}
-        </h1>
+    <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="flex min-w-0 flex-col gap-1">
+        <h1 className="text-2xl font-semibold tracking-tight text-balance">{title}</h1>
         {description ? (
-          <p className="mt-1.5 max-w-2xl text-sm leading-6 text-muted-foreground text-pretty">{description}</p>
+          <p className="max-w-2xl text-sm text-muted-foreground text-pretty">{description}</p>
         ) : null}
       </div>
       {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
@@ -50,23 +69,18 @@ export function EmptyState({
   action?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
-      {icon ? (
-        <div className="flex size-11 items-center justify-center rounded-md bg-muted text-muted-foreground">
-          {icon}
-        </div>
-      ) : null}
-      <div className="space-y-1">
-        <p className="text-sm font-medium">{title}</p>
-        {description ? (
-          <p className="mx-auto max-w-sm text-xs text-muted-foreground">{description}</p>
-        ) : null}
-      </div>
-      {action}
-    </div>
+    <Empty className="border border-dashed">
+      <EmptyHeader>
+        {icon ? <EmptyMedia variant="icon">{icon}</EmptyMedia> : null}
+        <EmptyTitle>{title}</EmptyTitle>
+        {description ? <EmptyDescription>{description}</EmptyDescription> : null}
+      </EmptyHeader>
+      {action ? <EmptyContent>{action}</EmptyContent> : null}
+    </Empty>
   );
 }
 
+/** Metric card modelled on the shadcn dashboard-01 "section cards". */
 export function StatCard({
   label,
   value,
@@ -79,15 +93,23 @@ export function StatCard({
   icon?: React.ReactNode;
 }) {
   return (
-    <Card className="border-l-4 border-l-neutral-900 py-0 shadow-sm transition-shadow duration-200 hover:shadow-md dark:border-l-neutral-100">
-      <CardContent className="p-4 md:p-6">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">{label}</span>
-          {icon ? <span className="text-muted-foreground" aria-hidden="true">{icon}</span> : null}
-        </div>
-        <div className="mt-2 text-2xl font-semibold tabular-nums tracking-tight">{value}</div>
-        {hint ? <div className="mt-0.5 text-xs text-muted-foreground">{hint}</div> : null}
-      </CardContent>
+    <Card className="@container/card bg-gradient-to-t from-primary/5 to-card shadow-xs dark:bg-card">
+      <CardHeader>
+        <CardDescription>{label}</CardDescription>
+        <CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">{value}</CardTitle>
+        {icon ? (
+          <CardAction>
+            <Badge variant="outline" aria-hidden="true">
+              {icon}
+            </Badge>
+          </CardAction>
+        ) : null}
+      </CardHeader>
+      {hint ? (
+        <CardFooter className="text-sm text-muted-foreground">
+          <span className="truncate">{hint}</span>
+        </CardFooter>
+      ) : null}
     </Card>
   );
 }
@@ -96,7 +118,21 @@ export function Mono({ children, className }: { children: React.ReactNode; class
   return <span className={cn("font-mono text-xs text-muted-foreground", className)}>{children}</span>;
 }
 
-/** Status badge with a small leading dot, consistent across all tables (monochrome mapping). */
+const TONE_VARIANT = {
+  ok: "secondary",
+  warn: "outline",
+  fail: "destructive",
+  muted: "outline",
+} as const;
+
+const TONE_DOT = {
+  ok: "bg-primary",
+  warn: "bg-muted-foreground",
+  fail: "bg-destructive",
+  muted: "bg-muted-foreground/50",
+} as const;
+
+/** Status badge with a small leading dot, consistent across all tables. */
 export function DotBadge({
   tone = "ok",
   children,
@@ -108,16 +144,13 @@ export function DotBadge({
   className?: string;
   title?: string;
 }) {
-  const tones = {
-    ok: { badge: "bg-foreground text-background", dot: "bg-background" },
-    warn: { badge: "bg-muted text-foreground", dot: "bg-foreground/50" },
-    fail: { badge: "border border-foreground/40 font-medium text-foreground", dot: "bg-foreground" },
-    muted: { badge: "text-muted-foreground", dot: "bg-muted-foreground/60" },
-  } as const;
-  const t = tones[tone];
   return (
-    <Badge variant="secondary" className={cn("gap-1.5", t.badge, className)} title={title}>
-      <span className={cn("size-1.5 shrink-0 rounded-sm", t.dot)} aria-hidden="true" />
+    <Badge
+      variant={TONE_VARIANT[tone]}
+      className={cn(tone === "muted" && "text-muted-foreground", className)}
+      title={title}
+    >
+      <span className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT[tone])} aria-hidden="true" />
       {children}
     </Badge>
   );
@@ -135,16 +168,20 @@ export function Toolbar({
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <div className="flex min-w-0 items-baseline gap-2 text-sm">
+      <div className="flex min-w-0 items-center gap-2 text-sm">
         <span className="font-medium tabular-nums">{count}</span>
-        {detail ? <span className="truncate text-xs text-muted-foreground">{detail}</span> : null}
+        {detail ? (
+          <Badge variant="outline" className="text-muted-foreground">
+            {detail}
+          </Badge>
+        ) : null}
       </div>
       {children ? <div className="flex flex-wrap items-center gap-2">{children}</div> : null}
     </div>
   );
 }
 
-/** Header checkbox supporting the indeterminate state (native input with ref sync). */
+/** Header checkbox supporting the indeterminate state. */
 export function SelectAllCheckbox({
   checked,
   indeterminate = false,
@@ -156,20 +193,27 @@ export function SelectAllCheckbox({
   label: string;
   onCheckedChange: (checked: boolean) => void;
 }) {
-  const ref = React.useRef<HTMLInputElement>(null);
-  React.useEffect(() => {
-    if (ref.current) ref.current.indeterminate = indeterminate && !checked;
-  }, [indeterminate, checked]);
   return (
-    <input
-      ref={ref}
-      type="checkbox"
-      className="size-3.5 accent-primary focus-visible:outline-2 focus-visible:outline-ring"
+    <Checkbox
       checked={checked}
-      onChange={(e) => onCheckedChange(e.target.checked)}
+      indeterminate={indeterminate && !checked}
+      onCheckedChange={(v) => onCheckedChange(!!v)}
       aria-label={label}
     />
   );
+}
+
+/** Row-level selection checkbox. */
+export function RowCheckbox({
+  checked,
+  label,
+  onCheckedChange,
+}: {
+  checked: boolean;
+  label: string;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return <Checkbox checked={checked} onCheckedChange={(v) => onCheckedChange(!!v)} aria-label={label} />;
 }
 
 /**
@@ -222,7 +266,7 @@ export function usePagination<T>(items: T[] | null | undefined, initialSize = 20
   };
 }
 
-/** Page-size Select + "第 X / Y 页" + prev/next icon buttons. Shows the row range ("第 41-60 / 共 241 条"). */
+/** Data-table pagination in the style of the shadcn tasks/dashboard example. */
 export function PaginationControls({
   page,
   pageSize,
@@ -238,73 +282,105 @@ export function PaginationControls({
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const to = Math.min(total, page * pageSize);
+  const sizes = ["20", "50", "100"];
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <p className="text-xs tabular-nums text-muted-foreground">
+    <div className="flex flex-wrap items-center justify-between gap-3 px-1">
+      <p className="text-sm tabular-nums text-muted-foreground">
         {t("pagination.range", { from, to, total })}
       </p>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-4 lg:gap-6">
         <Select
-          items={["20", "50", "100"].map((v) => ({ value: v, label: t("pagination.perPage", { n: v }) }))}
+          items={sizes.map((v) => ({ value: v, label: t("pagination.perPage", { n: v }) }))}
           value={String(pageSize)}
           onValueChange={(v) => onChange(1, Number(v))}
         >
-          <SelectTrigger className="w-24" aria-label={t("pagination.pageSize")}>
+          <SelectTrigger size="sm" className="w-24" aria-label={t("pagination.pageSize")}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {["20", "50", "100"].map((v) => (
-              <SelectItem key={v} value={v}>
-                {t("pagination.perPage", { n: v })}
-              </SelectItem>
-            ))}
+            <SelectGroup>
+              {sizes.map((v) => (
+                <SelectItem key={v} value={v}>
+                  {t("pagination.perPage", { n: v })}
+                </SelectItem>
+              ))}
+            </SelectGroup>
           </SelectContent>
         </Select>
-        <span className="text-xs tabular-nums text-muted-foreground">
+        <span className="text-sm font-medium tabular-nums">
           {t("pagination.page", { page, pages: pageCount })}
         </span>
-        <Button
-          variant="outline"
-          size="icon-sm"
-          onClick={() => onChange(page - 1, pageSize)}
-          disabled={page <= 1}
-          aria-label={t("pagination.prev")}
-        >
-          <ChevronLeft className="size-4" aria-hidden="true" />
-        </Button>
-        <Button
-          variant="outline"
-          size="icon-sm"
-          onClick={() => onChange(page + 1, pageSize)}
-          disabled={page >= pageCount}
-          aria-label={t("pagination.next")}
-        >
-          <ChevronRight className="size-4" aria-hidden="true" />
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="icon-sm"
+            className="hidden lg:inline-flex"
+            onClick={() => onChange(1, pageSize)}
+            disabled={page <= 1}
+            aria-label={t("pagination.prev") + " «"}
+          >
+            <ChevronsLeft />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon-sm"
+            onClick={() => onChange(page - 1, pageSize)}
+            disabled={page <= 1}
+            aria-label={t("pagination.prev")}
+          >
+            <ChevronLeft />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon-sm"
+            onClick={() => onChange(page + 1, pageSize)}
+            disabled={page >= pageCount}
+            aria-label={t("pagination.next")}
+          >
+            <ChevronRight />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon-sm"
+            className="hidden lg:inline-flex"
+            onClick={() => onChange(pageCount, pageSize)}
+            disabled={page >= pageCount}
+            aria-label={t("pagination.next") + " »"}
+          >
+            <ChevronsRight />
+          </Button>
+        </div>
       </div>
     </div>
   );
 }
 
-/** Labelled form field with a consistent vertical rhythm. */
+/** Labelled form field built on the shadcn Field primitives. */
 export function Field({
   label,
   htmlFor,
   hint,
+  invalid,
   children,
 }: {
   label: string;
   htmlFor?: string;
   hint?: string;
+  invalid?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-2">
-      <Label htmlFor={htmlFor}>{label}</Label>
+    <UIField data-invalid={invalid || undefined}>
+      <FieldLabel htmlFor={htmlFor}>{label}</FieldLabel>
       {children}
-      {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
-    </div>
+      {hint ? <FieldDescription>{hint}</FieldDescription> : null}
+    </UIField>
   );
+}
+
+/** Wraps a data table in the bordered container used by shadcn data-table examples. */
+export function TableFrame({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <div className={cn("overflow-hidden rounded-lg border", className)}>{children}</div>;
 }
 
 export type SelectOption = { value: string; label: string };
@@ -338,11 +414,13 @@ export function FormSelect({
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        {items.map((item) => (
-          <SelectItem key={item.value} value={item.value}>
-            {item.label}
-          </SelectItem>
-        ))}
+        <SelectGroup>
+          {items.map((item) => (
+            <SelectItem key={item.value} value={item.value}>
+              {item.label}
+            </SelectItem>
+          ))}
+        </SelectGroup>
       </SelectContent>
     </Select>
   );

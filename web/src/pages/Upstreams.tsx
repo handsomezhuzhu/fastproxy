@@ -4,7 +4,6 @@ import {
   Ellipsis,
   Import,
   Layers,
-  Loader2,
   Pencil,
   Plus,
   RefreshCw,
@@ -12,6 +11,8 @@ import {
   Trash2,
   Zap,
 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
 import { api, type CheckResult, type Data, type ImportResult, type Upstream, type UpstreamInput } from "@/api";
 import { Badge } from "@/components/ui/badge";
@@ -76,7 +77,7 @@ function HealthCell({ u, checking }: { u: Upstream; checking?: boolean }) {
   if (checking) {
     return (
       <DotBadge tone="muted">
-        <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+        <Spinner className="size-3" />
         {t("upstreams.health.checking")}
       </DotBadge>
     );
@@ -87,7 +88,7 @@ function HealthCell({ u, checking }: { u: Upstream; checking?: boolean }) {
   const checkedAt = new Date(u.last_check_at * 1000).toISOString();
   if (u.health === "ok") {
     return (
-      <div className="space-y-0.5">
+      <div className="flex flex-col gap-0.5">
         <div className="flex items-center gap-1.5">
           <DotBadge tone="ok">{t("upstreams.health.ok")}</DotBadge>
           <span className="text-xs tabular-nums text-muted-foreground">{u.latency_ms ?? 0} ms</span>
@@ -100,7 +101,7 @@ function HealthCell({ u, checking }: { u: Upstream; checking?: boolean }) {
   }
   const reason = u.last_error ? explainErrorLine(u.last_error, lang) : t("upstreams.health.failDefault");
   return (
-    <div className="space-y-0.5">
+    <div className="flex flex-col gap-0.5">
       <DotBadge tone="fail" title={u.last_error || t("upstreams.health.failDefault")}>
         <AlertTriangle className="size-3" aria-hidden="true" />
         {t("upstreams.health.fail")}
@@ -712,7 +713,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
   // 首次加载：Skeleton 覆盖工具栏与表格
   if (list === null) {
     return (
-      <div className="space-y-5">
+      <div className="flex flex-col gap-5">
         <PageHeader title={t("upstreams.title")} description={t("upstreams.description")} />
         <div className="flex items-center justify-between gap-4">
           <Skeleton className="h-5 w-32" />
@@ -722,7 +723,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             <Skeleton className="h-7 w-20" />
           </div>
         </div>
-        <div className="space-y-2">
+        <div className="flex flex-col gap-2">
           {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-10 w-full" />
           ))}
@@ -734,7 +735,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
   const showEmpty = total === 0 && !q;
 
   return (
-    <div className="space-y-5">
+    <div className="flex flex-col gap-5">
       <PageHeader title={t("upstreams.title")} description={t("upstreams.description")} />
 
       {showEmpty ? (
@@ -780,7 +781,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             </div>
             <Button variant="outline" size="sm" onClick={checkAll} disabled={checkingAll || bulkBusy}>
               {checkingAll ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                <Spinner data-icon="inline-start" />
               ) : (
                 <RefreshCw className="size-4" aria-hidden="true" />
               )}
@@ -816,7 +817,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                   : `${t("common.selected", { n: sel.selected.size })} ·`}
               </span>
               <Button size="sm" variant="outline" onClick={() => askBulk("check")} disabled={bulkBusy}>
-                {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {bulkBusy ? <Spinner data-icon="inline-start" /> : null}
                 <span className="inline-block min-w-8 text-center">{t("upstreams.checkSelected")}</span>
               </Button>
               <Button size="sm" variant="destructive" onClick={() => askBulk("delete")} disabled={bulkBusy}>
@@ -870,11 +871,9 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                     return (
                       <TableRow key={u.id} data-state={checked ? "selected" : undefined}>
                         <TableCell>
-                          <input
-                            type="checkbox"
-                            className="size-3.5 accent-primary focus-visible:outline-2 focus-visible:outline-ring"
+                          <Checkbox
                             checked={checked}
-                            onChange={(e) => sel.toggle(u.id, e.target.checked)}
+                            onCheckedChange={(checked: boolean) => sel.toggle(u.id, checked)}
                             aria-label={t("upstreams.selectRow", { name: u.name })}
                           />
                         </TableCell>
@@ -930,7 +929,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                               aria-label={t("upstreams.rowMenu", { name: u.name })}
                             >
                               {checking[u.id] ? (
-                                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                                <Spinner data-icon="inline-start" />
                               ) : (
                                 <Ellipsis className="size-4" aria-hidden="true" />
                               )}
@@ -977,7 +976,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             </DialogTitle>
             <DialogDescription>{t("upstreams.dialog.desc")}</DialogDescription>
           </DialogHeader>
-          <form onSubmit={save} className="space-y-5">
+          <form onSubmit={save} className="flex flex-col gap-5">
             <div className="grid grid-cols-2 gap-4">
               <Field label={t("upstreams.field.name")} htmlFor="up-name">
                 <Input
@@ -998,7 +997,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             </div>
 
             {!editing ? (
-              <div className="space-y-1.5 rounded-lg border bg-muted/30 px-3 py-2">
+              <div className="flex flex-col gap-1.5 rounded-lg border bg-muted/30 px-3 py-2">
                 <Label htmlFor="up-share">{t("upstreams.share.label")}</Label>
                 <div className="flex gap-2">
                   <Input
@@ -1022,7 +1021,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                     disabled={parsing || !shareLink.trim()}
                     className="shrink-0"
                   >
-                    {parsing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                    {parsing ? <Spinner data-icon="inline-start" /> : null}
                     {t("upstreams.share.parse")}
                   </Button>
                 </div>
@@ -1284,7 +1283,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 {t("common.cancel")}
               </Button>
               <Button type="submit" disabled={busy}>
-                {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {busy ? <Spinner data-icon="inline-start" /> : null}
                 <span className="inline-block min-w-16 text-center">
                   {busy ? t("common.saving") : t("common.save")}
                 </span>
@@ -1307,7 +1306,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
               <TabsTrigger value="url">{t("upstreams.import.tabUrl")}</TabsTrigger>
             </TabsList>
 
-            <TabsContent value="text" className="space-y-2 pt-2">
+            <TabsContent value="text" className="flex flex-col gap-2 pt-2">
               <Textarea
                 aria-label={t("upstreams.import.textLabel")}
                 className="min-h-[160px] font-mono text-xs"
@@ -1320,14 +1319,14 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 disabled={importing || !importText.trim()}
                 onClick={() => runImport(false)}
               >
-                {importing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {importing ? <Spinner data-icon="inline-start" /> : null}
                 <span className="inline-block min-w-16 text-center">
                   {importing ? t("upstreams.import.importing") : t("upstreams.import.importText")}
                 </span>
               </Button>
             </TabsContent>
 
-            <TabsContent value="url" className="space-y-2 pt-2">
+            <TabsContent value="url" className="flex flex-col gap-2 pt-2">
               <Input
                 aria-label={t("upstreams.import.urlLabel")}
                 className="font-mono text-xs"
@@ -1341,7 +1340,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                 disabled={importing || !importURL.trim()}
                 onClick={() => runImport(true)}
               >
-                {importing ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {importing ? <Spinner data-icon="inline-start" /> : null}
                 <span className="inline-block min-w-16 text-center">
                   {importing ? t("upstreams.import.fetching") : t("upstreams.import.fetchImport")}
                 </span>
@@ -1350,7 +1349,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
           </Tabs>
 
           {result ? (
-            <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-xs" aria-live="polite">
+            <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3 text-xs" aria-live="polite">
               <div className="flex flex-wrap gap-2">
                 <Badge variant="secondary" className="bg-foreground text-background">
                   {t("upstreams.import.added", { n: result.added })}
@@ -1376,11 +1375,11 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
               {result.problems.length > 0 ? (
                 <details>
                   <summary className="cursor-pointer text-muted-foreground">{t("upstreams.import.problemTitle")}</summary>
-                  <ul className="mt-1 max-h-32 space-y-1 overflow-y-auto">
+                  <ul className="flex flex-col mt-1 max-h-32 gap-1 overflow-y-auto">
                     {result.problems.map((d, i) => {
                       const hint = explainProblem(d, lang);
                       return (
-                        <li key={i} className="space-y-0.5">
+                        <li key={i} className="flex flex-col gap-0.5">
                           <p className="text-foreground">{hint.message}</p>
                           {hint.hint ? <p className="text-muted-foreground">{hint.hint}</p> : null}
                         </li>
@@ -1422,7 +1421,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={() => runBulk("delete")} disabled={bulkBusy}>
-              {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+              {bulkBusy ? <Spinner data-icon="inline-start" /> : null}
               {t("common.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>

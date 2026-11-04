@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Check, Copy } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -191,8 +192,8 @@ export function CopyWizard({
           <DialogDescription>{t("copy.desc")}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-5">
-          <section aria-labelledby="step-1" className="space-y-2">
+        <div className="flex flex-col gap-5">
+          <section aria-labelledby="step-1" className="flex flex-col gap-2">
             <Label id="step-1">{t("copy.step1")}</Label>
             <Tabs
               value={dim}
@@ -210,7 +211,7 @@ export function CopyWizard({
             </Tabs>
           </section>
 
-          <section aria-labelledby="step-2" className="space-y-2">
+          <section aria-labelledby="step-2" className="flex flex-col gap-2">
             <Label id="step-2">{dim === "port" ? t("copy.step2Port") : t("copy.step2Account")}</Label>
             {dim === "port" ? (
               <FormSelect
@@ -262,12 +263,10 @@ export function CopyWizard({
                         key={c.id}
                         className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-muted"
                       >
-                        <input
-                          type="checkbox"
-                          className="size-3.5 accent-primary"
+                        <Checkbox
                           checked={!!selected[c.id]}
-                          onChange={(e) =>
-                            setSelected((s) => ({ ...s, [c.id]: e.target.checked }))
+                          onCheckedChange={(checked: boolean) =>
+                            setSelected((s) => ({ ...s, [c.id]: checked }))
                           }
                         />
                         <span className="truncate">{c.label}</span>
@@ -279,7 +278,7 @@ export function CopyWizard({
             </div>
           </section>
 
-          <section aria-labelledby="step-3" className="space-y-2">
+          <section aria-labelledby="step-3" className="flex flex-col gap-2">
             <Label id="step-3">{t("copy.step3")}</Label>
             <div className="grid grid-cols-2 gap-2">
               {FORMATS.map((f) => (
@@ -305,7 +304,7 @@ export function CopyWizard({
             </div>
           </section>
 
-          <section className="space-y-2">
+          <section className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <Label htmlFor="copy-preview" aria-live="polite">
                 {t("copy.preview", { n: pairs.length, host: HOST })}

@@ -28,7 +28,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
     return (
       <div className="flex min-h-[50vh] items-center justify-center p-6">
         <Card className="w-full max-w-lg">
-          <CardContent className="space-y-3 p-6">
+          <CardContent className="flex flex-col gap-3 p-6">
             <h2 className="text-base font-semibold text-destructive">{t("shell.renderError")}</h2>
             <p className="text-xs text-muted-foreground">{t("shell.renderErrorDesc")}</p>
             <pre className="max-h-40 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs whitespace-pre-wrap break-all">

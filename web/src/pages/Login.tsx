@@ -1,15 +1,17 @@
 import * as React from "react";
-import { Loader2 } from "lucide-react";
+import { Zap } from "lucide-react";
 import { api } from "@/api";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
 import { AuthLanguageToggle } from "@/components/LanguageSwitch";
 import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { useI18n } from "@/i18n";
 
 /**
- * 登录页。
+ * 登录页（shadcn login-01 布局）。
  * 登录失败后端返回 429 `{error, retry_after_sec}`，提示尝试过多，按 X 秒后重试；
  * 按钮置灰并显示倒计时，到期自动恢复（不刷新页面）。
  * 如果响应未带 retry_after_sec，则按 30 秒兜底，避免按钮永久禁用。
@@ -33,7 +35,6 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
 
   React.useEffect(() => {
     if (!lockedUntil || remaining > 0) return;
-    // 倒计时结束，清除锁定提示。
     setLockedUntil(0);
     setError("");
   }, [lockedUntil, remaining]);
@@ -49,72 +50,76 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
     } catch (err: any) {
       if (err?.status === 429) {
         const sec = Math.min(Math.max(1, Number(err?.retryAfterSec) || 30), 24 * 3600);
-        const until = Date.now() + sec * 1000;
         setNow(Date.now());
-        setLockedUntil(until);
+        setLockedUntil(Date.now() + sec * 1000);
         setError(t("login.locked", { sec }));
       } else {
         setError(err?.message || t("login.failed"));
-        setBusy(false);
       }
     } finally {
-      // 成功时会立刻卸载，这里兜底避免异常路径一直转圈。
       setBusy(false);
     }
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center bg-background px-4 py-10">
-      <div className="absolute right-4 top-4 flex items-center gap-2">
+    <div className="flex min-h-svh flex-col bg-muted">
+      <header className="flex items-center justify-end gap-2 p-4">
         <ThemeSwitch />
         <AuthLanguageToggle />
-      </div>
+      </header>
 
-      <div className="w-full max-w-[400px]">
-        <div className="rounded-xl border bg-card px-6 py-8 shadow-sm sm:px-8">
-          <h1 className="text-center text-[28px] font-semibold leading-9 tracking-tight">
-            {t("login.title")}
-          </h1>
-
-          <form onSubmit={submit} className="mt-8 space-y-4">
-            <div className="space-y-2">
-              <Label
-                htmlFor="admin-password"
-                className="text-[13px] font-medium uppercase tracking-[0.05em] text-muted-foreground"
-              >
-                {t("login.password")}
-              </Label>
-              <Input
-                id="admin-password"
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                autoFocus
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder={t("login.placeholder")}
-                spellCheck={false}
-                aria-invalid={!!error}
-                aria-describedby={error ? "login-error" : undefined}
-                className="h-11 rounded-lg bg-background px-3"
-              />
-            </div>
-            {error ? (
-              <p id="login-error" role="alert" className="text-sm text-destructive">
-                {error}
-              </p>
-            ) : null}
-            <Button className="h-11 w-full" type="submit" disabled={busy || locked || !password}>
-              {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
-              {locked
-                ? t("login.lockedShort", { sec: remaining })
-                : busy
-                  ? t("login.submitting")
-                  : t("login.submit")}
-            </Button>
-          </form>
+      <main className="flex flex-1 flex-col items-center justify-center gap-6 px-6 pb-16">
+        <div className="flex items-center gap-2 font-medium" aria-hidden="true">
+          <div className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
+            <Zap className="size-4" />
+          </div>
+          FastProxy
         </div>
-      </div>
+
+        <Card className="w-full max-w-sm">
+          <CardHeader className="text-center">
+            <CardTitle className="text-xl">{t("login.title")}</CardTitle>
+            <CardDescription>{t("login.placeholder")}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={submit}>
+              <FieldGroup>
+                <Field data-invalid={error ? true : undefined}>
+                  <FieldLabel htmlFor="admin-password">{t("login.password")}</FieldLabel>
+                  <Input
+                    id="admin-password"
+                    name="password"
+                    type="password"
+                    autoComplete="current-password"
+                    autoFocus
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    spellCheck={false}
+                    aria-invalid={!!error}
+                    aria-describedby={error ? "login-error" : undefined}
+                  />
+                  {error ? (
+                    <FieldError id="login-error" role="alert">
+                      {error}
+                    </FieldError>
+                  ) : null}
+                </Field>
+                <Field>
+                  <Button type="submit" className="w-full" disabled={busy || locked || !password}>
+                    {busy ? <Spinner data-icon="inline-start" /> : null}
+                    {locked
+                      ? t("login.lockedShort", { sec: remaining })
+                      : busy
+                        ? t("login.submitting")
+                        : t("login.submit")}
+                  </Button>
+                </Field>
+              </FieldGroup>
+            </form>
+          </CardContent>
+        </Card>
+      </main>
     </div>
   );
 }

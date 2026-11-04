@@ -1,5 +1,7 @@
 import * as React from "react";
-import { Copy, Ellipsis, Eye, EyeOff, Loader2, Pencil, Plus, Trash2, Users } from "lucide-react";
+import { Copy, Ellipsis, Eye, EyeOff, Pencil, Plus, Trash2, Users } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
 import { api, type Account, type Data } from "@/api";
 import { Badge } from "@/components/ui/badge";
@@ -214,7 +216,7 @@ export function AccountsPage({
   const enabledCount = data.accounts.filter((a) => a.enabled).length;
 
   return (
-    <div className="space-y-5">
+    <div className="flex flex-col gap-5">
       <PageHeader title={t("accounts.title")} description={t("accounts.description")} />
 
       {data.accounts.length === 0 ? (
@@ -252,7 +254,7 @@ export function AccountsPage({
                 {t("common.disable")}
               </Button>
               <Button size="sm" variant="destructive" onClick={() => askBulk("delete")} disabled={bulkBusy}>
-                {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {bulkBusy ? <Spinner data-icon="inline-start" /> : null}
                 {t("common.delete")}
               </Button>
               <Button size="sm" variant="ghost" onClick={sel.clear} aria-label={t("common.clearSelection")}>
@@ -294,13 +296,11 @@ export function AccountsPage({
                 return (
                   <TableRow key={a.id} data-state={checked ? "selected" : undefined}>
                     <TableCell>
-                      <input
-                        type="checkbox"
-                        className="size-3.5 accent-primary focus-visible:outline-2 focus-visible:outline-ring"
+                      <Checkbox
                         checked={checked}
                         disabled={!selectable(a)}
                         title={selectable(a) ? undefined : t("accounts.defaultTip")}
-                        onChange={(e) => sel.toggle(a.id, e.target.checked)}
+                        onCheckedChange={(checked: boolean) => sel.toggle(a.id, checked)}
                         aria-label={`${t("common.account")} ${a.username}`}
                       />
                     </TableCell>
@@ -405,7 +405,7 @@ export function AccountsPage({
             </DialogTitle>
             <DialogDescription>{t("accounts.dialog.desc")}</DialogDescription>
           </DialogHeader>
-          <form onSubmit={save} className="space-y-5">
+          <form onSubmit={save} className="flex flex-col gap-5">
             <Field label={t("accounts.field.username")} htmlFor="acc-username">
               <Input
                 id="acc-username"
@@ -472,7 +472,7 @@ export function AccountsPage({
                 {t("common.cancel")}
               </Button>
               <Button type="submit" disabled={busy || data.ports.length === 0}>
-                {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {busy ? <Spinner data-icon="inline-start" /> : null}
                 <span className="inline-block min-w-16 text-center">
                   {busy ? t("common.saving") : t("common.save")}
                 </span>
@@ -504,7 +504,7 @@ export function AccountsPage({
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={() => runBulk(bulkAction ?? "delete")} disabled={bulkBusy}>
-              {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+              {bulkBusy ? <Spinner data-icon="inline-start" /> : null}
               {t("common.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>

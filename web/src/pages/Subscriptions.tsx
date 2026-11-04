@@ -1,5 +1,6 @@
 import * as React from "react";
-import { Ellipsis, Loader2, Pencil, Plus, RefreshCw, Rss, Trash2 } from "lucide-react";
+import { Ellipsis, Pencil, Plus, RefreshCw, Rss, Trash2 } from "lucide-react";
+import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
 import { api, type Subscription, type SubscriptionInput } from "@/api";
 import { Badge } from "@/components/ui/badge";
@@ -50,7 +51,7 @@ const EMPTY_FORM: FormState = { name: "", url: "", enabled: true, intervalMin: "
 function subscriptionStatus(s: Subscription, t: (k: string, v?: any) => string) {
   if (s.last_error) {
     return (
-      <div className="space-y-0.5">
+      <div className="flex flex-col gap-0.5">
         <DotBadge tone="fail">{t("subscriptions.status.failed")}</DotBadge>
         <p className="max-w-[220px] truncate text-xs text-destructive" title={s.last_error}>
           {s.last_error}
@@ -60,7 +61,7 @@ function subscriptionStatus(s: Subscription, t: (k: string, v?: any) => string) 
   }
   if (!s.last_fetch_at) return <DotBadge tone="muted">{t("subscriptions.status.never")}</DotBadge>;
   return (
-    <div className="space-y-0.5">
+    <div className="flex flex-col gap-0.5">
       <DotBadge tone="ok">{t("subscriptions.status.ok")}</DotBadge>
       <p className="text-xs text-muted-foreground">
         {timeAgo(new Date(s.last_fetch_at * 1000).toISOString())}
@@ -188,17 +189,17 @@ export function SubscriptionsPage({ reload }: { reload: () => Promise<void> }) {
 
   if (items === null) {
     return (
-      <div className="space-y-5">
+      <div className="flex flex-col gap-5">
         <PageHeader title={t("subscriptions.title")} description={t("subscriptions.desc")} />
         <div className="flex items-center justify-center py-12">
-          <Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden="true" />
+          <Spinner className="size-5 text-muted-foreground" />
         </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-5">
+    <div className="flex flex-col gap-5">
       <PageHeader title={t("subscriptions.title")} description={t("subscriptions.desc")} />
 
       {items.length === 0 ? (
@@ -262,7 +263,7 @@ export function SubscriptionsPage({ reload }: { reload: () => Promise<void> }) {
                           aria-label={t("subscriptions.rowMenu", { name: s.name })}
                         >
                           {busy[s.id] ? (
-                            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                            <Spinner data-icon="inline-start" />
                           ) : (
                             <Ellipsis className="size-4" aria-hidden="true" />
                           )}
@@ -303,7 +304,7 @@ export function SubscriptionsPage({ reload }: { reload: () => Promise<void> }) {
             </DialogTitle>
             <DialogDescription>{t("subscriptions.dialog.desc")}</DialogDescription>
           </DialogHeader>
-          <form onSubmit={save} className="space-y-5" noValidate>
+          <form onSubmit={save} className="flex flex-col gap-5" noValidate>
             <Field label={t("subscriptions.field.name")} htmlFor="sub-name">
               <Input
                 id="sub-name"
@@ -362,7 +363,7 @@ export function SubscriptionsPage({ reload }: { reload: () => Promise<void> }) {
                 {t("common.cancel")}
               </Button>
               <Button type="submit" disabled={saving}>
-                {saving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {saving ? <Spinner data-icon="inline-start" /> : null}
                 <span className="inline-block min-w-16 text-center">
                   {saving ? t("common.saving") : t("common.save")}
                 </span>

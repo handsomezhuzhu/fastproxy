@@ -1,4 +1,5 @@
 import { Monitor, Moon, Sun } from "lucide-react";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/lib/theme-context";
 import type { ThemeMode } from "@/lib/theme";
@@ -13,29 +14,22 @@ export function ThemeSwitch() {
     { id: "dark", label: t("shell.theme.darkShort"), icon: Moon },
   ];
   return (
-    <div
-      role="group"
+    <ToggleGroup
+      variant="outline"
+      size="sm"
+      spacing={0}
       aria-label={t("shell.theme.label")}
-      className="inline-flex items-center rounded-md border p-0.5 text-xs"
+      value={[mode]}
+      onValueChange={(v) => {
+        const next = v[0] as ThemeMode | undefined;
+        if (next) setMode(next);
+      }}
     >
       {options.map(({ id, label, icon: Icon }) => (
-        <button
-          key={id}
-          type="button"
-          title={label}
-          aria-label={label}
-          aria-pressed={mode === id}
-          onClick={() => setMode(id)}
-          className={
-            "rounded p-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 " +
-            (mode === id
-              ? "bg-foreground text-background"
-              : "text-muted-foreground hover:text-foreground")
-          }
-        >
-          <Icon className="size-3.5" aria-hidden="true" />
-        </button>
+        <ToggleGroupItem key={id} value={id} aria-label={label} title={label}>
+          <Icon />
+        </ToggleGroupItem>
       ))}
-    </div>
+    </ToggleGroup>
   );
 }

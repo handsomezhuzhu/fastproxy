@@ -1,5 +1,7 @@
 import * as React from "react";
-import { Check, Copy, Ellipsis, Loader2, Network, Pencil, Plus, Trash2 } from "lucide-react";
+import { Check, Copy, Ellipsis, Network, Pencil, Plus, Trash2 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
 import { api, DEFAULT_PORT_RANGE, type Account, type Data, type Port, type PortRange } from "@/api";
 import { Button } from "@/components/ui/button";
@@ -242,7 +244,7 @@ export function PortsPage({
   const pageSomeSelected = pageIDs.some((id) => sel.selected.has(id));
 
   return (
-    <div className="space-y-5">
+    <div className="flex flex-col gap-5">
       <PageHeader title={t("ports.title")} description={t("ports.description")} />
 
       {data.ports.length === 0 ? (
@@ -280,7 +282,7 @@ export function PortsPage({
                 {t("common.disable")}
               </Button>
               <Button size="sm" variant="destructive" onClick={() => askBulk("delete")} disabled={bulkBusy}>
-                {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {bulkBusy ? <Spinner data-icon="inline-start" /> : null}
                 {t("common.delete")}
               </Button>
               <Button size="sm" variant="ghost" onClick={sel.clear} aria-label={t("common.clearSelection")}>
@@ -321,11 +323,9 @@ export function PortsPage({
                 return (
                   <TableRow key={p.id} data-state={checked ? "selected" : undefined}>
                     <TableCell>
-                      <input
-                        type="checkbox"
-                        className="size-3.5 accent-primary focus-visible:outline-2 focus-visible:outline-ring"
+                      <Checkbox
                         checked={checked}
-                        onChange={(e) => sel.toggle(p.id, e.target.checked)}
+                        onCheckedChange={(checked: boolean) => sel.toggle(p.id, checked)}
                         aria-label={`${t("common.port")} ${p.port}`}
                       />
                     </TableCell>
@@ -413,7 +413,7 @@ export function PortsPage({
             </DialogTitle>
             <DialogDescription>{t("ports.dialog.desc")}</DialogDescription>
           </DialogHeader>
-          <form onSubmit={save} className="space-y-5" noValidate>
+          <form onSubmit={save} className="flex flex-col gap-5" noValidate>
             <Field
               label={t("ports.field.port")}
               htmlFor="port-input"
@@ -453,7 +453,7 @@ export function PortsPage({
                 {t("common.cancel")}
               </Button>
               <Button type="submit" disabled={busy}>
-                {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {busy ? <Spinner data-icon="inline-start" /> : null}
                 <span className="inline-block min-w-16 text-center">
                   {busy ? t("common.saving") : t("common.save")}
                 </span>
@@ -470,7 +470,7 @@ export function PortsPage({
             <DialogDescription>{t("ports.created.desc", { port: created?.port ?? "" })}</DialogDescription>
           </DialogHeader>
           {created ? (
-            <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+            <div className="flex flex-col gap-3 rounded-lg border bg-muted/30 p-4">
               <div className="flex items-center justify-between gap-4 text-sm">
                 <span className="text-muted-foreground">{t("common.username")}</span>
                 <code className="font-mono">{created.account.username}</code>
@@ -515,7 +515,7 @@ export function PortsPage({
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={() => runBulk(bulkAction ?? "delete")} disabled={bulkBusy}>
-              {bulkBusy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+              {bulkBusy ? <Spinner data-icon="inline-start" /> : null}
               {t("common.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>

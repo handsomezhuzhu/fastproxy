@@ -1,155 +1,214 @@
+<div align="center">
+
 # FastProxy
 
-**轻量、便捷的多端口 HTTP/SOCKS5 转发中转服务。**
+**高性能多端口 HTTP / SOCKS5 认证网关与多协议代理分流中枢**
 
-用户访问本服务器的某个端口（HTTP 或 SOCKS5 代理协议），流量按固定绑定关系转发到指定上游代理。带密码保护的 Web 控制台（React + Tailwind v4 + shadcn 官方组件），支持 **多端口接入、多账户接入、上游代理绑定与批量导入**，连接日志结构化落库。
+基于 Go 与内嵌 `sing-box` 构建的轻量级代理路由网关。支持**单端口双协议自动识别**、**端口 × 账户 × 上游三层硬边界路由**、**VLESS REALITY / VMess / Shadowsocks / SOCKS5 / HTTP 全协议出站**、**机场订阅定时增量同步**与**主动健康探测**，内置基于 React 19 + Tailwind CSS v4 + shadcn/ui 构建的现代化控制台。
 
-## 功能
+[![CI](https://github.com/handsomezhuzhu/fastproxy/actions/workflows/ci.yml/badge.svg)](https://github.com/handsomezhuzhu/fastproxy/actions/workflows/ci.yml)
+[![GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Fhandsomezhuzhu%2Ffastproxy-blue?logo=docker)](https://github.com/handsomezhuzhu/fastproxy/pkgs/container/fastproxy)
+[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![UI](https://img.shields.io/badge/UI-shadcn%2Fui%20%2B%20Tailwind%20v4-09090b?logo=react)](https://ui.shadcn.com/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
-- **双协议入站**：同一端口同时支持 HTTP 代理（明文请求 + CONNECT 隧道）和 SOCKS5（自动识别），强制认证
-- **三层模型**：上游代理池 / 端口（纯入口）/ 账户（每端口自带默认账号，账户决定去向）· 无“全局账户”概念，端口与账户是硬边界
-- **快速开始三步**：建上游 → 建端口（自动生成默认账号）→ 客户端立即可用；需要更多身份时就继续加普通账号并绑定上游
-- **上游多协议**：上游出站支持 `http`、`socks5`、`Shadowsocks`（AEAD TCP：aes-128/256-gcm、chacha20-ietf-poly1305）、
-  `VLESS`（TCP，可 TLS；REALITY / `flow=xtls-rprx-vision` / WebSocket / gRPC 由内嵌 sing-box 承载）、
-  `VMess`（内嵌 sing-box：TCP/WS/gRPC，可 TLS）
-- **上游批量导入**：订阅链接或文本粘贴，支持
-  `http://user:pass@host:port#名称`、`socks5://`、`ss://`、`vless://`、`vmess://`、
-  `IP:PORT`、`IP:PORT:USER:PASS`、base64 订阅、sing-box JSON、Clash JSON/YAML 节点列表，
-  REALITY（`pbk`/`sid`）、Vision flow、ws/grpc 传输字段一并保存，自动去重并给出逐行错误
-  （quic/kcp/h2 等无法承载的传输会明确跳过）
-- **订阅定时刷新**：保存机场订阅 URL，按间隔拉取并按节点差异更新上游（新增/更新/移除），
-  失败原因、上次刷新时间、节点数在面板可见；手动添加的上游不会被改动
-- **上游测速**：控制台一键测试连通性与延迟
-- **主动探测与 IP 检测**：定时（默认 5 分钟）通过每个上游请求出口 IP，记录健康状态、延迟、失败原因与**实际出口 IP**；本机直连出口 IP 同步展示；真实连接失败也会被动标记上游异常
-- **复制向导**：选择「端口 / 账户」→ 选择对象 → 选择格式（HTTP URL、SOCKS5 URL、curl 命令、分字段、JSON），一键批量复制
-- **完备日志**：每次连接一条结构化记录（客户端 IP / 账户 / 协议 / 目标 / 状态 / 流量 / 耗时），
-  **SQLite 持久化**，控制台按级别/端口/账户筛选，按天自动清理
-- **总设置入口**：日志级别/缓存/保留天数、访问日志开关、连接/握手超时、**探测开关/间隔/超时/并发/目标**、管理密码；直连由账户是否绑定上游决定
-- **热加载**：账户/上游/设置即时生效，不断已建立连接；仅端口变更重启对应监听
-- **敏感配置**：上游/账户密码在 SQLite 中用 AES-256-GCM 加密（密钥来自 `FASTPROXY_SECRET_KEY` 或 `/data/.secret_key`）；也支持 `${VAR}` 环境变量引用
-- **中英双语与主题**：中文/English 切换，亮色/暗色/跟随系统（首次默认跟随系统）
-- **部署简单**：单静态二进制 / Alpine 容器（前端内嵌），数据为单文件 SQLite
+</div>
 
-## 快速开始（Docker）
+---
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/dashboard-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="./docs/assets/dashboard.png" />
+    <img alt="FastProxy Console Dashboard" src="./docs/assets/dashboard.png" width="100%" />
+  </picture>
+</p>
+
+---
+
+## 核心特性
+
+### 1. 端口 × 账户 × 上游三层路由架构
+- **双协议自适应入站**：同一监听端口同时承载 `HTTP`（明文代理 + `CONNECT` 隧道）与 `SOCKS5` 协议，首字节自动嗅探识别，全程强制账密鉴权。
+- **按账户精确分流**：每个端口僅作为网络入口并自动生成专属默认账号；同一端口下可创建任意数量的业务账户，**不同账户可独立绑定不同上游节点或直连出站**——客户端向哪个账号认证，流量即按该账号绑定的上游转发。
+- **零中断热加载**：新增或切换账户绑定、修改上游节点、更新超时与日志策略均**毫秒级热生效**，不中断任何存量长连接；仅在增删端口或启停端口时按需操作对应监听器。
+
+```
+                     ┌──────────────────────┐
+  HTTP / CONNECT ───►│                      ├─── auth: default-10001 ───► HK · BGP HTTP
+                     │   Inbound :10001     │
+  SOCKS5         ───►│  (Auto Protocol Mux) ├─── auth: crawler-us    ───► US · VLESS REALITY
+                     │                      │
+                     └──────────────────────┘─── auth: ops-direct    ───► Direct (直连出站)
+```
+
+### 2. 原生出站 + 内嵌 `sing-box` 多协议引擎
+| 出站协议 | 传输层 / 特性支持 | 承载引擎 |
+| :--- | :--- | :--- |
+| **HTTP / HTTPS** | 标准 HTTP CONNECT 隧道、Basic 认证 | Go 原生高性能拨号器 |
+| **SOCKS5** | RFC 1928 用户名/密码认证、远端域名解析 | Go 原生高性能拨号器 |
+| **Shadowsocks** | AEAD TCP（`aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305`） | Go 原生 AEAD 引擎 |
+| **VLESS** | `REALITY`（uTLS Chrome 指纹）、`xtls-rprx-vision`、`TLS`、`TCP` / `WS` / `gRPC` | 内嵌 `sing-box`（`with_utls`） |
+| **VMess** | `auto` / `aes-128-gcm` / `chacha20-poly1305`、`TLS`、`TCP` / `WS` / `gRPC` | 内嵌 `sing-box`（`with_utls`） |
+
+### 3. 批量导入、订阅增量同步与主动探测
+- **多格式智能导入**：支持一键粘贴或拉取 `vless://`、`vmess://`、`ss://`、`socks5://`、`http://`、`IP:PORT:USER:PASS`、Base64 订阅、Clash YAML 与 sing-box JSON，自动去重并反馈逐行解析报告。
+- **机场订阅定时刷新**：内置 SSRF 防护与 ETag/Last-Modified 缓存协商，定时拉取远端订阅并按节点指纹增量 Diff（新增 / 更新 / 移除），不干扰手动维护的节点。
+- **主动健康探测与出口 IP 识别**：周期性通过各上游并发探测连通性、RTT 延迟与**真实落地出口 IP**，同时支持真实业务转发失败时被动标记异常。
+
+### 4. 安全存储与可观测性
+- **凭据落盘加密**：SQLite（WAL 模式）中所有上游密码、账户密码与订阅链接均使用 `AES-256-GCM`（`enc:v1:`）加密存储；同时支持 `${ENV_VAR}` 与 `${ENV_VAR:-default}` 环境变量动态注入，实现密文/明文零落盘。
+- **全链路结构化审计**：每次代理请求记录客户端 IP、入站端口、认证账户、协议、目标地址、上下行字节数、耗时与状态码，支持按端口/账户/级别实时检索与按天自动归档清理。
+
+---
+
+## 界面预览
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="./docs/assets/login.png" alt="登录页与三层分流架构图" />
+      <p align="center"><sub><b>登录控制台</b> · 分栏式认证入口与端口/账户分流示意</sub></p>
+    </td>
+    <td width="50%">
+      <img src="./docs/assets/upstreams.png" alt="多协议上游代理管理" />
+      <p align="center"><sub><b>上游代理池</b> · VLESS REALITY / SS / SOCKS5 / HTTP 延迟与出口 IP 监测</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="./docs/assets/accounts-copy.png" alt="账户管理与一键复制接入向导" />
+      <p align="center"><sub><b>复制接入向导</b> · 按端口/账户一键生成 URL、curl、JSON 与分字段配置</sub></p>
+    </td>
+    <td width="50%">
+      <img src="./docs/assets/dashboard-dark.png" alt="深色模式仪表盘" />
+      <p align="center"><sub><b>深色主题（Dark Mode）</b> · 中英双语切换与系统主题自适应</sub></p>
+    </td>
+  </tr>
+</table>
+
+---
+
+## 快速开始
+
+### 方式一：Docker 一键部署
 
 ```bash
-mkdir fastproxy && cd fastproxy
+mkdir -p fastproxy && cd fastproxy
+
 docker run -d --name fastproxy \
-  -p 7788:7788 -p 10001-10050:10001-10050 \
-  -e ADMIN_PASSWORD=your-admin-password \
+  --restart unless-stopped \
+  -p 7788:7788 \
+  -p 10001-10050:10001-10050 \
+  -e ADMIN_PASSWORD=your-strong-password \
   -e PORT_RANGE=10001-10050 \
   -e FASTPROXY_SECRET_KEY="$(python3 -c 'import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')" \
-  -v $(pwd)/data:/data \
-  ghcr.io/handsomezhuzhu/fastproxy:1.0.0-rc.3
+  -v "$(pwd)/data:/data" \
+  ghcr.io/handsomezhuzhu/fastproxy:1.0.0
 ```
 
-打开 `http://服务器IP:7788` 登录控制台，按「仪表盘 → 快速开始」三步配置：
-
-1. **上游代理** → 添加或批量导入（如 `http://user:pass@1.2.3.4:8080`）
-2. **端口线路** → 新建监听端口 `10201`（系统自动生成默认账号 `default-10201`）
-3. **账户** → 把默认账号绑到刚建的上游，或另加普通账号（每人可有自己的上游）
-
-客户端使用（同一端口两种协议都可用，向谁认证就走谁的上游）：
-
-```bash
-# HTTP 代理
-curl -x http://alice:密码@服务器IP:10201 https://api.ipify.org
-
-# SOCKS5 代理
-curl --proxy socks5h://alice:密码@服务器IP:10201 https://api.ipify.org
-```
-
-或在控制台点击「复制接入」，用复制向导生成任意格式的接入信息。
-
-## docker-compose
+### 方式二：Docker Compose 部署
 
 ```yaml
+version: "3.3"
 services:
   fastproxy:
-    image: ghcr.io/handsomezhuzhu/fastproxy:${IMAGE_TAG:-1.0.0-rc.3}
+    image: ghcr.io/handsomezhuzhu/fastproxy:${IMAGE_TAG:-1.0.0}
+    container_name: fastproxy
     restart: unless-stopped
     environment:
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD}        # 管理面板密码（必须）
-      - PORT_RANGE=${PORT_RANGE:-10001-10050}   # 允许创建并映射的端口范围
-      - FASTPROXY_SECRET_KEY=${FASTPROXY_SECRET_KEY:-}  # 数据密码加密密钥（建议设置）
-      - LOGIN_MAX_ATTEMPTS=${LOGIN_MAX_ATTEMPTS:-5}
-      - LOGIN_LOCK_DURATION=${LOGIN_LOCK_DURATION:-5m}
-      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}    # Nginx/OpenResty 反代 CIDR
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}               # 管理面板密码（必填）
+      - PORT_RANGE=${PORT_RANGE:-10001-10050}          # 允许创建并映射的入站端口段
+      - FASTPROXY_SECRET_KEY=${FASTPROXY_SECRET_KEY:-} # AES-256-GCM 密钥（留空则自动生成 /data/.secret_key）
+      - LOGIN_MAX_ATTEMPTS=${LOGIN_MAX_ATTEMPTS:-5}    # 登录防暴力破解阈值
+      - LOGIN_LOCK_DURATION=${LOGIN_LOCK_DURATION:-5m} # 触发阈值后的锁定时长
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}           # 反向代理可信 CIDR（逗号分隔）
     ports:
-      - "7788:7788"                # 管理面板（默认 7788）
+      - "7788:7788"
       - "${PORT_RANGE:-10001-10050}:${PORT_RANGE:-10001-10050}"
     volumes:
-      - ./data:/data               # SQLite 数据库 + .secret_key
+      - ./data:/data
 ```
 
-## 敏感配置与环境变量
+### 三步完成接入与验证
 
-上游/账户密码在 SQLite 中以 AES-256-GCM 密文保存（`enc:v1:`），读取时解密；密钥来自 `FASTPROXY_SECRET_KEY`，未设置时自动生成 `/data/.secret_key`（0600）。备份数据库时必须一并备份密钥。
-
-密码也支持 `${VAR}` 或 `${VAR:-默认值}` 引用，运行时从环境展开。启动与保存时会严格校验，缺失变量会拒绝启动并列出名称。
-
-在控制台把上游地址填成 `http://${UPSTREAM_USER_1}:${UPSTREAM_PASS_1}@1.2.3.4:8080` 即可。
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `CONFIG` | `/data/fastproxy.db`（容器）/ `fastproxy.db` | SQLite 数据库路径 |
-| `ADMIN_ADDR` | `:7788` | 管理面板监听地址 |
-| `ADMIN_PASSWORD` | 无 | 启动时重置管理面板密码 |
-| `PORT_RANGE` | `10001-10050` | 允许创建/映射的入站端口范围；Docker 映射必须一致 |
-| `FASTPROXY_SECRET_KEY` | 自动生成 `/data/.secret_key` | 数据密码加密密钥（32 字节 base64/hex） |
-| `LOGIN_MAX_ATTEMPTS` | `5` | 面板登录全局失败次数上限 |
-| `LOGIN_LOCK_DURATION` | `5m` | 锁定持续时间（Go duration） |
-| `TRUSTED_PROXIES` | 无 | 可信反向代理 CIDR，逗号分隔 |
-| `SUB_ALLOW_PRIVATE` | 无 | 设为 `1` 才允许订阅拉取内网/回环地址（本地转换器） |
-| `SESSION_SECRET` | 自动生成 | 可选：固定会话签名密钥 |
-
-> 从旧版本升级：旧的 `config.json` 放在数据库同目录，首次启动会自动迁移为 `config.json.migrated`。
-
-## 数据与备份
-
-- 全部状态在 SQLite 单文件（WAL 模式）：`/data/fastproxy.db`（+ `-wal`/`-shm`）
-- 备份：`sqlite3 fastproxy.db ".backup backup.db"` 或停机复制文件；**同时备份 `/data/.secret_key`**（若未用环境变量）
-- 日志表按 `log_retention_days`（默认 7 天）自动清理，可在控制台调整
-
-## 工程流程
+1. **导入上游节点**：访问 `http://<服务器IP>:7788` 登录控制台，在 **「上游代理」** 中添加或批量导入节点，或前往 **「订阅」** 添加机场订阅链接。
+2. **创建入站端口**：在 **「端口线路」** 中新建端口（如 `10001`），系统将自动生成同名默认账号 `default-10001`。
+3. **按账号分流调用**：在 **「账户」** 页面将默认账号或新建的自定义账号绑定至指定上游，点击右上角 **「复制接入」** 生成客户端命令：
 
 ```bash
-make web      # 构建前端 web/ -> admin/dist（React + Tailwind v4 + shadcn 组件）
-make build    # 构建后端（前端内嵌进二进制；缺少 dist 时会先自动 make web）
-make test     # Go 测试（含 sing-box/VLESS/VMess，使用 with_utls）
-make e2e      # 容器端到端（Docker：面板/配置/HTTP/SOCKS5/CONNECT/认证/统计）
-make docker   # 多阶段镜像（node + go + alpine）
+# 同一端口自动识别 HTTP 代理与 SOCKS5 协议，按账号路由至对应上游出口
+curl -x http://crawler-us-west:fp_us_99281a@proxy.example.com:10001 https://api.ipify.org
+curl --proxy socks5h://crawler-us-west:fp_us_99281a@proxy.example.com:10001 https://api.ipify.org
 ```
 
-> `admin/dist` 与 `deploy/` 不再提交到仓库：CI/Docker/Release 会现场构建前端；部署脚本仅本地使用。
+---
 
-CI（`.github/workflows/ci.yml`）：`runs-on: instabox-medium`，前端构建 → go vet → go test；
-main 分支推 GHCR 镜像（amd64/arm64）；打 tag 发布多平台二进制 Release。
+## 环境变量与加密配置
 
-> instabox CI 首次使用：在 [InstaBox 控制台](https://dashboard.instabox.sh) 的 **CI** 页完成一次 **Connect GitHub**（安装 App 并授权仓库），之后 push 自动运行。
+上游密码、账户密码与订阅 URL 在 SQLite 中以 `AES-256-GCM` 密文存储（`enc:v1:` 前缀）。同时支持在表单中填写 `${ENV_VAR}` 或 `${ENV_VAR:-默认值}` 引用环境变量（如 `http://${UP_USER}:${UP_PASS}@1.2.3.4:8080`），运行时动态展开。
 
-## 目录结构
+| 环境变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `CONFIG` | `/data/fastproxy.db`（容器）/ `fastproxy.db` | SQLite 数据库文件路径（自动开启 WAL 模式） |
+| `ADMIN_ADDR` | `:7788` | Web 控制台与管理 API 监听地址 |
+| `ADMIN_PASSWORD` | 首次启动随机生成并打印一次 | 启动时设置或重置控制台管理员密码 |
+| `PORT_RANGE` | `10001-10050` | 允许创建的入站端口范围，需与容器 `-p` 映射范围保持一致 |
+| `FASTPROXY_SECRET_KEY` | 自动生成 `/data/.secret_key` | 数据库敏感字段加密密钥（32 字节 Base64 或 64 位 Hex） |
+| `SESSION_SECRET` | 自动生成 | 控制台 Cookie 会话 HMAC 签名密钥 |
+| `LOGIN_MAX_ATTEMPTS` | `5` | 登录连续失败次数上限 |
+| `LOGIN_LOCK_DURATION` | `5m` | 登录失败达上限后的全局锁定时长（Go `time.Duration` 格式） |
+| `TRUSTED_PROXIES` | 空 | 可信反向代理 CIDR 列表（用于解析 `X-Forwarded-For`） |
+| `SUB_ALLOW_PRIVATE` | 空 | 设为 `1` 时允许订阅拉取访问内网/回环地址（如本地 Subconverter） |
 
+> [!IMPORTANT]
+> **数据备份说明**：所有配置与日志均存放在 `/data/fastproxy.db`。可通过 `sqlite3 /data/fastproxy.db ".backup backup.db"` 进行在线热备；若未通过环境变量固定 `FASTPROXY_SECRET_KEY`，**备份数据库时务必同时备份 `/data/.secret_key`**。
+
+---
+
+## 本地开发与测试
+
+项目采用前后端一体化打包设计：前端构建产物（`admin/dist`）通过 Go `embed` 直接内嵌进单一可执行二进制文件。
+
+```bash
+# 1. 构建前端控制台（web/ -> admin/dist）
+make web
+
+# 2. 编译单文件服务端二进制（自动携带 -tags with_utls 启用 REALITY / uTLS）
+make build
+
+# 3. 运行 Go 全量单元与并发测试（含 config / proxy / singbox / subscription / admin）
+go test -tags with_utls ./... -count=1
+
+# 4. 运行 Playwright 浏览器端到端回归测试（20 项 UI + 后端全链路用例）
+cd web && npx playwright test
 ```
-main.go              入口（管理面 + 代理线路 + 日志清理 + 订阅调度）
-config/              SQLite 存储（迁移/加密/上游/端口/账户/设置/日志/订阅）
-proxy/               双协议入站、上游隧道（http/socks5/ss）、管理器、访问统计与 trace
-singbox/             内嵌 sing-box（VLESS REALITY/Vision/WS/gRPC + VMess）
-subscription/        订阅拉取（SSRF 防护/ETag）与节点 diff 刷新
-admin/               管理 API + 内嵌前端（dist）
-importer/            上游导入解析（URI/纯文本/base64/sing-box/Clash）
-logx/                结构化日志（内存环形 + 异步批量落库）
-web/                 前端源码（Vite + React + shadcn 官方组件）
-scripts/             devserver + 端到端测试脚本
-docs/                设计/API/安全/反代文档
+
+### 仓库结构
+
+```text
+├── main.go            # 服务入口：协调 SQLite 存储、代理管理器、主动探测、订阅调度与管理面
+├── admin/             # 管理端 HTTP API、会话鉴权、限流与内嵌前端静态资源（admin/dist）
+├── config/            # SQLite 持久化层：Schema 迁移、AES-256-GCM 凭据加解密、CRUD 与指标聚合
+├── proxy/             # 核心转发层：HTTP/SOCKS5 双协议多路复用入站、原生出站拨号与流量统计
+├── singbox/           # 内嵌 sing-box 引擎生命周期管理（VLESS REALITY / Vision / WS / gRPC / VMess）
+├── importer/          # 节点解析器：支持分享链接、Base64、Clash YAML、sing-box JSON 批量导入
+├── subscription/      # 订阅拉取器：SSRF 防护、ETag 缓存与节点差异对比同步
+├── probe/             # 主动健康探测器：并发测量上游延迟与落地出口 IP
+├── logx/              # 结构化连接日志：内存环形缓冲 + 异步批量 SQLite 落库
+├── web/               # 前端工程（Vite + React 19 + TypeScript + Tailwind v4 + shadcn/ui + Playwright）
+└── docs/              # 架构设计（DESIGN.md）、API 契约（API.md）、反代配置与安全规范
 ```
 
-## 安全提示
+---
 
-- 面板建议置于内网/Nginx HTTPS 之后；所有代理端口强制认证
-- 上游/账户密码加密存储，备份数据库时务必同时备份密钥；订阅拉取默认拒绝内网地址
-- 使用控制台「连接日志」审计转发行为
+## 文档导航
+
+- [架构与数据模型设计 (`docs/DESIGN.md`)](./docs/DESIGN.md)
+- [管理端 HTTP API 规范 (`docs/API.md`)](./docs/API.md)
+- [安全机制与加密说明 (`docs/SECURITY.md`)](./docs/SECURITY.md)
+- [Nginx / Caddy 反向代理配置 (`docs/REVERSE_PROXY.md`)](./docs/REVERSE_PROXY.md)
 
 ## License
 
-MIT
+Released under the [MIT License](./LICENSE).

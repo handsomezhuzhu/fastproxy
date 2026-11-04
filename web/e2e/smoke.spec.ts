@@ -777,8 +777,20 @@ test("账户与复制向导：新建账户并验证复制接入格式切换", as
   await login(page);
   const accPort = 10022;
 
+  // 0) 若上次中断残留 e2e-acc 或 10022，先清理
+  await nav(page, "账户").click();
+  const staleAccBtn = page.getByRole("button", { name: "账户 e2e-acc 操作" });
+  if (await staleAccBtn.isVisible().catch(() => false)) {
+    await staleAccBtn.click();
+    await page.getByRole("menuitem", { name: "删除" }).click();
+    const delAcc0 = page.getByRole("alertdialog");
+    await delAcc0.getByRole("button", { name: "删除" }).click();
+    await expect(delAcc0).toBeHidden();
+  }
+
   // 1) 先新建端口 10022
   await nav(page, "端口线路").click();
+  await deletePortRow(page, accPort);
   await page.getByRole("button", { name: "新增线路" }).first().click();
   const portForm = page.getByRole("dialog", { name: "新增端口线路" });
   await portForm.getByLabel("监听端口").fill(String(accPort));
@@ -815,7 +827,7 @@ test("账户与复制向导：新建账户并验证复制接入格式切换", as
   await expect(copyDialog).toBeHidden();
 
   // 4) 删除自定义账户 e2e-acc，再清理端口 10022
-  await page.getByRole("button", { name: "账户 e2e-acc 的操作菜单" }).click();
+  await page.getByRole("button", { name: "账户 e2e-acc 操作" }).click();
   await page.getByRole("menuitem", { name: "删除" }).click();
   const delAcc = page.getByRole("alertdialog");
   await expect(delAcc).toBeVisible();
@@ -834,13 +846,13 @@ test("系统设置与连接日志：保存配置与日志筛选", async ({ page 
 
   await nav(page, "系统设置").click();
   await expect(page.getByRole("heading", { level: 1, name: "系统设置" })).toBeVisible();
-  await page.getByRole("button", { name: "保存设置" }).click();
+  await page.getByRole("button", { name: "保存系统设置" }).click();
   await expect(page.locator("[data-sonner-toast]")).toContainText(/已保存/);
   await expectNoCrash(page, failures);
 
   await nav(page, "连接日志").click();
   await expect(page.getByRole("heading", { level: 1, name: "连接日志" })).toBeVisible();
   await page.locator("#log-level").click();
-  await page.getByRole("option", { name: "仅警告与错误" }).click();
+  await page.getByRole("option", { name: "warn 及以上" }).click();
   await expectNoCrash(page, failures);
 });

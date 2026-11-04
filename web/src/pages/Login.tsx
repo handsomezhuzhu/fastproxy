@@ -138,14 +138,6 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
                 </Field>
               </FieldGroup>
             </form>
-
-            <p className="text-sm leading-relaxed text-muted-foreground">
-              {t("login.hint.before")}
-              <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.8125rem] text-foreground">
-                ADMIN_PASSWORD
-              </code>
-              {t("login.hint.after")}
-            </p>
           </div>
         </main>
       </div>

@@ -106,6 +106,12 @@ export const zh: Record<string, string> = {
   "login.failed": "登录失败，请重试",
   "login.locked": "尝试过多，请 {sec} 秒后重试",
   "login.lockedShort": "{sec} 秒后重试",
+  "login.description": "输入管理密码以进入控制台。",
+  "login.capsLock": "大写锁定已开启",
+  "login.hint.before": "密码来自环境变量 ",
+  "login.hint.after": "；未设置时，首次启动会在服务日志里打印一次初始密码。",
+  "login.heroTitle": "每个端口，走自己的出口。",
+  "login.heroBody": "为每个本地端口和账户绑定独立的上游代理，健康状态和出口 IP 随时可查。",
 
   // ---- 仪表盘 ----
   "dashboard.title": "仪表盘",

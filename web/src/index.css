@@ -146,7 +146,25 @@
   }
 }
 
+/* Login topology: a short dash travels each route (pathLength = 100). */
+.fp-packet {
+  stroke-dasharray: 5 95;
+  stroke-dashoffset: 100;
+  animation: fp-packet 3.6s linear infinite;
+}
+@keyframes fp-packet {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .fp-packet {
+    animation: none;
+    stroke-dasharray: none;
+    opacity: 0;
+  }
+
   *,
   *::before,
   *::after {

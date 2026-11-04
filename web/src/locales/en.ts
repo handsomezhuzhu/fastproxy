@@ -100,6 +100,12 @@ export const en = {
   "login.failed": "Sign-in failed, please try again",
   "login.locked": "Too many attempts, please retry in {sec}s",
   "login.lockedShort": "Retry in {sec}s",
+  "login.description": "Enter the admin password to open the console.",
+  "login.capsLock": "Caps Lock is on",
+  "login.hint.before": "The password comes from the ",
+  "login.hint.after": " environment variable. If it isn't set, the first start prints a one-time password to the service log.",
+  "login.heroTitle": "Every port leaves through its own exit.",
+  "login.heroBody": "Bind each local port and account to its own upstream proxy, with health checks and exit IPs in plain view.",
 
   "dashboard.title": "Dashboard",
   "dashboard.description": "Forwarding overview and quick start.",

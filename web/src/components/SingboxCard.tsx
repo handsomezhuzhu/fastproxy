@@ -66,10 +66,10 @@ export function SingboxCard({ titleKey = "dashboard.singbox.title" }: { titleKey
     <Card data-testid="singbox-panel" aria-labelledby="singbox-title">
       <CardHeader className="items-start gap-3">
         <div className="flex min-w-0 items-start gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border bg-muted/50 text-muted-foreground">
             <Box className="size-4" aria-hidden="true" />
           </div>
-          <div className="flex flex-col min-w-0 gap-1">
+          <div className="flex min-w-0 flex-col gap-1">
             <div className="flex flex-wrap items-center gap-2">
               <CardTitle id="singbox-title">{t(titleKey)}</CardTitle>
               {state === "ready" && status ? (
@@ -85,7 +85,7 @@ export function SingboxCard({ titleKey = "dashboard.singbox.title" }: { titleKey
         </div>
         <CardAction>
           <Button
-            variant="ghost"
+            variant="outline"
             size="icon-sm"
             onClick={load}
             disabled={refreshing}
@@ -96,46 +96,46 @@ export function SingboxCard({ titleKey = "dashboard.singbox.title" }: { titleKey
           </Button>
         </CardAction>
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+      <CardContent className="flex flex-col gap-5">
         {state === "loading" ? (
           <div className="flex flex-col gap-2">
             <Skeleton className="h-4 w-64" />
             <Skeleton className="h-16 w-full" />
           </div>
         ) : state === "unavailable" ? (
-          <div className="rounded-lg border border-dashed px-3 py-4 text-center">
+          <div className="rounded-lg border border-dashed px-3 py-6 text-center">
             <p className="text-sm font-medium">{t("dashboard.singbox.unavailable")}</p>
             <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
               {t("dashboard.singbox.unavailableDesc")}
             </p>
           </div>
         ) : state === "error" ? (
-          <div className="rounded-lg border border-dashed px-3 py-4 text-center">
+          <div className="rounded-lg border border-dashed px-3 py-6 text-center">
             <p className="text-sm font-medium">{t("dashboard.singbox.error")}</p>
             {errorMsg ? <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{errorMsg}</p> : null}
           </div>
         ) : status ? (
           <>
             <dl className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <div className="flex flex-col gap-0.5">
+              <div className="flex flex-col gap-1 rounded-lg border bg-muted/20 px-4 py-3">
                 <dt className="text-xs text-muted-foreground">{t("dashboard.singbox.upstreams")}</dt>
-                <dd className="text-sm font-medium tabular-nums">{upCount}</dd>
+                <dd className="text-xl font-semibold tracking-tight tabular-nums">{upCount}</dd>
               </div>
-              <div className="flex flex-col gap-0.5">
+              <div className="flex flex-col gap-1 rounded-lg border bg-muted/20 px-4 py-3">
                 <dt className="text-xs text-muted-foreground">{t("dashboard.singbox.reloads")}</dt>
-                <dd className="text-sm font-medium tabular-nums">{status.reload_count ?? 0}</dd>
+                <dd className="text-xl font-semibold tracking-tight tabular-nums">{status.reload_count ?? 0}</dd>
               </div>
-              <div className="flex flex-col gap-0.5">
+              <div className="flex flex-col gap-1 rounded-lg border bg-muted/20 px-4 py-3">
                 <dt className="text-xs text-muted-foreground">{t("dashboard.singbox.lastReload")}</dt>
-                <dd className="text-sm font-medium">
+                <dd className="text-base font-medium">
                   {status.last_reload_at
                     ? timeAgo(new Date(status.last_reload_at * 1000).toISOString(), lang)
                     : t("dashboard.singbox.never")}
                 </dd>
               </div>
-              <div className="flex flex-col gap-0.5">
+              <div className="flex flex-col gap-1 rounded-lg border bg-muted/20 px-4 py-3">
                 <dt className="text-xs text-muted-foreground">{t("dashboard.singbox.startedAt")}</dt>
-                <dd className="text-sm font-medium" title={dateTime(status.started_at ?? 0, lang)}>
+                <dd className="text-base font-medium" title={dateTime(status.started_at ?? 0, lang)}>
                   {status.started_at
                     ? timeAgo(new Date(status.started_at * 1000).toISOString(), lang)
                     : "—"}
@@ -150,7 +150,7 @@ export function SingboxCard({ titleKey = "dashboard.singbox.title" }: { titleKey
               </p>
             ) : null}
 
-            <div className="flex flex-col gap-1.5">
+            <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-medium text-muted-foreground">{t("dashboard.singbox.logs")}</p>
                 {logs.length > 5 ? (
@@ -167,7 +167,7 @@ export function SingboxCard({ titleKey = "dashboard.singbox.title" }: { titleKey
                 <p className="text-xs text-muted-foreground">{t("dashboard.singbox.noLogs")}</p>
               ) : (
                 <pre
-                  className="max-h-48 overflow-auto rounded-lg border bg-muted/30 p-3 font-mono text-xs whitespace-pre-wrap break-all"
+                  className="max-h-56 overflow-auto rounded-lg border bg-muted/30 p-3.5 font-mono text-xs leading-relaxed whitespace-pre-wrap break-all"
                   aria-live="polite"
                 >
                   {shownLogs.join("\n")}

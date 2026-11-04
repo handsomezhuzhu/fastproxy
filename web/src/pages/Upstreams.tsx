@@ -103,10 +103,10 @@ function HealthCell({ u, checking }: { u: Upstream; checking?: boolean }) {
   return (
     <div className="flex flex-col gap-0.5">
       <DotBadge tone="fail" title={u.last_error || t("upstreams.health.failDefault")}>
-        <AlertTriangle className="size-3" aria-hidden="true" />
+        
         {t("upstreams.health.fail")}
       </DotBadge>
-      <p className="max-w-[220px] truncate text-xs text-muted-foreground" title={u.last_error}>
+      <p className="max-w-[280px] truncate text-xs text-muted-foreground" title={u.last_error}>
         {reason} · {timeAgo(checkedAt, lang)}
       </p>
     </div>
@@ -774,7 +774,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
               <Input
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
-                className="h-9 w-56 pl-8 text-sm"
+                className="h-8 w-56 pl-8 text-sm"
                 placeholder={t("upstreams.searchPlaceholder")}
                 aria-label={t("upstreams.searchLabel")}
               />
@@ -842,7 +842,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
             />
           ) : (
             <>
-              <div className="overflow-hidden rounded-lg border">
+              <div className="overflow-hidden rounded-lg border bg-card">
                 <Table>
                 <TableHeader>
                   <TableRow>

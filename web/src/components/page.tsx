@@ -7,8 +7,8 @@ import { cn } from "@/lib/utils";
 import {
   Card,
   CardAction,
+  CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -45,11 +45,13 @@ export function PageHeader({
   actions?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-end justify-between gap-4">
+    <div className="flex flex-wrap items-start justify-between gap-4">
       <div className="flex min-w-0 flex-col gap-1">
         <h1 className="text-2xl font-semibold tracking-tight text-balance">{title}</h1>
         {description ? (
-          <p className="max-w-2xl text-sm text-muted-foreground text-pretty">{description}</p>
+          <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground text-pretty">
+            {description}
+          </p>
         ) : null}
       </div>
       {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
@@ -69,7 +71,7 @@ export function EmptyState({
   action?: React.ReactNode;
 }) {
   return (
-    <Empty className="border border-dashed">
+    <Empty className="border border-dashed py-12">
       <EmptyHeader>
         {icon ? <EmptyMedia variant="icon">{icon}</EmptyMedia> : null}
         <EmptyTitle>{title}</EmptyTitle>
@@ -93,22 +95,27 @@ export function StatCard({
   icon?: React.ReactNode;
 }) {
   return (
-    <Card className="@container/card bg-gradient-to-t from-primary/5 to-card shadow-xs dark:bg-card">
-      <CardHeader>
-        <CardDescription>{label}</CardDescription>
-        <CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">{value}</CardTitle>
+    <Card className="@container/card gap-2 py-4 [--card-spacing:--spacing(5)]">
+      <CardHeader className="gap-1.5">
+        <CardDescription className="text-xs font-medium">{label}</CardDescription>
+        <CardTitle className="text-2xl font-semibold tracking-tight tabular-nums @[240px]/card:text-3xl">
+          {value}
+        </CardTitle>
         {icon ? (
           <CardAction>
-            <Badge variant="outline" aria-hidden="true">
+            <span
+              className="flex size-8 items-center justify-center rounded-md bg-muted/60 text-muted-foreground [&>svg]:size-4"
+              aria-hidden="true"
+            >
               {icon}
-            </Badge>
+            </span>
           </CardAction>
         ) : null}
       </CardHeader>
       {hint ? (
-        <CardFooter className="text-sm text-muted-foreground">
-          <span className="truncate">{hint}</span>
-        </CardFooter>
+        <CardContent className="pt-0 text-xs text-muted-foreground">
+          <p className="truncate">{hint}</p>
+        </CardContent>
       ) : null}
     </Card>
   );
@@ -126,8 +133,8 @@ const TONE_VARIANT = {
 } as const;
 
 const TONE_DOT = {
-  ok: "bg-primary",
-  warn: "bg-muted-foreground",
+  ok: "bg-emerald-500",
+  warn: "bg-amber-500",
   fail: "bg-destructive",
   muted: "bg-muted-foreground/50",
 } as const;
@@ -167,7 +174,7 @@ export function Toolbar({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="flex min-h-9 flex-wrap items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-2 text-sm">
         <span className="font-medium tabular-nums">{count}</span>
         {detail ? (
@@ -380,7 +387,7 @@ export function Field({
 
 /** Wraps a data table in the bordered container used by shadcn data-table examples. */
 export function TableFrame({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("overflow-hidden rounded-lg border", className)}>{children}</div>;
+  return <div className={cn("overflow-hidden rounded-lg border bg-card", className)}>{children}</div>;
 }
 
 export type SelectOption = { value: string; label: string };
@@ -393,6 +400,7 @@ export function FormSelect({
   items,
   className,
   disabled,
+  size,
   "aria-label": ariaLabel,
 }: {
   id?: string;
@@ -401,6 +409,7 @@ export function FormSelect({
   items: SelectOption[];
   className?: string;
   disabled?: boolean;
+  size?: "sm" | "default";
   "aria-label"?: string;
 }) {
   return (
@@ -410,7 +419,7 @@ export function FormSelect({
       disabled={disabled}
       onValueChange={(v) => onValueChange((v as string | null) ?? "")}
     >
-      <SelectTrigger id={id} className={cn("w-full", className)} aria-label={ariaLabel}>
+      <SelectTrigger id={id} size={size} className={cn("w-full", className)} aria-label={ariaLabel}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>

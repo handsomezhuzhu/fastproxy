@@ -191,13 +191,13 @@ function AppShell() {
                 <BreadcrumbItem className="hidden sm:inline-flex">{t("shell.console")}</BreadcrumbItem>
                 <BreadcrumbSeparator className="hidden sm:list-item" />
                 <BreadcrumbItem>
-                  <BreadcrumbPage className="truncate">{title}</BreadcrumbPage>
+                  <BreadcrumbPage className="truncate font-medium">{title}</BreadcrumbPage>
                 </BreadcrumbItem>
               </BreadcrumbList>
             </Breadcrumb>
 
             <div className="ml-auto flex items-center gap-2">
-              <Badge variant="outline" className="hidden tabular-nums text-muted-foreground sm:inline-flex">
+              <Badge variant="outline" className="hidden h-7 px-2.5 tabular-nums text-muted-foreground sm:inline-flex">
                 <Activity aria-hidden="true" />
                 {t("shell.activeConns", { n: activeConns })}
               </Badge>
@@ -211,7 +211,7 @@ function AppShell() {
             </div>
           </header>
 
-          <div className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col gap-4 p-4 md:gap-6 lg:p-6">
+          <div className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col gap-6 p-4 md:p-6 lg:px-8 lg:py-6">
             <ErrorBoundary key={page}>
               {page === "dashboard" && <DashboardPage data={data} onCopy={openCopy} onNavigate={navigate} />}
               {page === "ports" && <PortsPage data={data} reload={reload} onCopy={openCopy} />}

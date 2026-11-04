@@ -105,9 +105,14 @@ export function LogsPage({ data }: { data: Data }) {
     <div className="flex flex-col gap-5">
       <PageHeader title={t("logs.title")} description={t("logs.description")} />
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <Toolbar
+        count={t("logs.count", { n: total })}
+        detail={auto ? t("logs.autoDetail") : undefined}
+      >
         <FormSelect
           id="log-level"
+          size="sm"
+          className="w-32"
           aria-label={t("logs.levelLabel")}
           value={level}
           onValueChange={setLevel}
@@ -120,6 +125,8 @@ export function LogsPage({ data }: { data: Data }) {
         />
         <FormSelect
           id="log-port"
+          size="sm"
+          className="w-36"
           aria-label={t("logs.filterPort")}
           value={port}
           onValueChange={setPort}
@@ -130,6 +137,8 @@ export function LogsPage({ data }: { data: Data }) {
         />
         <FormSelect
           id="log-account"
+          size="sm"
+          className="w-36"
           aria-label={t("logs.filterAccount")}
           value={account}
           onValueChange={setAccount}
@@ -138,153 +147,121 @@ export function LogsPage({ data }: { data: Data }) {
             ...data.accounts.map((a) => ({ value: a.username, label: a.username })),
           ]}
         />
-        <FormSelect
-          id="log-limit"
-          aria-label={t("logs.pageSize")}
-          value={String(pageSize)}
-          onValueChange={(v) => {
-            setPageSize(Number(v));
-            setPage(1);
-          }}
-          items={[
-            { value: "20", label: t("logs.perPage", { n: 20 }) },
-            { value: "50", label: t("logs.perPage", { n: 50 }) },
-            { value: "100", label: t("logs.perPage", { n: 100 }) },
-          ]}
-        />
-      </div>
+        <label className="flex h-8 items-center gap-2 rounded-lg border bg-background px-2.5 text-xs text-muted-foreground">
+          <Switch checked={auto} onCheckedChange={setAuto} aria-label={t("logs.autoLabel")} size="sm" />
+          {t("logs.auto")}
+        </label>
+        <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+          {loading ? (
+            <Spinner data-icon="inline-start" />
+          ) : (
+            <RefreshCw className="size-4" aria-hidden="true" />
+          )}
+          {t("common.refresh")}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setClearOpen(true)}
+          disabled={total === 0}
+        >
+          <Trash2 className="size-4" aria-hidden="true" />
+          {t("logs.clear")}
+        </Button>
+      </Toolbar>
 
       {entries === null ? (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center justify-between gap-3">
-            <Skeleton className="h-5 w-32" />
-            <div className="flex gap-2">
-              <Skeleton className="h-7 w-20" />
-              <Skeleton className="h-7 w-20" />
-            </div>
-          </div>
+        <div className="flex flex-col gap-2">
           {Array.from({ length: 8 }).map((_, i) => (
-            <Skeleton key={i} className="h-9 w-full" />
+            <Skeleton key={i} className="h-10 w-full" />
           ))}
         </div>
+      ) : entries.length === 0 ? (
+        <EmptyState
+          icon={<ScrollText className="size-5" aria-hidden="true" />}
+          title={t("logs.empty.title")}
+          description={t("logs.empty.desc")}
+        />
       ) : (
         <>
-          <Toolbar
-            count={t("logs.count", { n: total })}
-            detail={auto ? t("logs.autoDetail") : undefined}
-          >
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Switch checked={auto} onCheckedChange={setAuto} aria-label={t("logs.autoLabel")} size="sm" />
-              {t("logs.auto")}
-            </label>
-            <Button variant="outline" size="sm" onClick={load} disabled={loading}>
-              {loading ? (
-                <Spinner data-icon="inline-start" />
-              ) : (
-                <RefreshCw className="size-4" aria-hidden="true" />
-              )}
-              {t("common.refresh")}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setClearOpen(true)}
-              disabled={total === 0}
-            >
-              <Trash2 className="size-4" aria-hidden="true" />
-              {t("logs.clear")}
-            </Button>
-          </Toolbar>
-
-          {entries.length === 0 ? (
-            <EmptyState
-              icon={<ScrollText className="size-5" aria-hidden="true" />}
-              title={t("logs.empty.title")}
-              description={t("logs.empty.desc")}
-            />
-          ) : (
-            <>
-              <div className="overflow-hidden rounded-lg border">
-                <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t("logs.col.time")}</TableHead>
-                    <TableHead>{t("logs.col.level")}</TableHead>
-                    <TableHead>{t("common.port")}</TableHead>
-                    <TableHead>{t("common.account")}</TableHead>
-                    <TableHead>{t("logs.col.client")}</TableHead>
-                    <TableHead>{t("logs.col.proto")}</TableHead>
-                    <TableHead>{t("logs.col.target")}</TableHead>
-                    <TableHead>{t("logs.col.status")}</TableHead>
-                    <TableHead className="text-right">{t("logs.col.traffic")}</TableHead>
-                    <TableHead className="text-right">{t("logs.col.duration")}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {entries.map((e, i) => {
-                    const st = statusVariant(e.status);
-                    return (
-                      <TableRow key={`${e.time}-${i}`} className={e.level === "warn" || e.level === "error" ? "bg-muted/40" : ""}>
-                        <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums text-muted-foreground">
-                          {clock(e.time, lang)}
-                        </TableCell>
-                        <TableCell>
-                          <Badge
-                            variant={e.level === "error" ? "secondary" : "outline"}
-                            className={
-                              e.level === "error"
-                                ? "border border-foreground/40 font-medium text-foreground"
-                                : e.level === "warn"
-                                  ? "bg-muted text-foreground"
-                                  : ""
-                            }
-                          >
-                            {e.level}
+          <div className="overflow-hidden rounded-lg border bg-card">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-28">{t("logs.col.time")}</TableHead>
+                  <TableHead className="w-20">{t("logs.col.level")}</TableHead>
+                  <TableHead className="w-24">{t("common.port")}</TableHead>
+                  <TableHead className="w-32">{t("common.account")}</TableHead>
+                  <TableHead className="w-36">{t("logs.col.client")}</TableHead>
+                  <TableHead className="w-20">{t("logs.col.proto")}</TableHead>
+                  <TableHead>{t("logs.col.target")}</TableHead>
+                  <TableHead className="w-28">{t("logs.col.status")}</TableHead>
+                  <TableHead className="w-32 text-right">{t("logs.col.traffic")}</TableHead>
+                  <TableHead className="w-24 text-right">{t("logs.col.duration")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {entries.map((e, i) => {
+                  const st = statusVariant(e.status);
+                  return (
+                    <TableRow
+                      key={`${e.time}-${i}`}
+                      className={e.level === "warn" || e.level === "error" ? "bg-muted/30" : ""}
+                    >
+                      <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums text-muted-foreground">
+                        {clock(e.time, lang)}
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={e.level === "error" ? "secondary" : "outline"}
+                          className={
+                            e.level === "error"
+                              ? "border border-foreground/40 font-medium text-foreground"
+                              : e.level === "warn"
+                                ? "bg-muted text-foreground"
+                                : "text-muted-foreground"
+                          }
+                        >
+                          {e.level}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-xs tabular-nums">{e.port || "–"}</TableCell>
+                      <TableCell className="text-xs">{e.account || "–"}</TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">{e.client || "–"}</TableCell>
+                      <TableCell className="text-xs">{e.proto || "–"}</TableCell>
+                      <TableCell className="max-w-[260px] truncate text-xs" title={e.target || e.msg}>
+                        {e.target ? <span className="font-mono">{e.target}</span> : e.msg || "–"}
+                      </TableCell>
+                      <TableCell>
+                        {e.status ? (
+                          <Badge variant="secondary" className={st.className}>
+                            {st.label}
                           </Badge>
-                        </TableCell>
-                        <TableCell className="text-xs tabular-nums">{e.port || "–"}</TableCell>
-                        <TableCell className="text-xs">{e.account || "–"}</TableCell>
-                        <TableCell className="font-mono text-xs text-muted-foreground">{e.client || "–"}</TableCell>
-                        <TableCell className="text-xs">{e.proto || "–"}</TableCell>
-                        <TableCell className="max-w-[220px] truncate text-xs" title={e.target || e.msg}>
-                          {e.target ? (
-                            <span className="font-mono">{e.target}</span>
-                          ) : (
-                            e.msg || "–"
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {e.status ? (
-                            <Badge variant="secondary" className={st.className}>
-                              {st.label}
-                            </Badge>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">–</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
-                          ↑{bytes(e.bytes_out)} ↓{bytes(e.bytes_in)}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground">
-                          {e.duration_ms} ms
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-                </Table>
-              </div>
-              <PaginationControls
-                page={page}
-                pageSize={pageSize}
-                total={total}
-                onChange={(p, s) => {
-                  setPage(p);
-                  setPageSize(s);
-                }}
-              />
-            </>
-          )}
+                        ) : (
+                          <span className="text-xs text-muted-foreground">–</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
+                        ↑{bytes(e.bytes_out)} ↓{bytes(e.bytes_in)}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground">
+                        {e.duration_ms} ms
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+          <PaginationControls
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            onChange={(p, s) => {
+              setPage(p);
+              setPageSize(s);
+            }}
+          />
         </>
       )}
 

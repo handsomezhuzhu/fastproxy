@@ -142,7 +142,7 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
         </main>
       </div>
 
-      <aside className="relative hidden overflow-hidden border-l bg-muted lg:flex lg:flex-col lg:justify-between lg:p-10">
+      <div className="relative hidden overflow-hidden border-l bg-muted lg:flex lg:flex-col lg:justify-between lg:p-10">
         <div
           className="pointer-events-none absolute inset-0 opacity-70 [background-image:radial-gradient(var(--border)_1px,transparent_1px)] [background-size:18px_18px] [mask-image:radial-gradient(ellipse_at_center,black_40%,transparent_80%)]"
           aria-hidden="true"
@@ -154,7 +154,7 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
           <p className="text-xl font-semibold tracking-tight text-balance">{t("login.heroTitle")}</p>
           <p className="text-sm leading-relaxed text-balance text-muted-foreground">{t("login.heroBody")}</p>
         </div>
-      </aside>
+      </div>
     </div>
   );
 }

@@ -81,7 +81,7 @@ export function AppSidebar({
 
   return (
     <Sidebar collapsible="icon" variant="inset" {...props}>
-      <SidebarHeader>
+      <SidebarHeader className="pb-1">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" onClick={() => go("dashboard")} tooltip="FastProxy">
@@ -89,8 +89,8 @@ export function AppSidebar({
                 <Zap className="size-4" aria-hidden="true" />
               </div>
               <div className="grid flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-semibold">FastProxy</span>
-                <span className="truncate text-xs text-muted-foreground" translate="no">
+                <span className="truncate font-semibold tracking-tight">FastProxy</span>
+                <span className="truncate font-mono text-xs text-muted-foreground" translate="no">
                   {versionLabel}
                 </span>
               </div>
@@ -100,12 +100,14 @@ export function AppSidebar({
       </SidebarHeader>
 
       <SidebarContent>
-        <nav aria-label={t("shell.mainNav")} className="flex flex-col">
+        <nav aria-label={t("shell.mainNav")} className="flex flex-col gap-0.5">
           {NAV_GROUPS.map((group) => (
-            <SidebarGroup key={group.labelKey}>
-              <SidebarGroupLabel>{t(group.labelKey)}</SidebarGroupLabel>
+            <SidebarGroup key={group.labelKey} className="py-1.5">
+              <SidebarGroupLabel className="text-[13px] font-medium text-muted-foreground">
+                {t(group.labelKey)}
+              </SidebarGroupLabel>
               <SidebarGroupContent>
-                <SidebarMenu>
+                <SidebarMenu className="gap-0.5">
                   {group.items.map((item) => {
                     const label = t(item.labelKey);
                     const active = page === item.id;
@@ -116,8 +118,9 @@ export function AppSidebar({
                           tooltip={label}
                           aria-current={active ? "page" : undefined}
                           onClick={() => go(item.id)}
+                          className="h-9 gap-2.5 px-2.5 text-[15px] data-[active=true]:font-medium"
                         >
-                          <item.icon />
+                          <item.icon className="size-4" />
                           <span>{label}</span>
                         </SidebarMenuButton>
                       </SidebarMenuItem>
@@ -130,11 +133,15 @@ export function AppSidebar({
         </nav>
       </SidebarContent>
 
-      <SidebarFooter>
+      <SidebarFooter className="border-t border-sidebar-border/60 pt-2">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton onClick={onLogout} tooltip={t("shell.logout")}>
-              <LogOut />
+            <SidebarMenuButton
+              onClick={onLogout}
+              tooltip={t("shell.logout")}
+              className="h-9 gap-2.5 px-2.5 text-[15px] text-muted-foreground hover:text-foreground"
+            >
+              <LogOut className="size-4" />
               <span>{t("shell.logout")}</span>
             </SidebarMenuButton>
           </SidebarMenuItem>

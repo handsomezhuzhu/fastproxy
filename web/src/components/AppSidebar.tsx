@@ -9,7 +9,6 @@ import {
   ScrollText,
   Settings as SettingsIcon,
   Users,
-  Zap,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -84,12 +83,17 @@ export function AppSidebar({
       <SidebarHeader className="pb-1">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" onClick={() => go("dashboard")} tooltip="FastProxy">
-              <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-                <Zap className="size-4" aria-hidden="true" />
-              </div>
-              <div className="grid flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-semibold tracking-tight">FastProxy</span>
+            <SidebarMenuButton
+              size="lg"
+              onClick={() => go("dashboard")}
+              tooltip={`FastProxy ${versionLabel}`}
+              className="px-2.5 group-data-[collapsible=icon]:justify-center"
+            >
+              <span className="hidden font-mono text-xs font-semibold tracking-tight group-data-[collapsible=icon]:inline">
+                FP
+              </span>
+              <div className="grid flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
+                <span className="truncate text-base font-semibold tracking-tight">FastProxy</span>
                 <span className="truncate font-mono text-xs text-muted-foreground" translate="no">
                   {versionLabel}
                 </span>

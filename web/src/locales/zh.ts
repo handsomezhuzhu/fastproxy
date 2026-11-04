@@ -108,8 +108,10 @@ export const zh: Record<string, string> = {
   "login.lockedShort": "{sec} 秒后重试",
   "login.description": "输入管理密码以进入控制台。",
   "login.capsLock": "大写锁定已开启",
-  "login.heroTitle": "每个端口，走自己的出口。",
-  "login.heroBody": "为每个本地端口和账户绑定独立的上游代理，健康状态和出口 IP 随时可查。",
+  "login.diagram.inbound": "端口 · 账户",
+  "login.diagram.outbound": "绑定上游",
+  "login.heroTitle": "端口接入，按账户分流上游。",
+  "login.heroBody": "每个端口自带默认账号，也可在同一端口下创建多个账号并分别绑定不同上游代理或直连，向谁认证就走谁的出口。",
 
   // ---- 仪表盘 ----
   "dashboard.title": "仪表盘",

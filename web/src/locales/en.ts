@@ -102,8 +102,10 @@ export const en = {
   "login.lockedShort": "Retry in {sec}s",
   "login.description": "Enter the admin password to open the console.",
   "login.capsLock": "Caps Lock is on",
-  "login.heroTitle": "Every port leaves through its own exit.",
-  "login.heroBody": "Bind each local port and account to its own upstream proxy, with health checks and exit IPs in plain view.",
+  "login.diagram.inbound": "Port · Account",
+  "login.diagram.outbound": "Upstream",
+  "login.heroTitle": "Ports listen; accounts choose the exit.",
+  "login.heroBody": "Each port comes with a default account and can host multiple accounts bound to different upstreams or direct routing—traffic follows the account you authenticate with.",
 
   "dashboard.title": "Dashboard",
   "dashboard.description": "Forwarding overview and quick start.",

@@ -1,5 +1,4 @@
 import * as React from "react";
-import { Zap } from "lucide-react";
 import { api } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -69,17 +68,9 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
   return (
     <div className="grid min-h-svh lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
       <div className="flex flex-col gap-4 p-6 md:p-10">
-        <header className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 font-medium" aria-hidden="true">
-            <div className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-              <Zap className="size-4" />
-            </div>
-            FastProxy
-          </div>
-          <div className="flex items-center gap-2">
-            <ThemeSwitch />
-            <AuthLanguageToggle />
-          </div>
+        <header className="flex items-center justify-end gap-2">
+          <ThemeSwitch />
+          <AuthLanguageToggle />
         </header>
 
         <main className="flex flex-1 items-center justify-center py-10">

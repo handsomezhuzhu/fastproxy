@@ -9,7 +9,6 @@ import {
   RefreshCw,
   Search,
   Trash2,
-  Zap,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Spinner } from "@/components/ui/spinner";
@@ -936,7 +935,7 @@ export function UpstreamsPage({ data, reload }: { data: Data; reload: () => Prom
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-40">
                               <DropdownMenuItem onClick={() => checkSingleRow(u)} disabled={checking[u.id]}>
-                                <Zap className="size-4" aria-hidden="true" /> {t("upstreams.menu.check")}
+                                <RefreshCw className="size-4" aria-hidden="true" /> {t("upstreams.menu.check")}
                               </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => openEdit(u)}>
                                 <Pencil className="size-4" aria-hidden="true" /> {t("common.edit")}

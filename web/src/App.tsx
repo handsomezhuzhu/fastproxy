@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Activity, Gauge, LogOut, RefreshCw, Zap } from "lucide-react";
+import { Activity, Gauge, LogOut, RefreshCw } from "lucide-react";
 import { api } from "@/api";
 import type { Data } from "@/api";
 import { Badge } from "@/components/ui/badge";
@@ -243,10 +243,10 @@ function AppShell() {
 
 function BootScreen({ text }: { text: string }) {
   return (
-    <div className="flex min-h-svh flex-col items-center justify-center gap-4 bg-background">
-      <div className="flex size-10 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-        <Zap className="size-5" aria-hidden="true" />
-      </div>
+    <div className="flex min-h-svh flex-col items-center justify-center gap-3 bg-background">
+      <span className="text-lg font-semibold tracking-tight" translate="no">
+        FastProxy
+      </span>
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Spinner />
         {text}

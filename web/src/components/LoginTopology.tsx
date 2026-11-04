@@ -1,30 +1,58 @@
+import { useI18n } from "@/i18n";
+
 /**
- * Decorative routing diagram for the login page: local ports on the left pass
- * through FastProxy and leave via the upstream each one is bound to.
- * Pure SVG on theme tokens, so it follows light/dark; the packet animation is
- * CSS (`.fp-packet` in index.css) and stops under prefers-reduced-motion.
+ * Decorative routing diagram for the login page:
+ * Ports are entry listeners; accounts on a port (default or custom) decide
+ * which upstream proxy the traffic exits through.
  */
-const ROWS = [70, 140, 210, 280];
-const PORTS = [":10001", ":10002", ":10003", ":10004"];
-const EXITS = ["HK", "JP", "SG", "US"];
-// port index -> exit index; crossings show that binding is per port.
+const ROWS = [82, 152, 222, 292];
+const INBOUNDS: { port: string; account: string }[] = [
+  { port: ":10001", account: "default" },
+  { port: ":10001", account: "alice" },
+  { port: ":10002", account: "bob" },
+  { port: ":10003", account: "dev" },
+];
+const EXITS = ["HK · VLESS", "JP · SOCKS5", "SG · SS", "US · HTTP"];
+// inbound index -> exit index; crossings show per-account binding (even on the same port :10001).
 const ROUTES: [number, number][] = [
   [0, 1],
   [1, 0],
   [2, 3],
   [3, 2],
 ];
-const HUB = { x: 240, y: 175 };
+const HUB = { x: 260, y: 187 };
 
 function routePath(from: number, to: number) {
   const y1 = ROWS[from];
   const y2 = ROWS[to];
-  return `M104 ${y1} C150 ${y1} 168 ${HUB.y} 204 ${HUB.y} L276 ${HUB.y} C312 ${HUB.y} 330 ${y2} 376 ${y2}`;
+  return `M152 ${y1} C186 ${y1} 198 ${HUB.y} 224 ${HUB.y} L296 ${HUB.y} C322 ${HUB.y} 334 ${y2} 368 ${y2}`;
 }
 
 export function LoginTopology({ className }: { className?: string }) {
+  const { t } = useI18n();
   return (
-    <svg viewBox="0 0 480 350" className={className} aria-hidden="true" focusable="false">
+    <svg viewBox="0 0 520 340" className={className} aria-hidden="true" focusable="false">
+      <text
+        x={84}
+        y={42}
+        textAnchor="middle"
+        className="fill-muted-foreground font-sans"
+        fontSize={11.5}
+        fontWeight={500}
+      >
+        {t("login.diagram.inbound")}
+      </text>
+      <text
+        x={436}
+        y={42}
+        textAnchor="middle"
+        className="fill-muted-foreground font-sans"
+        fontSize={11.5}
+        fontWeight={500}
+      >
+        {t("login.diagram.outbound")}
+      </text>
+
       <g fill="none" strokeWidth={1.25} strokeLinecap="round">
         {ROUTES.map(([a, b]) => (
           <path key={`l${a}`} d={routePath(a, b)} className="stroke-foreground/20" />
@@ -41,24 +69,28 @@ export function LoginTopology({ className }: { className?: string }) {
         ))}
       </g>
 
-      {PORTS.map((label, i) => (
-        <g key={label}>
+      {INBOUNDS.map(({ port, account }, i) => (
+        <g key={`${port}-${account}`}>
           <rect
-            x={20}
-            y={ROWS[i] - 14}
-            width={84}
-            height={28}
-            rx={7}
+            x={16}
+            y={ROWS[i] - 16}
+            width={136}
+            height={32}
+            rx={8}
             className="fill-background stroke-border"
           />
           <text
-            x={62}
+            x={84}
             y={ROWS[i] + 4}
             textAnchor="middle"
-            className="fill-foreground font-mono"
+            className="font-mono"
             fontSize={11.5}
           >
-            {label}
+            <tspan className="fill-muted-foreground">{port}</tspan>
+            <tspan className="fill-muted-foreground/60"> · </tspan>
+            <tspan className="fill-foreground" fontWeight={500}>
+              {account}
+            </tspan>
           </text>
         </g>
       ))}
@@ -84,15 +116,15 @@ export function LoginTopology({ className }: { className?: string }) {
       {EXITS.map((label, i) => (
         <g key={label}>
           <rect
-            x={376}
-            y={ROWS[i] - 14}
-            width={84}
-            height={28}
-            rx={7}
+            x={368}
+            y={ROWS[i] - 16}
+            width={136}
+            height={32}
+            rx={8}
             className="fill-background stroke-border"
           />
-          <circle cx={393} cy={ROWS[i]} r={3.5} className="fill-emerald-500" />
-          <text x={406} y={ROWS[i] + 4} className="fill-foreground font-mono" fontSize={11.5}>
+          <circle cx={386} cy={ROWS[i]} r={3.5} className="fill-emerald-500" />
+          <text x={398} y={ROWS[i] + 4} className="fill-foreground font-mono" fontSize={11.5}>
             {label}
           </text>
         </g>

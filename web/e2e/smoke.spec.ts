@@ -771,3 +771,76 @@ test("端口线路：越界端口在前端被拦截（PORT_RANGE）", async ({ p
   await expect(form).toBeHidden();
   await expectNoCrash(page, failures);
 });
+
+test("账户与复制向导：新建账户并验证复制接入格式切换", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await login(page);
+  const accPort = 10022;
+
+  // 1) 先新建端口 10022
+  await nav(page, "端口线路").click();
+  await page.getByRole("button", { name: "新增线路" }).first().click();
+  const portForm = page.getByRole("dialog", { name: "新增端口线路" });
+  await portForm.getByLabel("监听端口").fill(String(accPort));
+  await portForm.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(portForm).toBeHidden();
+  const created = page.getByRole("dialog", { name: "默认账号已生成" });
+  if (await created.isVisible().catch(() => false)) {
+    await created.getByRole("button", { name: "知道了" }).click();
+    await expect(created).toBeHidden();
+  }
+
+  // 2) 进入账户管理，新建自定义账户 e2e-acc
+  await nav(page, "账户管理").click();
+  await expect(page.getByRole("heading", { level: 1, name: "账户管理" })).toBeVisible();
+  await page.getByRole("button", { name: "新建账户" }).first().click();
+  const accDialog = page.getByRole("dialog", { name: "新建账户" });
+  await expect(accDialog).toBeVisible();
+  await accDialog.locator("#acc-username").fill("e2e-acc");
+  await accDialog.locator("#acc-password").fill("e2e-pass");
+  await accDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(accDialog).toBeHidden();
+  await expect(page.locator("tbody tr").filter({ hasText: "e2e-acc" })).toHaveCount(1);
+
+  // 3) 打开复制接入向导并切换格式验证预览
+  await page.getByRole("button", { name: "账户 e2e-acc 的操作菜单" }).click();
+  await page.getByRole("menuitem", { name: "复制接入" }).click();
+  const copyDialog = page.getByRole("dialog", { name: "复制接入信息" });
+  await expect(copyDialog).toBeVisible();
+  const preview = copyDialog.locator("#copy-preview");
+  await expect(preview).toHaveValue(/http:\/\/e2e-acc:e2e-pass@/);
+  await copyDialog.getByRole("button", { name: /SOCKS5/ }).first().click();
+  await expect(preview).toHaveValue(/socks5h:\/\/e2e-acc:e2e-pass@/);
+  await copyDialog.getByRole("button", { name: "关闭" }).click();
+  await expect(copyDialog).toBeHidden();
+
+  // 4) 删除自定义账户 e2e-acc，再清理端口 10022
+  await page.getByRole("button", { name: "账户 e2e-acc 的操作菜单" }).click();
+  await page.getByRole("menuitem", { name: "删除" }).click();
+  const delAcc = page.getByRole("alertdialog");
+  await expect(delAcc).toBeVisible();
+  await delAcc.getByRole("button", { name: "删除" }).click();
+  await expect(delAcc).toBeHidden();
+  await expect(page.locator("tbody tr").filter({ hasText: "e2e-acc" })).toHaveCount(0);
+
+  await nav(page, "端口线路").click();
+  await deletePortRow(page, accPort);
+  await expectNoCrash(page, failures);
+});
+
+test("系统设置与连接日志：保存配置与日志筛选", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await login(page);
+
+  await nav(page, "系统设置").click();
+  await expect(page.getByRole("heading", { level: 1, name: "系统设置" })).toBeVisible();
+  await page.getByRole("button", { name: "保存设置" }).click();
+  await expect(page.locator("[data-sonner-toast]")).toContainText(/已保存/);
+  await expectNoCrash(page, failures);
+
+  await nav(page, "连接日志").click();
+  await expect(page.getByRole("heading", { level: 1, name: "连接日志" })).toBeVisible();
+  await page.locator("#log-level").click();
+  await page.getByRole("option", { name: "仅警告与错误" }).click();
+  await expectNoCrash(page, failures);
+});

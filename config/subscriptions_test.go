@@ -176,3 +176,38 @@ func TestReplaceSubscriptionNodesDiff(t *testing.T) {
 		t.Fatal("manual upstream lost its id")
 	}
 }
+
+func TestDeleteSubscriptionNodeCleansMappingAndRecoversOnRefresh(t *testing.T) {
+	s := tempStore(t, 7788)
+	sub, err := s.UpsertSubscription("", &Subscription{Name: "s", URL: "https://example.com/s", Enabled: true, IntervalSec: 600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := []*Upstream{
+		{Name: "a", Type: UpstreamHTTP, Host: "1.1.1.1:8080", Username: "u", Password: "p"},
+		{Name: "b", Type: UpstreamSocks5, Host: "2.2.2.2:1080"},
+	}
+	if _, err := s.ReplaceSubscriptionNodes(sub.ID, nodes); err != nil {
+		t.Fatal(err)
+	}
+	ups := s.Upstreams()
+	if len(ups) != 2 {
+		t.Fatalf("expected 2 upstreams, got %d", len(ups))
+	}
+	if err := s.DeleteUpstream(ups[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.ListSubscriptions()
+	if err != nil || len(list) != 1 || list[0].NodeCount != 1 {
+		t.Fatalf("expected node_count=1 after deleting one node, got %+v err=%v", list, err)
+	}
+	// Refreshing with the same 2 nodes must re-create the deleted one without error.
+	res, err := s.ReplaceSubscriptionNodes(sub.ID, nodes)
+	if err != nil || len(res.Problems) != 0 || res.Added != 1 || res.Updated != 1 {
+		t.Fatalf("refresh after manual delete should recover cleanly: %+v err=%v", res, err)
+	}
+	list, _ = s.ListSubscriptions()
+	if list[0].NodeCount != 2 {
+		t.Fatalf("expected node_count=2 after recovery refresh, got %d", list[0].NodeCount)
+	}
+}

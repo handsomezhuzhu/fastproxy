@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -274,5 +275,197 @@ func TestPortCreationHonoursRange(t *testing.T) {
 	rec = s.do(t, http.MethodPost, "/api/ports", `{"port":10051}`)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "PORT_RANGE") {
 		t.Fatalf("out of range: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestBulkEndpointsContract verifies /api/upstreams/bulk, /api/accounts/bulk,
+// and /api/ports/bulk expose both top-level and saved fields and enforce
+// reference/default guards.
+func TestBulkEndpointsContract(t *testing.T) {
+	s := testServer(t)
+
+	// 1. Create 2 upstreams and 1 port (which auto-creates a default account).
+	u1Rec := s.do(t, http.MethodPost, "/api/upstreams", `{"name":"U1","type":"http","host":"1.1.1.1:8080"}`)
+	u2Rec := s.do(t, http.MethodPost, "/api/upstreams", `{"name":"U2","type":"http","host":"2.2.2.2:8080"}`)
+	var u1, u2 struct {
+		Saved struct {
+			ID string `json:"id"`
+		} `json:"saved"`
+	}
+	_ = json.Unmarshal(u1Rec.Body.Bytes(), &u1)
+	_ = json.Unmarshal(u2Rec.Body.Bytes(), &u2)
+
+	pRec := s.do(t, http.MethodPost, "/api/ports", `{"port":19101,"remark":"p1"}`)
+	var pCreated struct {
+		Saved struct {
+			Port           config.Port    `json:"port"`
+			DefaultAccount config.Account `json:"default_account"`
+		} `json:"saved"`
+	}
+	if err := json.Unmarshal(pRec.Body.Bytes(), &pCreated); err != nil {
+		t.Fatal(err)
+	}
+	portID := pCreated.Saved.Port.ID
+	defAccID := pCreated.Saved.DefaultAccount.ID
+
+	// 2. Create a custom account on portID bound to U1.
+	aRec := s.do(t, http.MethodPost, "/api/accounts",
+		`{"username":"custom1","password":"pw1","port_id":"`+portID+`","upstream_id":"`+u1.Saved.ID+`","enabled":true}`)
+	if aRec.Code != http.StatusOK {
+		t.Fatalf("create account: %d %s", aRec.Code, aRec.Body.String())
+	}
+	var aCreated struct {
+		Saved config.Account `json:"saved"`
+	}
+	_ = json.Unmarshal(aRec.Body.Bytes(), &aCreated)
+	customAccID := aCreated.Saved.ID
+
+	// 3. Bulk delete upstreams [U1, U2]: U1 is referenced by custom1 so it must
+	// be skipped while U2 is deleted. Both top-level and saved fields must match.
+	bUp := s.do(t, http.MethodPost, "/api/upstreams/bulk",
+		`{"ids":["`+u1.Saved.ID+`","`+u2.Saved.ID+`"],"action":"delete"}`)
+	if bUp.Code != http.StatusOK {
+		t.Fatalf("bulk upstreams: %d %s", bUp.Code, bUp.Body.String())
+	}
+	var upBulkResp struct {
+		Deleted int                  `json:"deleted"`
+		Skipped []config.BulkOpError `json:"skipped"`
+		Saved   struct {
+			Deleted int                  `json:"deleted"`
+			Skipped []config.BulkOpError `json:"skipped"`
+		} `json:"saved"`
+	}
+	if err := json.Unmarshal(bUp.Body.Bytes(), &upBulkResp); err != nil {
+		t.Fatal(err)
+	}
+	if upBulkResp.Deleted != 1 || upBulkResp.Saved.Deleted != 1 ||
+		len(upBulkResp.Skipped) != 1 || upBulkResp.Skipped[0].ID != u1.Saved.ID {
+		t.Fatalf("unexpected bulk upstream response: %+v", upBulkResp)
+	}
+
+	// 4. Bulk delete accounts [defAccID, customAccID]: default account must fail,
+	// custom account must be deleted. Wait: first test bulk port delete while custom1 is still bound!
+	bPortFail := s.do(t, http.MethodPost, "/api/ports/bulk",
+		`{"ids":["`+portID+`"],"action":"delete"}`)
+	if bPortFail.Code != http.StatusOK {
+		t.Fatalf("bulk ports: %d %s", bPortFail.Code, bPortFail.Body.String())
+	}
+	var portBulkFail struct {
+		Updated int                  `json:"updated"`
+		Errors  []config.BulkOpError `json:"errors"`
+	}
+	_ = json.Unmarshal(bPortFail.Body.Bytes(), &portBulkFail)
+	if portBulkFail.Updated != 0 || len(portBulkFail.Errors) != 1 {
+		t.Fatalf("port with bound custom account must fail bulk delete: %+v", portBulkFail)
+	}
+
+	// 5. Now bulk delete [defAccID, customAccID]: customAccID is deleted (updated=1),
+	// defAccID is rejected in errors.
+	bAcc := s.do(t, http.MethodPost, "/api/accounts/bulk",
+		`{"ids":["`+defAccID+`","`+customAccID+`"],"action":"delete"}`)
+	if bAcc.Code != http.StatusOK {
+		t.Fatalf("bulk accounts: %d %s", bAcc.Code, bAcc.Body.String())
+	}
+	var accBulkResp struct {
+		Updated int                  `json:"updated"`
+		Errors  []config.BulkOpError `json:"errors"`
+	}
+	_ = json.Unmarshal(bAcc.Body.Bytes(), &accBulkResp)
+	if accBulkResp.Updated != 1 || len(accBulkResp.Errors) != 1 || accBulkResp.Errors[0].ID != defAccID {
+		t.Fatalf("unexpected bulk accounts response: %+v", accBulkResp)
+	}
+
+	// 6. Now bulk delete portID succeeds (only default account remains, which cascades).
+	bPortOK := s.do(t, http.MethodPost, "/api/ports/bulk",
+		`{"ids":["`+portID+`"],"action":"delete"}`)
+	var portBulkOK struct {
+		Updated int                  `json:"updated"`
+		Errors  []config.BulkOpError `json:"errors"`
+	}
+	_ = json.Unmarshal(bPortOK.Body.Bytes(), &portBulkOK)
+	if portBulkOK.Updated != 1 || len(portBulkOK.Errors) != 0 {
+		t.Fatalf("expected port bulk delete to succeed once custom account removed: %+v", portBulkOK)
+	}
+}
+
+// TestAccountAPIRoundTripAndDefaultGuard exercises account CRUD and ensures the
+// port's default account cannot be deleted or moved to another port.
+func TestAccountAPIRoundTripAndDefaultGuard(t *testing.T) {
+	s := testServer(t)
+
+	p1Rec := s.do(t, http.MethodPost, "/api/ports", `{"port":19201,"remark":"p1"}`)
+	p2Rec := s.do(t, http.MethodPost, "/api/ports", `{"port":19202,"remark":"p2"}`)
+	var p1, p2 struct {
+		Saved struct {
+			Port           config.Port    `json:"port"`
+			DefaultAccount config.Account `json:"default_account"`
+		} `json:"saved"`
+	}
+	_ = json.Unmarshal(p1Rec.Body.Bytes(), &p1)
+	_ = json.Unmarshal(p2Rec.Body.Bytes(), &p2)
+	defAcc := p1.Saved.DefaultAccount
+
+	// Default account cannot be deleted directly.
+	delDef := s.do(t, http.MethodDelete, "/api/accounts/"+defAcc.ID, "")
+	if delDef.Code != http.StatusBadRequest {
+		t.Fatalf("deleting default account must return 400, got %d: %s", delDef.Code, delDef.Body.String())
+	}
+
+	// Default account cannot be moved to p2.
+	moveDef := s.do(t, http.MethodPut, "/api/accounts/"+defAcc.ID,
+		`{"username":"`+defAcc.Username+`","password":"`+defAcc.Password+`","port_id":"`+p2.Saved.Port.ID+`","enabled":true}`)
+	if moveDef.Code != http.StatusBadRequest {
+		t.Fatalf("moving default account to another port must return 400, got %d: %s", moveDef.Code, moveDef.Body.String())
+	}
+
+	// Patching enabled state on an account works.
+	patchRec := s.do(t, http.MethodPatch, "/api/accounts/"+defAcc.ID, `{"enabled":false}`)
+	if patchRec.Code != http.StatusOK || !strings.Contains(patchRec.Body.String(), `"enabled":false`) {
+		t.Fatalf("patch account failed: %d %s", patchRec.Code, patchRec.Body.String())
+	}
+}
+
+// TestSettingsLogsAndPasswordAPI exercises settings validation, log queries and
+// clearing, and admin password rotation (which invalidates previous cookies).
+func TestSettingsLogsAndPasswordAPI(t *testing.T) {
+	s := testServer(t)
+
+	// Invalid settings (dial_timeout_sec out of range) rejected with 400.
+	badSet := s.do(t, http.MethodPut, "/api/settings",
+		`{"handshake_timeout_sec":8,"dial_timeout_sec":999,"log_level":"info","log_buffer":500,"access_log":true,"probe_enabled":false,"probe_interval_sec":180,"probe_timeout_sec":8,"probe_concurrency":6,"probe_target":"api.ipify.org"}`)
+	if badSet.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid settings, got %d: %s", badSet.Code, badSet.Body.String())
+	}
+
+	// Valid settings accepted.
+	okSet := s.do(t, http.MethodPut, "/api/settings",
+		`{"handshake_timeout_sec":10,"dial_timeout_sec":12,"log_level":"warn","log_buffer":500,"log_retention_days":7,"access_log":true,"probe_enabled":false,"probe_interval_sec":180,"probe_timeout_sec":8,"probe_concurrency":8,"probe_target":"api.ipify.org"}`)
+	if okSet.Code != http.StatusOK {
+		t.Fatalf("expected 200 for valid settings, got %d: %s", okSet.Code, okSet.Body.String())
+	}
+
+	// Emit a warn log and verify GET /api/logs + DELETE /api/logs.
+	s.log.Warnf("e2e-audit-warn-entry")
+	logsRec := s.do(t, http.MethodGet, "/api/logs?level=warn&limit=50", "")
+	if logsRec.Code != http.StatusOK || !strings.Contains(logsRec.Body.String(), "e2e-audit-warn-entry") {
+		t.Fatalf("expected warn log in /api/logs: %d %s", logsRec.Code, logsRec.Body.String())
+	}
+	clearRec := s.do(t, http.MethodDelete, "/api/logs", "")
+	if clearRec.Code != http.StatusOK {
+		t.Fatalf("clear logs failed: %d %s", clearRec.Code, clearRec.Body.String())
+	}
+
+	// Password rotation: capture old cookie, change password, verify old cookie is 401.
+	oldCookie := s.newCookie()
+	pwRec := s.do(t, http.MethodPost, "/api/password", `{"old":"admin","new":"new-strong-password"}`)
+	if pwRec.Code != http.StatusOK {
+		t.Fatalf("change password failed: %d %s", pwRec.Code, pwRec.Body.String())
+	}
+	reqOld := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	reqOld.AddCookie(oldCookie)
+	recOld := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recOld, reqOld)
+	if recOld.Code != http.StatusUnauthorized {
+		t.Fatalf("old session cookie must be invalidated after password rotation, got %d", recOld.Code)
 	}
 }

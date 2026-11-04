@@ -1132,6 +1132,13 @@ func (s *Server) syncRespondWith(w http.ResponseWriter, syncErr error, boxWarnin
 	resp := map[string]any{"ok": true}
 	if saved != nil {
 		resp["saved"] = saved
+		if m, ok := saved.(map[string]any); ok {
+			for k, v := range m {
+				if _, exists := resp[k]; !exists {
+					resp[k] = v
+				}
+			}
+		}
 	}
 	if warning != "" {
 		resp["warning"] = warning

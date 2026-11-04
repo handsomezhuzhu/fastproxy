@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: ["**"]
     tags: ["v*"]
   pull_request:
 
@@ -68,7 +68,7 @@ jobs:
 
   docker:
     name: Build & push image
-    needs: test
+    needs: [test, ui-e2e]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: instabox-medium
     permissions:
@@ -103,7 +103,7 @@ jobs:
 
   release:
     name: Release binaries
-    needs: test
+    needs: [test, ui-e2e]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: instabox-medium
     permissions:

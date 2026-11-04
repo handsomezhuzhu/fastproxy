@@ -327,19 +327,23 @@ func (s *Store) ReplaceSubscriptionNodes(subID string, candidates []*Upstream) (
 		key        string
 	}
 	existing := map[string]mapped{}
+	s.mu.RLock()
 	rows, err := s.db.Query(`SELECT upstream_id, node_key FROM subscription_nodes WHERE subscription_id=?`, subID)
 	if err != nil {
+		s.mu.RUnlock()
 		return res, err
 	}
 	for rows.Next() {
 		var m mapped
 		if err := rows.Scan(&m.upstreamID, &m.key); err != nil {
 			rows.Close()
+			s.mu.RUnlock()
 			return res, err
 		}
 		existing[m.key] = m
 	}
 	rows.Close()
+	s.mu.RUnlock()
 
 	// Keys of every existing upstream (manual or another subscription). A
 	// subscription refresh must not insert a second row for a node that is
@@ -368,13 +372,15 @@ func (s *Store) ReplaceSubscriptionNodes(subID string, candidates []*Upstream) (
 
 		if m, ok := existing[key]; ok {
 			candidate.ID = m.upstreamID
-			if _, err := s.UpsertUpstream(m.upstreamID, candidate); err != nil {
+			if _, err := s.UpsertUpstream(m.upstreamID, candidate); err == nil {
+				keep[m.upstreamID] = true
+				res.Updated++
+				continue
+			} else if !errors.Is(err, ErrNotFound) {
 				res.Problems = append(res.Problems, fmt.Sprintf("%s (%s): %v", candidate.Name, candidate.Host, err))
 				continue
 			}
-			keep[m.upstreamID] = true
-			res.Updated++
-			continue
+			// Mapped upstream was deleted earlier; fall through to recreate it.
 		}
 
 		// Already present as a manual upstream or another subscription's node:
@@ -390,8 +396,11 @@ func (s *Store) ReplaceSubscriptionNodes(subID string, candidates []*Upstream) (
 			res.Problems = append(res.Problems, fmt.Sprintf("%s (%s): %v", candidate.Name, candidate.Host, err))
 			continue
 		}
-		if _, err := s.db.Exec(`INSERT OR REPLACE INTO subscription_nodes
-			(subscription_id, upstream_id, node_key) VALUES(?,?,?)`, subID, saved.ID, key); err != nil {
+		s.mu.Lock()
+		_, err = s.db.Exec(`INSERT OR REPLACE INTO subscription_nodes
+			(subscription_id, upstream_id, node_key) VALUES(?,?,?)`, subID, saved.ID, key)
+		s.mu.Unlock()
+		if err != nil {
 			return res, err
 		}
 		keep[saved.ID] = true
@@ -402,7 +411,9 @@ func (s *Store) ReplaceSubscriptionNodes(subID string, candidates []*Upstream) (
 		if keep[m.upstreamID] || seen[key] {
 			continue
 		}
+		s.mu.Lock()
 		_, _ = s.db.Exec(`DELETE FROM subscription_nodes WHERE subscription_id=? AND upstream_id=?`, subID, m.upstreamID)
+		s.mu.Unlock()
 		if err := s.DeleteUpstream(m.upstreamID); err == nil {
 			res.Removed++
 		}

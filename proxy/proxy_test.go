@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -633,5 +634,68 @@ func TestAccountDoesNotAuthOnOtherPorts(t *testing.T) {
 	defer conn2.Close()
 	if body := tunnelGet(t, conn2, br2, tAddr); !strings.Contains(body, "hello-from-target") {
 		t.Fatalf("own port did not work: %q", body)
+	}
+}
+
+// TestConcurrentAuthAndStatusMeters hammers concurrent client authentication
+// across newly created accounts while Status() reads m.meters, guarding against
+// concurrent map read/write panics.
+func TestConcurrentAuthAndStatusMeters(t *testing.T) {
+	tAddr := newTarget(t, "hello-concurrent")
+	up := newFakeHTTPUpstream(t, "", "")
+	env := newEnv(t)
+	u := env.addUpstream(t, config.UpstreamHTTP, up.ln.Addr().String(), "", "")
+	p := env.addPort(t, freePort(t))
+	const numAccounts = 16
+	for i := 0; i < numAccounts; i++ {
+		env.addAccount(t, fmt.Sprintf("user-%d", i), "pass", p.ID, u.ID)
+	}
+	env.sync(t)
+
+	stopStatus := make(chan struct{})
+	var statusWG sync.WaitGroup
+	statusWG.Add(1)
+	go func() {
+		defer statusWG.Done()
+		for {
+			select {
+			case <-stopStatus:
+				return
+			default:
+				env.mgr.Status()
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for i := 0; i < numAccounts; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			user := fmt.Sprintf("user-%d", i)
+			conn, br := connectTunnel(t, p.Port, proxyAuthHeader(user, "pass"), tAddr)
+			defer conn.Close()
+			if body := tunnelGet(t, conn, br, tAddr); !strings.Contains(body, "hello-concurrent") {
+				t.Errorf("user %s bad body: %q", user, body)
+			}
+		}()
+	}
+	wg.Wait()
+	close(stopStatus)
+	statusWG.Wait()
+
+	ports, accounts := env.mgr.Status()
+	if len(ports) != 1 || ports[0].ConnsTotal < numAccounts {
+		t.Fatalf("unexpected port status: %+v", ports)
+	}
+	matched := 0
+	for _, a := range accounts {
+		if strings.HasPrefix(a.Username, "user-") && a.ConnsTotal == 1 {
+			matched++
+		}
+	}
+	if matched != numAccounts {
+		t.Fatalf("expected %d accounts with 1 conn, got %d", numAccounts, matched)
 	}
 }

@@ -217,7 +217,13 @@ export function PortsPage({
       const failed = r.errors ?? [];
       const done = r.updated ?? Math.max(0, ids.length - failed.length);
       if (failed.length > 0) {
-        toast.error(t("ports.bulkFailed", { n: failed.length, action: actionLabels[action], err: failed[0].error }));
+        toast.error(
+          t("ports.bulkFailed", {
+            n: failed.length,
+            action: actionLabels[action],
+            err: failed[0].error || failed[0].reason || "",
+          })
+        );
         if (done > 0) toast.success(t("ports.bulkEach", { n: done, action: actionLabels[action] }));
       } else {
         toast.success(t("ports.bulkEach", { n: done, action: actionLabels[action] }));

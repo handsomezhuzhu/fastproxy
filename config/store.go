@@ -676,6 +676,7 @@ func (s *Store) DeleteUpstream(id string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+	_, _ = s.db.Exec(`DELETE FROM subscription_nodes WHERE upstream_id=?`, id)
 	return nil
 }
 
@@ -1464,6 +1465,7 @@ func (s *Store) BulkDeleteUpstreams(ids []string) (int64, []BulkOpError) {
 			skipped = append(skipped, BulkOpError{ID: id, Reason: "不存在"})
 			continue
 		}
+		_, _ = s.db.Exec(`DELETE FROM subscription_nodes WHERE upstream_id=?`, id)
 		deleted++
 	}
 	return deleted, skipped

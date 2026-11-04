@@ -146,6 +146,8 @@ export const zh: Record<string, string> = {
   "dashboard.logs.empty": "暂无连接记录",
   "dashboard.logs.emptyDesc": "配置端口与账户后，客户端连接会出现在这里。",
   "dashboard.singbox.title": "内置 sing-box",
+  "dashboard.singbox.alertTitle": "内置 sing-box 异常",
+  "dashboard.singbox.alertAction": "查看状态",
   "dashboard.singbox.statusTitle": "运行状态",
   "dashboard.singbox.pageDesc": "查看内嵌出站的运行状态、重载次数与最近日志。",
   "dashboard.singbox.desc": "用于 VLESS / VMess / REALITY 等出站；注册的上游变化时自动重载。",

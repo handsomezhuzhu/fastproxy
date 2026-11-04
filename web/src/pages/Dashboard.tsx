@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
   Activity,
+  AlertTriangle,
   ArrowRight,
   ArrowUpDown,
   CircleCheck,
@@ -113,6 +114,22 @@ export function DashboardPage({
         description={t("dashboard.description")}
         actions={<Button onClick={copyFirst}>{t("dashboard.openCopy")}</Button>}
       />
+
+      {data.probe?.singbox_error ? (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+        >
+          <div className="flex min-w-0 items-center gap-2.5">
+            <AlertTriangle className="size-4 shrink-0" />
+            <span className="font-medium">{t("dashboard.singbox.alertTitle")}：</span>
+            <span className="truncate font-mono text-xs">{data.probe.singbox_error}</span>
+          </div>
+          <Button variant="outline" size="xs" onClick={() => onNavigate("singbox")}>
+            {t("dashboard.singbox.alertAction")}
+          </Button>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
         <StatCard

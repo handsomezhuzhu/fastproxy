@@ -139,6 +139,8 @@ export const en = {
   "dashboard.logs.empty": "No connections yet",
   "dashboard.logs.emptyDesc": "Once ports and accounts are configured, client connections appear here.",
   "dashboard.singbox.title": "Embedded sing-box",
+  "dashboard.singbox.alertTitle": "Embedded sing-box error",
+  "dashboard.singbox.alertAction": "View status",
   "dashboard.singbox.statusTitle": "Runtime status",
   "dashboard.singbox.pageDesc": "View the embedded outbound runtime status, reload count and recent logs.",
   "dashboard.singbox.desc": "Runs VLESS / VMess / REALITY outbounds; reloads when the registered upstreams change.",

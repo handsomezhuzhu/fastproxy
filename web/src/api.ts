@@ -173,7 +173,7 @@ export type Data = {
   settings: Settings;
   /** v2：端口号允许范围；旧后端没有时回落到容器默认值。 */
   port_range?: PortRange;
-  probe?: { server_ip: string; last_check_at: number };
+  probe?: { server_ip: string; last_check_at: number; singbox_error?: string };
 };
 
 /** GET /api/singbox/status（需登录）。接口不存在时状态卡降级显示。 */
@@ -238,10 +238,36 @@ export type BulkResult = {
   ok?: boolean;
   updated?: number;
   deleted?: number;
-  errors?: { id: string; error: string }[];
-  skipped?: { id: string; reason: string }[];
+  errors?: { id: string; error: string; reason?: string }[];
+  skipped?: { id: string; reason: string; error?: string }[];
   checks?: { id: string; ok: boolean; latency_ms?: number; error?: string }[];
 };
+
+function normalizeBulk(raw: any): BulkResult {
+  const src = raw?.saved && typeof raw.saved === "object" ? { ...raw, ...raw.saved } : raw ?? {};
+  const errors = Array.isArray(src.errors)
+    ? src.errors.map((x: any) => ({
+        id: String(x?.id ?? ""),
+        error: String(x?.error ?? x?.reason ?? ""),
+        reason: String(x?.reason ?? x?.error ?? ""),
+      }))
+    : undefined;
+  const skipped = Array.isArray(src.skipped)
+    ? src.skipped.map((x: any) => ({
+        id: String(x?.id ?? ""),
+        reason: String(x?.reason ?? x?.error ?? ""),
+        error: String(x?.error ?? x?.reason ?? ""),
+      }))
+    : undefined;
+  return {
+    ok: src.ok ?? true,
+    updated: typeof src.updated === "number" ? src.updated : undefined,
+    deleted: typeof src.deleted === "number" ? src.deleted : undefined,
+    errors,
+    skipped,
+    checks: src.checks,
+  };
+}
 
 export class ApiError extends Error {
   status: number;
@@ -423,11 +449,11 @@ export const api = {
   clearLogs: () => req<{ ok: true }>("/api/logs", { method: "DELETE" }),
 
   bulkAccounts: (ids: string[], action: "delete" | "enable" | "disable") =>
-    req<BulkResult>("/api/accounts/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }),
+    req<any>("/api/accounts/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }).then(normalizeBulk),
   bulkPorts: (ids: string[], action: "enable" | "disable" | "delete") =>
-    req<BulkResult>("/api/ports/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }),
+    req<any>("/api/ports/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }).then(normalizeBulk),
   bulkUpstreams: (ids: string[], action: "delete") =>
-    req<BulkResult>("/api/upstreams/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }),
+    req<any>("/api/upstreams/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }).then(normalizeBulk),
 
   /** 内置 sing-box 运行状态；旧后端没有该接口（404/405），调用方据此降级。 */
   singboxStatus: async () => {

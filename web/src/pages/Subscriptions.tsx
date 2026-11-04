@@ -41,14 +41,14 @@ import {
 } from "@/components/ui/table";
 import { Switch } from "@/components/ui/switch";
 import { DotBadge, EmptyState, Field, PageHeader, Toolbar } from "@/components/page";
-import { useI18n } from "@/i18n";
+import { useI18n, type Lang } from "@/i18n";
 import { explainErrorLine } from "@/lib/errors";
 import { timeAgo } from "@/lib/utils";
 
 type FormState = { name: string; url: string; enabled: boolean; intervalMin: string };
 const EMPTY_FORM: FormState = { name: "", url: "", enabled: true, intervalMin: "60" };
 
-function subscriptionStatus(s: Subscription, t: (k: string, v?: any) => string) {
+function subscriptionStatus(s: Subscription, t: (k: string, v?: any) => string, lang: Lang) {
   if (s.last_error) {
     return (
       <div className="flex flex-col gap-0.5">
@@ -64,7 +64,7 @@ function subscriptionStatus(s: Subscription, t: (k: string, v?: any) => string) 
     <div className="flex flex-col gap-0.5">
       <DotBadge tone="ok">{t("subscriptions.status.ok")}</DotBadge>
       <p className="text-xs text-muted-foreground">
-        {timeAgo(new Date(s.last_fetch_at * 1000).toISOString())}
+        {timeAgo(new Date(s.last_fetch_at * 1000).toISOString(), lang)}
       </p>
     </div>
   );
@@ -255,7 +255,7 @@ export function SubscriptionsPage({ reload }: { reload: () => Promise<void> }) {
                     <TableCell className="text-sm tabular-nums">
                       {Math.round(s.interval_sec / 60)} {t("subscriptions.minutes")}
                     </TableCell>
-                    <TableCell>{subscriptionStatus(s, t)}</TableCell>
+                    <TableCell>{subscriptionStatus(s, t, lang)}</TableCell>
                     <TableCell>
                       <DropdownMenu>
                         <DropdownMenuTrigger

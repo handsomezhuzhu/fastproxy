@@ -180,7 +180,13 @@ export function AccountsPage({
       const failed = r.errors ?? [];
       const done = r.updated ?? Math.max(0, ids.length - failed.length);
       if (failed.length > 0) {
-        toast.error(t("accounts.bulkFailed", { n: failed.length, action: actionLabels[action], err: failed[0].error }));
+        toast.error(
+          t("accounts.bulkFailed", {
+            n: failed.length,
+            action: actionLabels[action],
+            err: failed[0].error || failed[0].reason || "",
+          })
+        );
         if (done > 0) toast.success(t("accounts.bulkEach", { n: done, action: actionLabels[action] }));
       } else {
         toast.success(t("accounts.bulkEach", { n: done, action: actionLabels[action] }));

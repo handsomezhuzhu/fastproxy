@@ -70,7 +70,9 @@ type Manager struct {
 	mu        sync.Mutex
 	entries   map[string]*entry
 	listenErr map[string]string
-	meters    map[string]*meter
+
+	meterMu sync.Mutex
+	meters  map[string]*meter
 
 	failMu   sync.Mutex
 	lastFail map[string]time.Time
@@ -149,7 +151,7 @@ func (m *Manager) Status() ([]PortStatus, []AccountStatus) {
 	ports := make([]PortStatus, 0, len(m.store.Ports()))
 	for _, p := range m.store.Ports() {
 		row := PortStatus{ID: p.ID, Port: p.Port, Enabled: p.Enabled}
-		if mt, ok := m.meters["port:"+p.ID]; ok {
+		if mt, ok := m.peekMeter("port:" + p.ID); ok {
 			fillMeter(mt, &row.ConnsTotal, &row.ConnsCur, &row.BytesIn, &row.BytesOut)
 		}
 		_, row.Listening = m.entries[p.ID]
@@ -160,7 +162,7 @@ func (m *Manager) Status() ([]PortStatus, []AccountStatus) {
 	for _, a := range m.store.Accounts() {
 		row := AccountStatus{ID: a.ID, Username: a.Username, PortID: a.PortID,
 			UpstreamID: a.UpstreamID, Enabled: a.Enabled}
-		if mt, ok := m.meters["acc:"+a.ID]; ok {
+		if mt, ok := m.peekMeter("acc:" + a.ID); ok {
 			fillMeter(mt, &row.ConnsTotal, &row.ConnsCur, &row.BytesIn, &row.BytesOut)
 		}
 		accounts = append(accounts, row)
@@ -383,12 +385,21 @@ func (m *Manager) markUpstreamFail(id, errText string) {
 }
 
 func (m *Manager) meterFor(key string) *meter {
+	m.meterMu.Lock()
+	defer m.meterMu.Unlock()
 	if mt, ok := m.meters[key]; ok {
 		return mt
 	}
 	mt := &meter{}
 	m.meters[key] = mt
 	return mt
+}
+
+func (m *Manager) peekMeter(key string) (*meter, bool) {
+	m.meterMu.Lock()
+	defer m.meterMu.Unlock()
+	mt, ok := m.meters[key]
+	return mt, ok
 }
 
 func fillMeter(mt *meter, total, cur, in, out *int64) {

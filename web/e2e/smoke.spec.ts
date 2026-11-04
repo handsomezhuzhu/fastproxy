@@ -793,8 +793,8 @@ test("账户与复制向导：新建账户并验证复制接入格式切换", as
   // 2) 进入账户管理，新建自定义账户 e2e-acc
   await nav(page, "账户").click();
   await expect(page.getByRole("heading", { level: 1, name: "账户" })).toBeVisible();
-  await page.getByRole("button", { name: "新建账户" }).first().click();
-  const accDialog = page.getByRole("dialog", { name: "新建账户" });
+  await page.getByRole("button", { name: "新增账户" }).first().click();
+  const accDialog = page.getByRole("dialog", { name: "新增账户" });
   await expect(accDialog).toBeVisible();
   await accDialog.locator("#acc-username").fill("e2e-acc");
   await accDialog.locator("#acc-password").fill("e2e-pass");
@@ -803,7 +803,7 @@ test("账户与复制向导：新建账户并验证复制接入格式切换", as
   await expect(page.locator("tbody tr").filter({ hasText: "e2e-acc" })).toHaveCount(1);
 
   // 3) 打开复制接入向导并切换格式验证预览
-  await page.getByRole("button", { name: "账户 e2e-acc 的操作菜单" }).click();
+  await page.getByRole("button", { name: "账户 e2e-acc 操作" }).click();
   await page.getByRole("menuitem", { name: "复制接入" }).click();
   const copyDialog = page.getByRole("dialog", { name: "复制接入信息" });
   await expect(copyDialog).toBeVisible();

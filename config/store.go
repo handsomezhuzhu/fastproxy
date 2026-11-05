@@ -150,7 +150,7 @@ func DefaultSettings() Settings {
 		DialTimeoutSec:      15,
 		HandshakeTimeoutSec: 60,
 		ProbeEnabled:        true,
-		ProbeIntervalSec:    300,
+		ProbeIntervalSec:    3000,
 		ProbeTimeoutSec:     8,
 		ProbeConcurrency:    6,
 		ProbeTarget:         "api.ipify.org",

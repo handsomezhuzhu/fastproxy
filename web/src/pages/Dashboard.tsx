@@ -7,7 +7,6 @@ import {
   CircleCheck,
   CircleDashed,
   ChevronRight,
-  Globe,
   Layers,
   Network,
   ScrollText,
@@ -176,7 +175,6 @@ export function DashboardPage({
                 })
               : t("dashboard.stat.ipNever")
           }
-          icon={<Globe />}
         />
       </div>
 

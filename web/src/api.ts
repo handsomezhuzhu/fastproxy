@@ -320,7 +320,7 @@ export const defaultSettings: Settings = {
   dial_timeout_sec: 15,
   handshake_timeout_sec: 60,
   probe_enabled: true,
-  probe_interval_sec: 300,
+  probe_interval_sec: 3000,
   probe_timeout_sec: 8,
   probe_concurrency: 6,
   probe_target: "api.ipify.org",

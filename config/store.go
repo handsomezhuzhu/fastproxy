@@ -308,16 +308,50 @@ func boolInt(v bool) int {
 
 // --- settings ---
 
+// MeterStat holds persisted cumulative connection and traffic counters for a
+// port ("port:<id>") or account ("acc:<id>"). Active connection count
+// (conns_cur) is runtime-only and resets to 0 on restart.
+type MeterStat struct {
+	ConnsTotal int64 `json:"conns_total"`
+	BytesIn    int64 `json:"bytes_in"`
+	BytesOut   int64 `json:"bytes_out"`
+}
+
+type serverProbeState struct {
+	ServerIP    string `json:"server_ip"`
+	LastCheckAt int64  `json:"last_check_at"`
+}
+
+func (s *Store) getSettingLocked(key string) (string, error) {
+	var raw string
+	if err := s.db.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&raw); err != nil {
+		return "", err
+	}
+	return openSecret(raw)
+}
+
+func (s *Store) setSettingLocked(key, plain string) error {
+	sealed, err := sealSecret(plain)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)`, key, sealed)
+	return err
+}
+
 func (s *Store) loadSettingsLocked() error {
 	st := DefaultSettings()
-	var raw string
-	err := s.db.QueryRow(`SELECT value FROM settings WHERE key='settings'`).Scan(&raw)
+	raw, err := s.getSettingLocked("settings")
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		b, _ := json.Marshal(st)
-		if _, err := s.db.Exec(`INSERT OR REPLACE INTO settings(key, value) VALUES('settings', ?)`, string(b)); err != nil {
+		if err := s.setSettingLocked("settings", string(b)); err != nil {
 			return err
 		}
+	case errors.Is(err, ErrSecretKeyMismatch):
+		log.Printf("config: settings 解密失败: %v", err)
+		s.settings = st
+		return nil
 	case err != nil:
 		return err
 	default:
@@ -402,11 +436,74 @@ func (s *Store) UpdateSettings(in Settings) (Settings, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.db.Exec(`INSERT OR REPLACE INTO settings(key, value) VALUES('settings', ?)`, string(b)); err != nil {
+	if err := s.setSettingLocked("settings", string(b)); err != nil {
 		return Settings{}, err
 	}
 	s.settings = in
 	return in, nil
+}
+
+// LoadMeters returns the persisted port and account traffic/connection counters.
+func (s *Store) LoadMeters() map[string]MeterStat {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	raw, err := s.getSettingLocked("meters")
+	if err != nil || raw == "" {
+		return map[string]MeterStat{}
+	}
+	out := map[string]MeterStat{}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return map[string]MeterStat{}
+	}
+	return out
+}
+
+// SaveMeters persists the port and account traffic/connection counters (encrypted).
+func (s *Store) SaveMeters(meters map[string]MeterStat) error {
+	if meters == nil {
+		meters = map[string]MeterStat{}
+	}
+	b, err := json.Marshal(meters)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setSettingLocked("meters", string(b))
+}
+
+// LoadServerProbe returns the last persisted direct egress IP and check time.
+func (s *Store) LoadServerProbe() (string, time.Time) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	raw, err := s.getSettingLocked("server_probe")
+	if err != nil || raw == "" {
+		return "", time.Time{}
+	}
+	var st serverProbeState
+	if err := json.Unmarshal([]byte(raw), &st); err != nil {
+		return "", time.Time{}
+	}
+	var at time.Time
+	if st.LastCheckAt > 0 {
+		at = time.Unix(st.LastCheckAt, 0)
+	}
+	return st.ServerIP, at
+}
+
+// SaveServerProbe persists the server's direct egress IP and check timestamp (encrypted).
+func (s *Store) SaveServerProbe(ip string, checkedAt time.Time) error {
+	var unix int64
+	if !checkedAt.IsZero() {
+		unix = checkedAt.Unix()
+	}
+	b, err := json.Marshal(serverProbeState{ServerIP: ip, LastCheckAt: unix})
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setSettingLocked("server_probe", string(b))
 }
 
 // --- upstreams ---
@@ -438,6 +535,10 @@ func scanUpstream(sc upstreamScanner) (Upstream, error) {
 func (s *Store) Upstreams() []*Upstream {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.upstreamsLocked()
+}
+
+func (s *Store) upstreamsLocked() []*Upstream {
 	out := make([]*Upstream, 0, 4)
 	rows, err := s.db.Query(`SELECT ` + upstreamColumns + ` FROM upstreams ORDER BY created_at`)
 	if err != nil {
@@ -470,17 +571,38 @@ func (s *Store) getUpstreamLocked(id string) *Upstream {
 	return &u
 }
 
-// resolveUpstream decrypts the stored password and expands ${VAR} references
+// resolveUpstream decrypts all stored text fields and expands ${VAR} references
 // in the credentials of a copy of the upstream. Decryption runs first so a
 // sealed placeholder is expanded and a plaintext legacy row keeps working.
 func resolveUpstream(u Upstream) (Upstream, error) {
-	pass, err := openSecret(u.Password)
-	if err != nil {
-		return Upstream{}, fmt.Errorf("上游[%s]密码解密失败: %w", u.Name, err)
+	if err := openFields(
+		&u.Name, &u.Type, &u.Host, &u.Username, &u.Password,
+		&u.Method, &u.UUID, &u.SNI, &u.Remark,
+		&u.Health, &u.ExitIP, &u.LastError,
+		&u.Security, &u.PBK, &u.SID, &u.Flow, &u.Fingerprint,
+		&u.Transport, &u.Path, &u.HostHeader, &u.ServiceName, &u.VMessSecurity,
+	); err != nil {
+		return Upstream{}, fmt.Errorf("上游[%s]密码解密失败: %w", u.ID, err)
 	}
-	u.Password = pass
 	u.Username, _ = expandEnv(u.Username)
 	u.Password, _ = expandEnv(u.Password)
+	return u, nil
+}
+
+func sealUpstreamCopy(in Upstream, health string) (Upstream, error) {
+	u := in
+	if health != "" {
+		u.Health = health
+	}
+	if err := sealFields(
+		&u.Name, &u.Type, &u.Host, &u.Username, &u.Password,
+		&u.Method, &u.UUID, &u.SNI, &u.Remark,
+		&u.Health, &u.ExitIP, &u.LastError,
+		&u.Security, &u.PBK, &u.SID, &u.Flow, &u.Fingerprint,
+		&u.Transport, &u.Path, &u.HostHeader, &u.ServiceName, &u.VMessSecurity,
+	); err != nil {
+		return Upstream{}, err
+	}
 	return u, nil
 }
 
@@ -577,7 +699,7 @@ func (s *Store) UpsertUpstream(id string, in *Upstream) (*Upstream, error) {
 	if missing := dedupeMissing(append(mustRef("上游账号", in.Username), mustRef("上游密码", in.Password)...)); len(missing) > 0 {
 		return nil, missingRefError("上游凭据", missing)
 	}
-	stored, err := sealSecret(in.Password)
+	sealed, err := sealUpstreamCopy(*in, "unknown")
 	if err != nil {
 		return nil, err
 	}
@@ -588,12 +710,12 @@ func (s *Store) UpsertUpstream(id string, in *Upstream) (*Upstream, error) {
 		_, err := s.db.Exec(`INSERT INTO upstreams
 			(id, name, type, host, username, password, method, uuid, sni, remark, health, created_at, updated_at,
 			 security, pbk, sid, flow, fingerprint, transport, path, host_header, service_name, vmess_security)
-			VALUES(?,?,?,?,?,?,?,?,?,?,'unknown',?,?,
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,
 			 ?,?,?,?,?,?,?,?,?,?)`,
-			in.ID, in.Name, in.Type, in.Host, in.Username, stored,
-			in.Method, in.UUID, in.SNI, in.Remark, now, now,
-			in.Security, in.PBK, in.SID, in.Flow, in.Fingerprint,
-			in.Transport, in.Path, in.HostHeader, in.ServiceName, in.VMessSecurity)
+			in.ID, sealed.Name, sealed.Type, sealed.Host, sealed.Username, sealed.Password,
+			sealed.Method, sealed.UUID, sealed.SNI, sealed.Remark, sealed.Health, now, now,
+			sealed.Security, sealed.PBK, sealed.SID, sealed.Flow, sealed.Fingerprint,
+			sealed.Transport, sealed.Path, sealed.HostHeader, sealed.ServiceName, sealed.VMessSecurity)
 		if err != nil {
 			return nil, err
 		}
@@ -607,25 +729,24 @@ func (s *Store) UpsertUpstream(id string, in *Upstream) (*Upstream, error) {
 		if err != nil {
 			return nil, ErrNotFound
 		}
-		oldPlain, perr := openSecret(oldPass)
-		if perr != nil {
-			return nil, fmt.Errorf("上游旧密码解密失败: %w", perr)
+		if perr := openFields(&oldType, &oldHost, &oldUser, &oldPass, &oldMethod, &oldUUID); perr != nil {
+			return nil, fmt.Errorf("上游旧配置解密失败: %w", perr)
 		}
-		if oldType != in.Type || oldHost != in.Host || oldUser != in.Username || oldPlain != in.Password ||
+		if oldType != in.Type || oldHost != in.Host || oldUser != in.Username || oldPass != in.Password ||
 			oldMethod != in.Method || oldUUID != in.UUID {
 			reset = true
 		}
 		const setCols = `name=?, type=?, host=?, username=?, password=?, method=?, uuid=?, sni=?, remark=?,
 			security=?, pbk=?, sid=?, flow=?, fingerprint=?, transport=?, path=?, host_header=?, service_name=?, vmess_security=?`
-		args := []any{in.Name, in.Type, in.Host, in.Username, stored,
-			in.Method, in.UUID, in.SNI, in.Remark,
-			in.Security, in.PBK, in.SID, in.Flow, in.Fingerprint,
-			in.Transport, in.Path, in.HostHeader, in.ServiceName, in.VMessSecurity}
+		args := []any{sealed.Name, sealed.Type, sealed.Host, sealed.Username, sealed.Password,
+			sealed.Method, sealed.UUID, sealed.SNI, sealed.Remark,
+			sealed.Security, sealed.PBK, sealed.SID, sealed.Flow, sealed.Fingerprint,
+			sealed.Transport, sealed.Path, sealed.HostHeader, sealed.ServiceName, sealed.VMessSecurity}
 		var res sql.Result
 		if reset {
 			res, err = s.db.Exec(`UPDATE upstreams SET `+setCols+`,
-				health='unknown', latency_ms=0, exit_ip='', last_check_at=0, last_error='', updated_at=? WHERE id=?`,
-				append(args, now, id)...)
+				health=?, latency_ms=0, exit_ip='', last_check_at=0, last_error='', updated_at=? WHERE id=?`,
+				append(args, sealed.Health, now, id)...)
 		} else {
 			res, err = s.db.Exec(`UPDATE upstreams SET `+setCols+`, updated_at=? WHERE id=?`,
 				append(args, now, id)...)
@@ -651,6 +772,9 @@ func (s *Store) RecordUpstreamCheck(id, health string, latencyMS int64, exitIP, 
 	if health == "" {
 		health = "unknown"
 	}
+	if err := sealFields(&health, &exitIP, &errText); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`UPDATE upstreams SET health=?, latency_ms=?,
@@ -667,6 +791,9 @@ func (s *Store) DeleteUpstream(id string) error {
 	var user string
 	err := s.db.QueryRow(`SELECT username FROM accounts WHERE upstream_id=? LIMIT 1`, id).Scan(&user)
 	if err == nil {
+		if plain, derr := openSecret(user); derr == nil {
+			user = plain
+		}
 		return fmt.Errorf("上游仍被账户 %s 引用，请先修改账户绑定", user)
 	}
 	res, err := s.db.Exec(`DELETE FROM upstreams WHERE id=?`, id)
@@ -698,8 +825,10 @@ func (s *Store) ImportUpstreams(candidates []*Upstream) (int, []string, []string
 				&sec, &pbk, &sid, &flow, &transport, &path, &hostHeader, &service) == nil {
 				// Compare in plaintext so freshly imported duplicates match
 				// sealed rows too.
-				if plain, derr := openSecret(pass); derr == nil {
-					pass = plain
+				for _, f := range []*string{&typ, &host, &user, &pass, &method, &uuid, &sec, &pbk, &sid, &flow, &transport, &path, &hostHeader, &service} {
+					if plain, derr := openSecret(*f); derr == nil {
+						*f = plain
+					}
 				}
 				seen[typ+"|"+host+"|"+method+"|"+uuid+"|"+user+"|"+pass+
 					"|"+pbk+"|"+sid+"|"+flow+"|"+sec+"|"+transport+"|"+path+"|"+hostHeader+"|"+service] = true
@@ -732,20 +861,22 @@ func (s *Store) ImportUpstreams(candidates []*Upstream) (int, []string, []string
 		}
 		seen[key] = true
 		u.ID = randomHex(4)
-		stored, serr := sealSecret(u.Password)
+		cp := *u
+		cp.Name = name
+		sealed, serr := sealUpstreamCopy(cp, "unknown")
 		if serr != nil {
-			problems = append(problems, name+" ("+u.Host+"): 密码加密失败: "+serr.Error())
+			problems = append(problems, name+" ("+u.Host+"): 加密失败: "+serr.Error())
 			continue
 		}
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO upstreams
-			(id, name, type, host, username, password, method, uuid, sni, remark, created_at, updated_at,
+			(id, name, type, host, username, password, method, uuid, sni, remark, health, created_at, updated_at,
 			 security, pbk, sid, flow, fingerprint, transport, path, host_header, service_name, vmess_security)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,
 			 ?,?,?,?,?,?,?,?,?,?)`,
-			u.ID, name, u.Type, u.Host, u.Username, stored,
-			u.Method, u.UUID, u.SNI, u.Remark, now, now,
-			u.Security, u.PBK, u.SID, u.Flow, u.Fingerprint,
-			u.Transport, u.Path, u.HostHeader, u.ServiceName, u.VMessSecurity); err != nil {
+			u.ID, sealed.Name, sealed.Type, sealed.Host, sealed.Username, sealed.Password,
+			sealed.Method, sealed.UUID, sealed.SNI, sealed.Remark, sealed.Health, now, now,
+			sealed.Security, sealed.PBK, sealed.SID, sealed.Flow, sealed.Fingerprint,
+			sealed.Transport, sealed.Path, sealed.HostHeader, sealed.ServiceName, sealed.VMessSecurity); err != nil {
 			return added, duplicates, problems
 		}
 		added++
@@ -773,6 +904,9 @@ func (s *Store) Ports() []*Port {
 		if err := rows.Scan(&p.ID, &p.Port, &enabled, &p.Remark); err != nil {
 			continue
 		}
+		if err := openFields(&p.Remark); err != nil {
+			continue
+		}
 		p.Enabled = enabled == 1
 		out = append(out, &p)
 	}
@@ -785,6 +919,9 @@ func (s *Store) getPortLocked(id string) *Port {
 	err := s.db.QueryRow(`SELECT id, port, enabled, remark FROM ports WHERE id=?`, id).
 		Scan(&p.ID, &p.Port, &enabled, &p.Remark)
 	if err != nil {
+		return nil
+	}
+	if err := openFields(&p.Remark); err != nil {
 		return nil
 	}
 	p.Enabled = enabled == 1
@@ -815,6 +952,10 @@ func (s *Store) UpsertPort(id string, in *Port) (*Port, error) {
 	if n > 0 {
 		return nil, fmt.Errorf("端口 %d 已被其他线路使用", in.Port)
 	}
+	sealedRemark, err := sealSecret(in.Remark)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now().Unix()
 	if id == "" {
@@ -822,7 +963,7 @@ func (s *Store) UpsertPort(id string, in *Port) (*Port, error) {
 		if _, err := s.db.Exec(`INSERT INTO ports
 			(id, port, enabled, remark, created_at, updated_at)
 			VALUES(?,?,?,?,?,?)`,
-			in.ID, in.Port, boolInt(in.Enabled), in.Remark, now, now); err != nil {
+			in.ID, in.Port, boolInt(in.Enabled), sealedRemark, now, now); err != nil {
 			return nil, err
 		}
 		if err := s.ensureDefaultAccountLocked(*in, ""); err != nil {
@@ -833,7 +974,7 @@ func (s *Store) UpsertPort(id string, in *Port) (*Port, error) {
 		}
 	} else {
 		res, err := s.db.Exec(`UPDATE ports SET port=?, enabled=?, remark=?, updated_at=? WHERE id=?`,
-			in.Port, boolInt(in.Enabled), in.Remark, now, id)
+			in.Port, boolInt(in.Enabled), sealedRemark, now, id)
 		if err != nil {
 			return nil, err
 		}
@@ -855,14 +996,17 @@ func (s *Store) ensureDefaultAccountLocked(p Port, upstreamID string) error {
 	if count > 0 {
 		return nil
 	}
+	used := map[string]bool{}
+	for _, a := range s.accountsLocked() {
+		used[a.Username] = true
+	}
 	username := fmt.Sprintf("default-%d", p.Port)
-	for i := 2; ; i++ {
-		var n int
-		_ = s.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE username=?`, username).Scan(&n)
-		if n == 0 {
-			break
-		}
+	for i := 2; used[username]; i++ {
 		username = fmt.Sprintf("default-%d-%d", p.Port, i)
+	}
+	sealedUser, err := sealSecret(username)
+	if err != nil {
+		return err
 	}
 	password, err := sealSecret(randomHex(6))
 	if err != nil {
@@ -872,7 +1016,7 @@ func (s *Store) ensureDefaultAccountLocked(p Port, upstreamID string) error {
 	_, err = s.db.Exec(`INSERT INTO accounts
 		(id, username, password, port_id, upstream_id, enabled, remark, is_default, created_at, updated_at)
 		VALUES(?,?,?,?,?,1,'',1,?,?)`,
-		randomHex(4), username, password, p.ID, upstreamID, now, now)
+		randomHex(4), sealedUser, password, p.ID, upstreamID, now, now)
 	return err
 }
 
@@ -945,6 +1089,10 @@ func (s *Store) SetPortEnabled(id string, enabled bool) (*Port, error) {
 func (s *Store) Accounts() []*Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.accountsLocked()
+}
+
+func (s *Store) accountsLocked() []*Account {
 	out := make([]*Account, 0, 4)
 	rows, err := s.db.Query(`SELECT id, username, password, port_id, upstream_id, enabled, remark, is_default FROM accounts ORDER BY created_at`)
 	if err != nil {
@@ -968,14 +1116,12 @@ func (s *Store) Accounts() []*Account {
 	return out
 }
 
-// resolveAccount decrypts the stored password and expands ${VAR} references
-// in a copy of the account (decryption first, env expansion second).
+// resolveAccount decrypts the stored account fields and expands ${VAR}
+// references in a copy of the account (decryption first, env expansion second).
 func resolveAccount(a Account) (Account, error) {
-	pass, err := openSecret(a.Password)
-	if err != nil {
-		return Account{}, fmt.Errorf("账户[%s]密码解密失败: %w", a.Username, err)
+	if err := openFields(&a.Username, &a.Password, &a.Remark); err != nil {
+		return Account{}, fmt.Errorf("账户[%s]密码解密失败: %w", a.ID, err)
 	}
-	a.Password = pass
 	a.Password, _ = expandEnv(a.Password)
 	return a, nil
 }
@@ -1029,12 +1175,20 @@ func (s *Store) UpsertAccount(id string, in *Account) (*Account, error) {
 		return nil, missingRefError("账户密码", missing)
 	}
 
-	var n int
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE username=? AND id<>?`, in.Username, id).Scan(&n)
-	if n > 0 {
-		return nil, fmt.Errorf("用户名 %s 已存在", in.Username)
+	for _, acc := range s.accountsLocked() {
+		if acc.Username == in.Username && acc.ID != id {
+			return nil, fmt.Errorf("用户名 %s 已存在", in.Username)
+		}
+	}
+	sealedUser, err := sealSecret(in.Username)
+	if err != nil {
+		return nil, err
 	}
 	stored, err := sealSecret(in.Password)
+	if err != nil {
+		return nil, err
+	}
+	sealedRemark, err := sealSecret(in.Remark)
 	if err != nil {
 		return nil, err
 	}
@@ -1045,7 +1199,7 @@ func (s *Store) UpsertAccount(id string, in *Account) (*Account, error) {
 		if _, err := s.db.Exec(`INSERT INTO accounts
 			(id, username, password, port_id, upstream_id, enabled, remark, is_default, created_at, updated_at)
 			VALUES(?,?,?,?,?,?,?,0,?,?)`,
-			in.ID, in.Username, stored, in.PortID, in.UpstreamID, boolInt(in.Enabled), in.Remark, now, now); err != nil {
+			in.ID, sealedUser, stored, in.PortID, in.UpstreamID, boolInt(in.Enabled), sealedRemark, now, now); err != nil {
 			return nil, err
 		}
 	} else {
@@ -1058,7 +1212,7 @@ func (s *Store) UpsertAccount(id string, in *Account) (*Account, error) {
 		}
 		in.IsDefault = existing.IsDefault
 		res, err := s.db.Exec(`UPDATE accounts SET username=?, password=?, port_id=?, upstream_id=?, enabled=?, remark=?, updated_at=? WHERE id=?`,
-			in.Username, stored, in.PortID, in.UpstreamID, boolInt(in.Enabled), in.Remark, now, id)
+			sealedUser, stored, in.PortID, in.UpstreamID, boolInt(in.Enabled), sealedRemark, now, id)
 		if err != nil {
 			return nil, err
 		}
@@ -1113,17 +1267,18 @@ func (s *Store) SetAccountEnabled(id string, enabled bool) (*Account, error) {
 func (s *Store) AdminPasswordHash() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var v string
-	_ = s.db.QueryRow(`SELECT value FROM settings WHERE key='admin_password_hash'`).Scan(&v)
+	v, err := s.getSettingLocked("admin_password_hash")
+	if err != nil {
+		return ""
+	}
 	return v
 }
 
-// SetAdminPasswordHash stores a new admin password hash.
+// SetAdminPasswordHash stores a new admin password hash (encrypted).
 func (s *Store) SetAdminPasswordHash(hash string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO settings(key, value) VALUES('admin_password_hash', ?)`, hash)
-	return err
+	return s.setSettingLocked("admin_password_hash", hash)
 }
 
 // SessionSecret returns the HMAC secret for admin session cookies.
@@ -1134,8 +1289,10 @@ func (s *Store) SessionSecret() string {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var v string
-	_ = s.db.QueryRow(`SELECT value FROM settings WHERE key='session_secret'`).Scan(&v)
+	v, err := s.getSettingLocked("session_secret")
+	if err != nil {
+		return ""
+	}
 	return v
 }
 
@@ -1143,22 +1300,25 @@ func (s *Store) SessionSecret() string {
 func (s *Store) RotateSessionSecret() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO settings(key, value) VALUES('session_secret', ?)`, randomHex(32))
-	return err
+	return s.setSettingLocked("session_secret", randomHex(32))
 }
 
 // --- log persistence (implements logx.Persist) ---
 
-// InsertLog appends one access log entry.
+// InsertLog appends one access log entry (all text columns encrypted with AES-256-GCM).
 func (s *Store) InsertLog(e logx.Entry) error {
 	ts := time.Now().UnixMilli()
 	if t, err := time.Parse(time.RFC3339, e.Time); err == nil {
 		ts = t.UnixMilli()
 	}
+	cp := e
+	if err := sealFields(&cp.Level, &cp.Account, &cp.Client, &cp.Proto, &cp.Target, &cp.Status, &cp.Msg); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(`INSERT INTO logs
 		(ts, level, port, account, client, proto, target, status, bytes_in, bytes_out, duration_ms, msg)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		ts, e.Level, e.Port, e.Account, e.Client, e.Proto, e.Target, e.Status, e.BytesIn, e.BytesOut, e.DurationMS, e.Msg)
+		ts, cp.Level, cp.Port, cp.Account, cp.Client, cp.Proto, cp.Target, cp.Status, cp.BytesIn, cp.BytesOut, cp.DurationMS, cp.Msg)
 	return err
 }
 
@@ -1213,41 +1373,53 @@ func (s *Store) QueryHourlyMetrics(hours int) []MetricPoint {
 	return out
 }
 
-func logsWhere(f logx.Filter) (string, []any) {
-	var where []string
-	var args []any
+func logsPortWhere(f logx.Filter) (string, []any) {
 	if f.Port != 0 {
-		where = append(where, "port = ?")
-		args = append(args, f.Port)
+		return " WHERE port = ?", []any{f.Port}
 	}
-	if f.Account != "" {
-		where = append(where, "account = ?")
-		args = append(args, f.Account)
+	return "", nil
+}
+
+func matchLogFilter(level, account string, f logx.Filter, minLvl logx.Level) bool {
+	if f.Account != "" && account != f.Account {
+		return false
 	}
-	if lvl := logx.ParseLevel(f.Level); lvl > logx.LevelDebug {
-		var allowed []string
-		for l := lvl; l <= logx.LevelError; l++ {
-			allowed = append(allowed, l.String())
-		}
-		where = append(where, "level IN ("+placeholders(len(allowed))+")")
-		for _, l := range allowed {
-			args = append(args, l)
-		}
+	if minLvl > logx.LevelDebug && logx.ParseLevel(level) < minLvl {
+		return false
 	}
-	if len(where) == 0 {
-		return "", args
-	}
-	return " WHERE " + strings.Join(where, " AND "), args
+	return true
 }
 
 // CountLogs returns the total number of access logs matching the filter.
 func (s *Store) CountLogs(f logx.Filter) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	where, args := logsWhere(f)
+	where, args := logsPortWhere(f)
+	minLvl := logx.ParseLevel(f.Level)
+	if f.Account == "" && minLvl <= logx.LevelDebug {
+		var n int64
+		err := s.db.QueryRow(`SELECT COUNT(*) FROM logs`+where, args...).Scan(&n)
+		return n, err
+	}
+	rows, err := s.db.Query(`SELECT level, account FROM logs`+where, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
 	var n int64
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM logs`+where, args...).Scan(&n)
-	return n, err
+	for rows.Next() {
+		var lvl, acc string
+		if err := rows.Scan(&lvl, &acc); err != nil {
+			continue
+		}
+		if err := openFields(&lvl, &acc); err != nil {
+			continue
+		}
+		if matchLogFilter(lvl, acc, f, minLvl) {
+			n++
+		}
+	}
+	return n, rows.Err()
 }
 
 // ClearLogs deletes every access log and returns how many were removed.
@@ -1261,7 +1433,7 @@ func (s *Store) ClearLogs() (int64, error) {
 	return res.RowsAffected()
 }
 
-// QueryLogs returns access logs newest-first.
+// QueryLogs returns access logs newest-first (decrypting all text fields).
 func (s *Store) QueryLogs(f logx.Filter) ([]logx.Entry, error) {
 	limit := f.Limit
 	if limit <= 0 || limit > 1000 {
@@ -1269,20 +1441,17 @@ func (s *Store) QueryLogs(f logx.Filter) ([]logx.Entry, error) {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	where, args := logsWhere(f)
-	var offset string
-	if f.Offset > 0 {
-		offset = fmt.Sprintf(" OFFSET %d", f.Offset)
-	}
+	where, args := logsPortWhere(f)
+	minLvl := logx.ParseLevel(f.Level)
 	q := `SELECT ts, level, port, account, client, proto, target, status, bytes_in, bytes_out, duration_ms, msg FROM logs` +
-		where + ` ORDER BY id DESC LIMIT ?` + offset
-	args = append(args, limit)
+		where + ` ORDER BY id DESC`
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := make([]logx.Entry, 0, limit)
+	skipped := 0
 	for rows.Next() {
 		var e logx.Entry
 		var ts int64
@@ -1290,10 +1459,23 @@ func (s *Store) QueryLogs(f logx.Filter) ([]logx.Entry, error) {
 			&e.Status, &e.BytesIn, &e.BytesOut, &e.DurationMS, &e.Msg); err != nil {
 			continue
 		}
+		if err := openFields(&e.Level, &e.Account, &e.Client, &e.Proto, &e.Target, &e.Status, &e.Msg); err != nil {
+			continue
+		}
+		if !matchLogFilter(e.Level, e.Account, f, minLvl) {
+			continue
+		}
+		if skipped < f.Offset {
+			skipped++
+			continue
+		}
 		e.Time = time.UnixMilli(ts).Format(time.RFC3339)
 		out = append(out, e)
+		if len(out) >= limit {
+			break
+		}
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // PruneLogs deletes access logs older than the given number of days.
@@ -1309,55 +1491,45 @@ func (s *Store) PruneLogs(days int) (int64, error) {
 	return res.RowsAffected()
 }
 
-func placeholders(n int) string {
-	if n == 0 {
-		return ""
-	}
-	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
-}
-
 // ListUpstreams queries the pool with optional keyword + limit/offset for
 // the paged upstream list UI ("GET /api/upstreams").
 func (s *Store) ListUpstreams(limit, offset int, q string) ([]*Upstream, int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var where string
-	var args []any
-	if q = strings.TrimSpace(q); q != "" {
-		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
-		pat := "%" + esc + "%"
-		where = ` WHERE (name LIKE ? ESCAPE '\' OR host LIKE ? ESCAPE '\' OR username LIKE ? ESCAPE '\'
-			OR type LIKE ? ESCAPE '\')`
-		args = append(args, pat, pat, pat, pat)
-	}
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
 	if offset < 0 {
 		offset = 0
 	}
-
-	var total int64
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM upstreams`+where, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-
-	qAll := `SELECT ` + upstreamColumns + ` FROM upstreams` + where +
-		` ORDER BY created_at LIMIT ? OFFSET ?`
-	args = append(args, limit, offset)
-	rows, err := s.db.Query(qAll, args...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	items := make([]*Upstream, 0, limit)
-	for rows.Next() {
-		if u, err := scanUpstream(rows); err == nil {
-			items = append(items, &u)
+	all := s.upstreamsLocked()
+	qLower := strings.ToLower(strings.TrimSpace(q))
+	var matched []*Upstream
+	if qLower == "" {
+		matched = all
+	} else {
+		matched = make([]*Upstream, 0, len(all))
+		for _, u := range all {
+			if strings.Contains(strings.ToLower(u.Name), qLower) ||
+				strings.Contains(strings.ToLower(u.Host), qLower) ||
+				strings.Contains(strings.ToLower(u.Username), qLower) ||
+				strings.Contains(strings.ToLower(u.Type), qLower) ||
+				strings.Contains(strings.ToLower(u.Remark), qLower) ||
+				strings.Contains(strings.ToLower(u.ExitIP), qLower) {
+				matched = append(matched, u)
+			}
 		}
 	}
-	return items, total, nil
+	total := int64(len(matched))
+	if offset >= len(matched) {
+		return []*Upstream{}, total, nil
+	}
+	end := offset + limit
+	if end > len(matched) {
+		end = len(matched)
+	}
+	return matched[offset:end], total, nil
 }
 
 // BulkOpError annotates a per-entity failure inside a bulk action.
@@ -1453,6 +1625,9 @@ func (s *Store) BulkDeleteUpstreams(ids []string) (int64, []BulkOpError) {
 		var user string
 		err := s.db.QueryRow(`SELECT username FROM accounts WHERE upstream_id=? LIMIT 1`, id).Scan(&user)
 		if err == nil {
+			if plain, derr := openSecret(user); derr == nil {
+				user = plain
+			}
 			skipped = append(skipped, BulkOpError{ID: id, Reason: "仍被账户 " + user + " 引用"})
 			continue
 		}

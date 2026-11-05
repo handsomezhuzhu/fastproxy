@@ -699,3 +699,52 @@ func TestConcurrentAuthAndStatusMeters(t *testing.T) {
 		t.Fatalf("expected %d accounts with 1 conn, got %d", numAccounts, matched)
 	}
 }
+
+
+func TestMetersPersistAcrossManagerRestart(t *testing.T) {
+	tAddr := newTarget(t, "hello-meter-persist")
+	up := newFakeHTTPUpstream(t, "", "")
+	env := newEnv(t)
+	u := env.addUpstream(t, config.UpstreamHTTP, up.ln.Addr().String(), "", "")
+	p := env.addPort(t, freePort(t))
+	a := env.addAccount(t, "alice", "wonder", p.ID, u.ID)
+	env.sync(t)
+
+	conn, br := connectTunnel(t, p.Port, proxyAuthHeader("alice", "wonder"), tAddr)
+	if body := tunnelGet(t, conn, br, tAddr); !strings.Contains(body, "hello-meter-persist") {
+		conn.Close()
+		t.Fatalf("unexpected body: %q", body)
+	}
+	conn.Close()
+
+	// Wait briefly for server handle() defer to flush meters.
+	time.Sleep(50 * time.Millisecond)
+	env.mgr.Close()
+
+	mgr2 := NewManager(env.store, logx.New("", 100, logx.LevelWarn, false))
+	defer mgr2.Close()
+	if err := mgr2.Sync(); err != nil {
+		t.Fatalf("mgr2 sync: %v", err)
+	}
+
+	ports, accounts := mgr2.Status()
+	var gotPort *PortStatus
+	for i := range ports {
+		if ports[i].ID == p.ID {
+			gotPort = &ports[i]
+		}
+	}
+	if gotPort == nil || gotPort.ConnsTotal == 0 || gotPort.BytesIn == 0 || gotPort.BytesOut == 0 || gotPort.ConnsCur != 0 {
+		t.Fatalf("expected persisted port meter after restart, got %+v", gotPort)
+	}
+
+	var gotAcct *AccountStatus
+	for i := range accounts {
+		if accounts[i].ID == a.ID {
+			gotAcct = &accounts[i]
+		}
+	}
+	if gotAcct == nil || gotAcct.ConnsTotal == 0 || gotAcct.BytesIn == 0 || gotAcct.BytesOut == 0 || gotAcct.ConnsCur != 0 {
+		t.Fatalf("expected persisted account meter after restart, got %+v", gotAcct)
+	}
+}

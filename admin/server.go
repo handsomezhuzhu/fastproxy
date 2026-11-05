@@ -460,6 +460,9 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("port"); v != "" {
 		f.Port, _ = strconv.Atoi(v)
 	}
+	if s.log != nil {
+		s.log.Flush()
+	}
 	total, _ := s.store.CountLogs(logx.Filter{Port: f.Port, Account: f.Account, Level: f.Level})
 	writeJSON(w, http.StatusOK, map[string]any{"entries": s.log.Recent(f), "total": total})
 }

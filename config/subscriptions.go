@@ -103,9 +103,9 @@ func (s *Store) ListSubscriptions() ([]SubscriptionInfo, error) {
 			return nil, err
 		}
 		it.Enabled = enabled != 0
-		it.URL, err = openSecret(rawURL)
-		if err != nil {
-			return nil, fmt.Errorf("订阅 %s URL 解密失败: %w", it.Name, err)
+		it.URL = rawURL
+		if err := openFields(&it.Name, &it.URL, &it.LastError, &it.ETag, &it.LastModified); err != nil {
+			return nil, fmt.Errorf("订阅 %s 解密失败: %w", it.ID, err)
 		}
 		out = append(out, it)
 	}
@@ -116,27 +116,7 @@ func (s *Store) ListSubscriptions() ([]SubscriptionInfo, error) {
 func (s *Store) GetSubscription(id string) (*Subscription, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var it Subscription
-	var rawURL string
-	var enabled int
-	err := s.db.QueryRow(`SELECT id, name, url, enabled, interval_sec, last_fetch_at,
-		last_success_at, last_error, etag, last_modified, created_at, updated_at
-		FROM subscriptions WHERE id=?`, id).
-		Scan(&it.ID, &it.Name, &rawURL, &enabled, &it.IntervalSec, &it.LastFetchAt,
-			&it.LastSuccessAt, &it.LastError, &it.ETag, &it.LastModified,
-			&it.CreatedAt, &it.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	it.Enabled = enabled != 0
-	it.URL, err = openSecret(rawURL)
-	if err != nil {
-		return nil, fmt.Errorf("订阅 URL 解密失败: %w", err)
-	}
-	return &it, nil
+	return s.getSubscriptionLocked(id)
 }
 
 func validateSubscription(in *Subscription) error {
@@ -171,6 +151,10 @@ func (s *Store) UpsertSubscription(id string, in *Subscription) (*Subscription, 
 	} else if dup {
 		return nil, errors.New("该订阅地址已存在，请直接刷新现有订阅，避免重复节点")
 	}
+	sealedName, err := sealSecret(in.Name)
+	if err != nil {
+		return nil, err
+	}
 	sealed, err := sealSecret(in.URL)
 	if err != nil {
 		return nil, err
@@ -183,11 +167,11 @@ func (s *Store) UpsertSubscription(id string, in *Subscription) (*Subscription, 
 		_, err = s.db.Exec(`INSERT INTO subscriptions
 			(id, name, url, enabled, interval_sec, created_at, updated_at)
 			VALUES(?,?,?,?,?,?,?)`,
-			in.ID, in.Name, sealed, boolInt(in.Enabled), in.IntervalSec, now, now)
+			in.ID, sealedName, sealed, boolInt(in.Enabled), in.IntervalSec, now, now)
 	} else {
 		res, uerr := s.db.Exec(`UPDATE subscriptions SET name=?, url=?, enabled=?,
 			interval_sec=?, updated_at=? WHERE id=?`,
-			in.Name, sealed, boolInt(in.Enabled), in.IntervalSec, now, id)
+			sealedName, sealed, boolInt(in.Enabled), in.IntervalSec, now, id)
 		if uerr != nil {
 			return nil, uerr
 		}
@@ -234,8 +218,9 @@ func (s *Store) getSubscriptionLocked(id string) (*Subscription, error) {
 		return nil, err
 	}
 	it.Enabled = enabled != 0
-	if it.URL, err = openSecret(rawURL); err != nil {
-		return nil, err
+	it.URL = rawURL
+	if err := openFields(&it.Name, &it.URL, &it.LastError, &it.ETag, &it.LastModified); err != nil {
+		return nil, fmt.Errorf("订阅解密失败: %w", err)
 	}
 	return &it, nil
 }
@@ -297,6 +282,9 @@ func (s *Store) SubscriptionNodeIDs(id string) ([]string, error) {
 // RecordSubscriptionFetch stores the fetch outcome (etag/last-modified are kept
 // on 304 or on failure so the next request can still be conditional).
 func (s *Store) RecordSubscriptionFetch(id, etag, lastModified, fetchErr string, success bool) error {
+	if err := sealFields(&etag, &lastModified, &fetchErr); err != nil {
+		return err
+	}
 	now := time.Now().Unix()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -339,6 +327,9 @@ func (s *Store) ReplaceSubscriptionNodes(subID string, candidates []*Upstream) (
 			rows.Close()
 			s.mu.RUnlock()
 			return res, err
+		}
+		if plain, derr := openSecret(m.key); derr == nil {
+			m.key = plain
 		}
 		existing[m.key] = m
 	}
@@ -396,9 +387,13 @@ func (s *Store) ReplaceSubscriptionNodes(subID string, candidates []*Upstream) (
 			res.Problems = append(res.Problems, fmt.Sprintf("%s (%s): %v", candidate.Name, candidate.Host, err))
 			continue
 		}
+		sealedKey, err := sealSecret(key)
+		if err != nil {
+			return res, err
+		}
 		s.mu.Lock()
 		_, err = s.db.Exec(`INSERT OR REPLACE INTO subscription_nodes
-			(subscription_id, upstream_id, node_key) VALUES(?,?,?)`, subID, saved.ID, key)
+			(subscription_id, upstream_id, node_key) VALUES(?,?,?)`, subID, saved.ID, sealedKey)
 		s.mu.Unlock()
 		if err != nil {
 			return res, err

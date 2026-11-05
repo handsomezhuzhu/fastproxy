@@ -90,7 +90,7 @@ type entry struct {
 
 // NewManager creates a manager bound to the store. Call Sync to start listeners.
 func NewManager(store *config.Store, logger *logx.Logger) *Manager {
-	return &Manager{
+	m := &Manager{
 		store:     store,
 		log:       logger,
 		entries:   map[string]*entry{},
@@ -98,6 +98,16 @@ func NewManager(store *config.Store, logger *logx.Logger) *Manager {
 		meters:    map[string]*meter{},
 		lastFail:  map[string]time.Time{},
 	}
+	if store != nil {
+		for k, st := range store.LoadMeters() {
+			mt := &meter{}
+			mt.connsTotal.Store(st.ConnsTotal)
+			mt.in.Store(st.BytesIn)
+			mt.out.Store(st.BytesOut)
+			m.meters[k] = mt
+		}
+	}
+	return m
 }
 
 // Sync aligns running listeners with the enabled ports in the store,
@@ -170,14 +180,35 @@ func (m *Manager) Status() ([]PortStatus, []AccountStatus) {
 	return ports, accounts
 }
 
-// Close stops every listener.
+// Close stops every listener and persists current traffic counters.
 func (m *Manager) Close() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	for id, e := range m.entries {
 		e.close()
 		delete(m.entries, id)
 	}
+	m.mu.Unlock()
+	m.flushMeters()
+}
+
+func (m *Manager) flushMeters() {
+	if m.store == nil {
+		return
+	}
+	m.meterMu.Lock()
+	snap := make(map[string]config.MeterStat, len(m.meters))
+	for k, mt := range m.meters {
+		st := config.MeterStat{
+			ConnsTotal: mt.connsTotal.Load(),
+			BytesIn:    mt.in.Load(),
+			BytesOut:   mt.out.Load(),
+		}
+		if st.ConnsTotal > 0 || st.BytesIn > 0 || st.BytesOut > 0 {
+			snap[k] = st
+		}
+	}
+	m.meterMu.Unlock()
+	_ = m.store.SaveMeters(snap)
 }
 
 // --- entry construction / lifecycle ---
@@ -241,6 +272,7 @@ func (e *entry) handle(raw net.Conn) {
 		st.connsCur.Add(-1)
 		raw.Close()
 		e.m.logConn(e.port.Port, remoteIP(raw.RemoteAddr()), tr, lin.Load(), lout.Load(), start)
+		e.m.flushMeters()
 	}()
 
 	raw.SetDeadline(time.Now().Add(e.handshakeTimeout()))

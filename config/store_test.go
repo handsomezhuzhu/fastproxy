@@ -880,3 +880,16 @@ func testEntry(port int, user, level, status string) logx.Entry {
 func testFilter(limit, port int, account, level string) logx.Filter {
 	return logx.Filter{Limit: limit, Port: port, Account: account, Level: level}
 }
+
+
+func timeRepeatUnix(sec int64) time.Time {
+	return time.Unix(sec, 0)
+}
+
+func testEntryWithDetail(port int, user, client, target, msg string) logx.Entry {
+	return logx.Entry{
+		Level: "info", Port: port, Account: user, Client: client,
+		Proto: "http", Target: target, Status: "ok",
+		BytesIn: 10, BytesOut: 20, DurationMS: 5, Msg: msg,
+	}
+}

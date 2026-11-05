@@ -36,6 +36,7 @@ var migrations = []migration{
 	{Version: 3, Name: "encrypt upstream/account passwords", Apply: migrateEncryptPasswords},
 	{Version: 4, Name: "subscriptions and node mappings", Apply: migrateSubscriptions},
 	{Version: 5, Name: "dedupe existing upstreams", Apply: migrateDedupeUpstreams},
+	{Version: 6, Name: "encrypt all stored data and logs", Apply: migrateEncryptAllData},
 }
 
 // latestVersion is the version a freshly created database reports.
@@ -419,6 +420,124 @@ func MigrateForTest(db *sql.DB, key []byte) error {
 		return err
 	}
 	return (&Store{db: db}).migrate()
+}
+
+// migrateEncryptAllData seals all text columns across settings, ports,
+// accounts, upstreams, subscriptions, subscription_nodes and logs with
+// AES-256-GCM so no plaintext business data or logs remain on disk.
+func migrateEncryptAllData(tx *sql.Tx) error {
+	specs := []struct {
+		table string
+		pk    string
+		cols  []string
+	}{
+		{table: "settings", pk: "key", cols: []string{"value"}},
+		{table: "ports", pk: "id", cols: []string{"remark", "default_upstream"}},
+		{table: "accounts", pk: "id", cols: []string{"username", "password", "remark"}},
+		{table: "upstreams", pk: "id", cols: []string{
+			"name", "type", "host", "username", "password", "method", "uuid", "sni",
+			"remark", "health", "exit_ip", "last_error", "security", "pbk", "sid",
+			"flow", "fingerprint", "transport", "path", "host_header",
+			"service_name", "vmess_security",
+		}},
+		{table: "subscriptions", pk: "id", cols: []string{
+			"name", "url", "last_error", "etag", "last_modified",
+		}},
+		{table: "subscription_nodes", pk: "rowid", cols: []string{"node_key"}},
+		{table: "logs", pk: "id", cols: []string{
+			"level", "account", "client", "proto", "target", "status", "msg",
+		}},
+	}
+	for _, sp := range specs {
+		if err := sealTableColumns(tx, sp.table, sp.pk, sp.cols); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sealTableColumns(tx *sql.Tx, table, pkCol string, wantCols []string) error {
+	exists, err := txTableExists(tx, table)
+	if err != nil || !exists {
+		return err
+	}
+	existing, err := txColumnInfo(tx, table)
+	if err != nil {
+		return err
+	}
+	var cols []string
+	for _, c := range wantCols {
+		if existing[c] {
+			cols = append(cols, c)
+		}
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+
+	rows, err := tx.Query(`SELECT ` + pkCol + `, ` + strings.Join(cols, ", ") + ` FROM ` + table)
+	if err != nil {
+		return fmt.Errorf("读取 %s 数据失败: %w", table, err)
+	}
+	type pendingRow struct {
+		pk   any
+		vals []string
+	}
+	var pending []pendingRow
+	for rows.Next() {
+		var pk any
+		vals := make([]string, len(cols))
+		dest := make([]any, 1+len(cols))
+		dest[0] = &pk
+		for i := range vals {
+			dest[1+i] = &vals[i]
+		}
+		if err := rows.Scan(dest...); err != nil {
+			rows.Close()
+			return fmt.Errorf("扫描 %s 数据失败: %w", table, err)
+		}
+		need := false
+		for _, v := range vals {
+			if v != "" && !IsSealed(v) {
+				need = true
+				break
+			}
+		}
+		if need {
+			pending = append(pending, pendingRow{pk: pk, vals: vals})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	setParts := make([]string, len(cols))
+	for i, c := range cols {
+		setParts[i] = c + "=?"
+	}
+	updateSQL := `UPDATE ` + table + ` SET ` + strings.Join(setParts, ", ") + ` WHERE ` + pkCol + `=?`
+	for _, r := range pending {
+		args := make([]any, len(cols)+1)
+		for i := range r.vals {
+			if r.vals[i] != "" && !IsSealed(r.vals[i]) {
+				sealed, err := sealSecret(r.vals[i])
+				if err != nil {
+					return fmt.Errorf("加密 %s.%s 失败: %w", table, cols[i], err)
+				}
+				r.vals[i] = sealed
+			}
+			args[i] = r.vals[i]
+		}
+		args[len(cols)] = r.pk
+		if _, err := tx.Exec(updateSQL, args...); err != nil {
+			return fmt.Errorf("更新 %s 加密数据失败: %w", table, err)
+		}
+	}
+	return nil
 }
 
 var _ = strings.TrimSpace

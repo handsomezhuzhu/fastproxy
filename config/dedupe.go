@@ -31,10 +31,16 @@ func migrateDedupeUpstreams(tx *sql.Tx) error {
 			rows.Close()
 			return err
 		}
-		// Keys are built from plaintext passwords; fall back to the stored form
+		// Keys are built from plaintext fields; fall back to the stored form
 		// when a row cannot be decrypted (it still dedupes identical bad rows).
-		if plain, derr := openSecret(pass); derr == nil {
-			pass = plain
+		for _, f := range []*string{
+			&typ, &host, &user, &pass, &method, &uuid, &sni, &security,
+			&pbk, &sid, &flow, &fingerprint, &transport, &path,
+			&hostHeader, &serviceName, &vmessSecurity,
+		} {
+			if plain, derr := openSecret(*f); derr == nil {
+				*f = plain
+			}
 		}
 		u := &Upstream{
 			ID: id, Type: typ, Host: host, Username: user, Password: pass,

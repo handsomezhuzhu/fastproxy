@@ -142,7 +142,11 @@ type Runner struct {
 
 // NewRunner creates a prober bound to the store.
 func NewRunner(store *config.Store, logger *logx.Logger) *Runner {
-	return &Runner{store: store, log: logger}
+	r := &Runner{store: store, log: logger}
+	if store != nil {
+		r.serverIP, r.lastDirect = store.LoadServerProbe()
+	}
+	return r
 }
 
 // Start runs the periodic probe loop until ctx is done.
@@ -176,10 +180,14 @@ func (r *Runner) CheckAll() (okCount, failCount int) {
 	target := st.ProbeTarget
 
 	if res := Check(nil, target, timeout); res.OK {
+		now := time.Now()
 		r.mu.Lock()
 		r.serverIP = res.ExitIP
-		r.lastDirect = time.Now()
+		r.lastDirect = now
 		r.mu.Unlock()
+		if r.store != nil {
+			_ = r.store.SaveServerProbe(res.ExitIP, now)
+		}
 	}
 
 	ups := r.store.Upstreams()

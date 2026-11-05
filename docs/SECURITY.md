@@ -9,10 +9,9 @@
   - 返回 `429` + `Retry-After`，不区分来源 IP
 - 建议用 Nginx/OpenResty 终止 TLS，参考 [REVERSE_PROXY.md](REVERSE_PROXY.md)
 
-## 数据密码加密
+## 全量数据落盘加密（AES-256-GCM）
 
-`upstreams.password`、`accounts.password`（以及后续订阅 URL 中的 token）在 SQLite 中以
-AES-256-GCM 保存，密文前缀 `enc:v1:`。
+SQLite 数据库中的所有业务字段、配置、累计统计与连接/系统日志（`settings`、`ports`、`accounts`、`upstreams`、`subscriptions`、`subscription_nodes`、`logs`）均以 **AES-256-GCM**（随机 96-bit Nonce，密文前缀 `enc:v1:`）加密落盘；仅登录防爆破临时锁定状态保留在内存中，不落库。
 
 密钥来源（按优先级）：
 

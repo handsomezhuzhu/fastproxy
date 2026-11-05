@@ -85,6 +85,7 @@ type Logger struct {
 
 	store   Persist
 	ch      chan Entry
+	flushCh chan chan struct{}
 	done    chan struct{}
 	dropped atomic.Int64
 }
@@ -120,6 +121,7 @@ func (l *Logger) SetPersist(p Persist) {
 		l.file = nil
 	}
 	l.ch = make(chan Entry, 2048)
+	l.flushCh = make(chan chan struct{})
 	l.done = make(chan struct{})
 	go l.writer()
 }
@@ -152,6 +154,23 @@ func (l *Logger) writer() {
 			batch = append(batch, e)
 			if len(batch) >= 100 {
 				flush()
+			}
+		case ack := <-l.flushCh:
+		drainLoop:
+			for {
+				select {
+				case e, ok := <-l.ch:
+					if !ok {
+						flush()
+						close(ack)
+						return
+					}
+					batch = append(batch, e)
+				default:
+					flush()
+					close(ack)
+					break drainLoop
+				}
 			}
 		case <-tick.C:
 			if len(batch) > 0 {
@@ -278,9 +297,29 @@ type Filter struct {
 	Offset  int
 }
 
+// Flush drains any pending entries in the async writer channel into the
+// attached database store so subsequent queries see up-to-date logs.
+func (l *Logger) Flush() {
+	l.mu.Lock()
+	ch := l.ch
+	fch := l.flushCh
+	done := l.done
+	l.mu.Unlock()
+	if ch == nil || fch == nil {
+		return
+	}
+	ack := make(chan struct{})
+	select {
+	case fch <- ack:
+		<-ack
+	case <-done:
+	}
+}
+
 // Recent returns entries newest-first. The database is authoritative when
 // attached; the ring covers the window before the writer flushes.
 func (l *Logger) Recent(f Filter) []Entry {
+	l.Flush()
 	l.mu.Lock()
 	store := l.store
 	l.mu.Unlock()

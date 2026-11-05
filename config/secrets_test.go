@@ -306,3 +306,104 @@ func TestEnvKeyOverridesFile(t *testing.T) {
 		t.Fatalf("env key reopen: %+v", u)
 	}
 }
+
+
+// TestAllDataAndLogsEncryptedAtRest verifies that every persisted entity,
+// setting, traffic meter, probe state and log entry is sealed with AES-256-GCM
+// in SQLite and no plaintext leaks onto disk.
+func TestAllDataAndLogsEncryptedAtRest(t *testing.T) {
+	t.Setenv(secretKeyEnv, "")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "all-enc.db")
+	s, err := OpenWithPortRange(path, 7788, PortRange{Min: 10200, Max: 10299})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if err := s.SetAdminPasswordHash("hash-secret-9988"); err != nil {
+		t.Fatal(err)
+	}
+	up, err := s.UpsertUpstream("", &Upstream{
+		Name: "node-tokyo-secret", Type: UpstreamShadowsocks, Host: "198.51.100.77:8388",
+		Method: "aes-256-gcm", Password: "up-pass-secret", Remark: "up-remark-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordUpstreamCheck(up.ID, "ok", 42, "203.0.113.88", "probe-err-secret"); err != nil {
+		t.Fatal(err)
+	}
+	port, err := s.UpsertPort("", &Port{Port: 10205, Enabled: true, Remark: "port-remark-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertAccount("", &Account{
+		Username: "acct-user-secret", Password: "acct-pass-secret",
+		PortID: port.ID, UpstreamID: up.ID, Enabled: true, Remark: "acct-remark-secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := s.UpsertSubscription("", &Subscription{
+		Name: "sub-name-secret", URL: "https://sub.example.com/secret-feed", Enabled: true, IntervalSec: 600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordSubscriptionFetch(sub.ID, "etag-secret", "lastmod-secret", "sub-err-secret", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveMeters(map[string]MeterStat{
+		"port:" + port.ID: {ConnsTotal: 12, BytesIn: 3456, BytesOut: 7890},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveServerProbe("192.0.2.55", timeRepeatUnix(1700000000)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertLog(testEntryWithDetail(10205, "acct-user-secret", "203.0.113.99", "secret-target.internal:443", "log-msg-secret")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify raw SQLite columns in logs, accounts, upstreams, ports, settings, subscriptions are all sealed.
+	var logLevel, logAcc, logClient, logProto, logTarget, logStatus, logMsg string
+	if err := s.db.QueryRow(`SELECT level, account, client, proto, target, status, msg FROM logs LIMIT 1`).
+		Scan(&logLevel, &logAcc, &logClient, &logProto, &logTarget, &logStatus, &logMsg); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{logLevel, logAcc, logClient, logProto, logTarget, logStatus, logMsg} {
+		if !IsSealed(v) {
+			t.Fatalf("log column stored unencrypted: %q", v)
+		}
+	}
+
+	// Checkpoint WAL and verify no secret plaintext appears anywhere in the DB file.
+	_, _ = s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	rawDB, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range []string{
+		"hash-secret-9988", "node-tokyo-secret", "198.51.100.77:8388", "up-pass-secret",
+		"up-remark-secret", "203.0.113.88", "probe-err-secret", "port-remark-secret",
+		"acct-user-secret", "acct-pass-secret", "acct-remark-secret", "sub-name-secret",
+		"secret-feed", "etag-secret", "lastmod-secret", "sub-err-secret", "192.0.2.55",
+		"203.0.113.99", "secret-target.internal:443", "log-msg-secret",
+	} {
+		if bytes.Contains(rawDB, []byte(needle)) {
+			t.Fatalf("plaintext %q leaked into SQLite database file", needle)
+		}
+	}
+
+	// Verify read paths decrypt everything accurately.
+	if got := s.LoadMeters()["port:"+port.ID]; got.ConnsTotal != 12 || got.BytesIn != 3456 || got.BytesOut != 7890 {
+		t.Fatalf("LoadMeters mismatch: %+v", got)
+	}
+	if ip, at := s.LoadServerProbe(); ip != "192.0.2.55" || at.Unix() != 1700000000 {
+		t.Fatalf("LoadServerProbe mismatch: ip=%q at=%v", ip, at)
+	}
+	logs, err := s.QueryLogs(testFilter(10, 10205, "acct-user-secret", "info"))
+	if err != nil || len(logs) != 1 || logs[0].Target != "secret-target.internal:443" || logs[0].Client != "203.0.113.99" || logs[0].Msg != "log-msg-secret" {
+		t.Fatalf("QueryLogs decrypted mismatch: %+v err=%v", logs, err)
+	}
+}

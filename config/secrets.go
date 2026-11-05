@@ -220,3 +220,35 @@ func openSecret(stored string) (string, error) {
 	}
 	return c.open(stored)
 }
+
+
+// sealFields encrypts each non-empty string in place with sealSecret.
+// Already-sealed values are left untouched so migrations and writes are idempotent.
+func sealFields(fields ...*string) error {
+	for _, f := range fields {
+		if f == nil || *f == "" || IsSealed(*f) {
+			continue
+		}
+		s, err := sealSecret(*f)
+		if err != nil {
+			return err
+		}
+		*f = s
+	}
+	return nil
+}
+
+// openFields decrypts each string in place with openSecret.
+func openFields(fields ...*string) error {
+	for _, f := range fields {
+		if f == nil || *f == "" {
+			continue
+		}
+		plain, err := openSecret(*f)
+		if err != nil {
+			return err
+		}
+		*f = plain
+	}
+	return nil
+}

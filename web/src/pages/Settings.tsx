@@ -30,6 +30,7 @@ function toPayload(form: Settings): Settings {
     probe_timeout_sec,
     probe_concurrency,
     probe_target,
+    public_host,
   } = form;
   return {
     access_log,
@@ -44,6 +45,7 @@ function toPayload(form: Settings): Settings {
     // 并发数限制 1-32，与检测请求的并发上限一致。
     probe_concurrency: Math.min(32, Math.max(1, Math.floor(Number(probe_concurrency) || 1))),
     probe_target: probe_target.trim(),
+    public_host: (public_host ?? "").trim(),
   };
 }
 
@@ -171,6 +173,25 @@ export function SettingsPage({
                   />
                 </Field>
               </div>
+
+              <Field
+                label={t("settings.publicHost")}
+                htmlFor="set-public-host"
+                hint={t("settings.publicHostHint")}
+              >
+                <Input
+                  id="set-public-host"
+                  className="font-mono"
+                  value={form.public_host ?? ""}
+                  onChange={(e) => setForm({ ...form, public_host: e.target.value })}
+                  placeholder={
+                    data.probe?.server_ip
+                      ? `${data.probe.server_ip} / ${t("settings.publicHostPlaceholder")}`
+                      : t("settings.publicHostPlaceholder")
+                  }
+                  spellCheck={false}
+                />
+              </Field>
 
               <div className="flex flex-col gap-4 border-t pt-5">
                 <div className="flex items-center justify-between gap-4 rounded-lg border bg-muted/20 px-4 py-3">

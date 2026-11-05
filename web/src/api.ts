@@ -123,6 +123,7 @@ export type Settings = {
   probe_timeout_sec: number;
   probe_concurrency: number;
   probe_target: string;
+  public_host?: string;
 };
 
 export type PortStatus = {
@@ -323,7 +324,53 @@ export const defaultSettings: Settings = {
   probe_timeout_sec: 8,
   probe_concurrency: 6,
   probe_target: "api.ipify.org",
+  public_host: "",
 };
+
+export type AccessHostOption = {
+  value: string;
+  isIp: boolean;
+};
+
+/**
+ * 解析客户端接入主机列表：
+ * - 默认优先使用本机探测到的公网 IP（data.probe.server_ip），避免管理面板经 Cloudflare 等 CDN 反代后把不可直连的面板域名当成代理主机。
+ * - 同时合并系统设置中配置的自定义直连域名（settings.public_host，支持逗号/空格分隔多个），供快速复制向导切换。
+ */
+export function resolveAccessHosts(data: Data): {
+  defaultHost: string;
+  hosts: AccessHostOption[];
+} {
+  const serverIP = (data.probe?.server_ip ?? "").trim();
+  const customRaw = (data.settings?.public_host ?? "").trim();
+  const customList = customRaw
+    ? customRaw
+        .split(/[\s,;]+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+
+  const hosts: AccessHostOption[] = [];
+  const seen = new Set<string>();
+  if (serverIP) {
+    hosts.push({ value: serverIP, isIp: true });
+    seen.add(serverIP);
+  }
+  for (const h of customList) {
+    if (!seen.has(h)) {
+      hosts.push({ value: h, isIp: false });
+      seen.add(h);
+    }
+  }
+  if (hosts.length === 0) {
+    const fallback = window.location.hostname || "127.0.0.1";
+    hosts.push({ value: fallback, isIp: false });
+  }
+  return {
+    defaultHost: hosts[0].value,
+    hosts,
+  };
+}
 
 /** The API returns null for empty slices; normalize every collection. */
 function normalizeData(d: Data): Data {

@@ -19,11 +19,10 @@ import { toast } from "sonner";
 import { useI18n } from "@/i18n";
 import type { T } from "@/i18n";
 import { cn } from "@/lib/utils";
-import type { Account, Data, Port } from "@/api";
+import { resolveAccessHosts, type Account, type Data, type Port } from "@/api";
 
 export type CopyPreset = { dim: "port" | "account"; id: string } | null;
 
-const HOST = window.location.hostname;
 const enc = encodeURIComponent;
 
 type Dim = "port" | "account";
@@ -31,32 +30,32 @@ type Dim = "port" | "account";
 type Format = {
   id: string;
   labelKey: string;
-  build: (port: number, user: string, pass: string, t: T) => string;
+  build: (port: number, user: string, pass: string, host: string, t: T) => string;
 };
 
 const FORMATS: Format[] = [
-  { id: "http", labelKey: "copy.format.http", build: (p, u, pw) => `http://${enc(u)}:${enc(pw)}@${HOST}:${p}` },
+  { id: "http", labelKey: "copy.format.http", build: (p, u, pw, host) => `http://${enc(u)}:${enc(pw)}@${host}:${p}` },
   {
     id: "socks5",
     labelKey: "copy.format.socks5",
-    build: (p, u, pw) => `socks5h://${enc(u)}:${enc(pw)}@${HOST}:${p}`,
+    build: (p, u, pw, host) => `socks5h://${enc(u)}:${enc(pw)}@${host}:${p}`,
   },
   {
     id: "curl-http",
     labelKey: "copy.format.curlHttp",
-    build: (p, u, pw) => `curl -x "http://${enc(u)}:${enc(pw)}@${HOST}:${p}" https://api.ipify.org`,
+    build: (p, u, pw, host) => `curl -x "http://${enc(u)}:${enc(pw)}@${host}:${p}" https://api.ipify.org`,
   },
   {
     id: "curl-socks5",
     labelKey: "copy.format.curlSocks5",
-    build: (p, u, pw) => `curl --proxy "socks5h://${enc(u)}:${enc(pw)}@${HOST}:${p}" https://api.ipify.org`,
+    build: (p, u, pw, host) => `curl --proxy "socks5h://${enc(u)}:${enc(pw)}@${host}:${p}" https://api.ipify.org`,
   },
   {
     id: "split",
     labelKey: "copy.format.split",
-    build: (p, u, pw, t) =>
+    build: (p, u, pw, host, t) =>
       [
-        `${t("copy.splitLabels.host")}: ${HOST}`,
+        `${t("copy.splitLabels.host")}: ${host}`,
         `${t("copy.splitLabels.port")}: ${p}`,
         `${t("copy.splitLabels.user")}: ${u}`,
         `${t("copy.splitLabels.pass")}: ${pw}`,
@@ -65,8 +64,8 @@ const FORMATS: Format[] = [
   {
     id: "json",
     labelKey: "copy.format.json",
-    build: (p, u, pw) =>
-      JSON.stringify({ host: HOST, port: p, username: u, password: pw, protocol: "http" }, null, 2),
+    build: (p, u, pw, host) =>
+      JSON.stringify({ host, port: p, username: u, password: pw, protocol: "http" }, null, 2),
   },
 ];
 
@@ -84,13 +83,17 @@ export function CopyWizard({
   const { t } = useI18n();
   const ports = React.useMemo(() => data.ports.filter((p) => p.enabled), [data.ports]);
   const accounts = React.useMemo(() => data.accounts.filter((a) => a.enabled), [data.accounts]);
+  const { defaultHost, hosts } = React.useMemo(() => resolveAccessHosts(data), [data]);
 
   const [dim, setDim] = React.useState<Dim>("port");
   const [portID, setPortID] = React.useState("");
   const [accountID, setAccountID] = React.useState("");
   const [selected, setSelected] = React.useState<Record<string, boolean>>({});
   const [format, setFormat] = React.useState("http");
+  const [selectedHost, setSelectedHost] = React.useState(defaultHost);
   const [copied, setCopied] = React.useState(false);
+
+  const activeHost = hosts.some((h) => h.value === selectedHost) ? selectedHost : defaultHost;
 
   const eligibleAccounts = React.useCallback(
     // 账户必绑定端口；默认账号（is_default）同样作为候选出现。
@@ -123,11 +126,12 @@ export function CopyWizard({
   React.useEffect(() => {
     if (!open) return;
     setCopied(false);
+    setSelectedHost(defaultHost);
     const next = preset?.dim ?? "port";
     setDim(next);
     applyDefault(next, preset?.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, preset]);
+  }, [open, preset, defaultHost]);
 
   const pairs = React.useMemo(() => {
     const out: { port: number; user: string; pass: string }[] = [];
@@ -148,7 +152,9 @@ export function CopyWizard({
   }, [dim, portID, accountID, selected, ports, accounts, eligibleAccounts, eligiblePorts]);
 
   const fmt = FORMATS.find((f) => f.id === format) ?? FORMATS[0];
-  const text = pairs.map((p) => fmt.build(p.port, p.user, p.pass, t)).join(format === "json" ? ",\n" : "\n\n");
+  const text = pairs
+    .map((p) => fmt.build(p.port, p.user, p.pass, activeHost, t))
+    .join(format === "json" ? ",\n" : "\n\n");
 
   const portItems = ports.map((p) => ({
     value: p.id,
@@ -193,6 +199,34 @@ export function CopyWizard({
         </DialogHeader>
 
         <div className="flex flex-col gap-5">
+          {hosts.length > 1 ? (
+            <section aria-labelledby="step-host" className="flex flex-col gap-2">
+              <Label id="step-host">{t("copy.hostLabel")}</Label>
+              <div className="flex flex-wrap gap-2">
+                {hosts.map((h) => (
+                  <button
+                    key={h.value}
+                    type="button"
+                    aria-pressed={activeHost === h.value}
+                    onClick={() => {
+                      setSelectedHost(h.value);
+                      setCopied(false);
+                    }}
+                    className={cn(
+                      "rounded-lg border px-3 py-1.5 font-mono text-xs transition-colors",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                      activeHost === h.value
+                        ? "border-primary/60 bg-primary/10 font-medium"
+                        : "hover:bg-muted"
+                    )}
+                  >
+                    {h.isIp ? t("copy.hostServerIp", { ip: h.value }) : h.value}
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
           <section aria-labelledby="step-1" className="flex flex-col gap-2">
             <Label id="step-1">{t("copy.step1")}</Label>
             <Tabs
@@ -307,7 +341,7 @@ export function CopyWizard({
           <section className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <Label htmlFor="copy-preview" aria-live="polite">
-                {t("copy.preview", { n: pairs.length, host: HOST })}
+                {t("copy.preview", { n: pairs.length, host: activeHost })}
               </Label>
               <Button size="sm" variant="ghost" onClick={copy} disabled={!text}>
                 {copied ? <Check className="size-4" /> : <Copy className="size-4" />}

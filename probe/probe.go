@@ -153,6 +153,8 @@ func NewRunner(store *config.Store, logger *logx.Logger) *Runner {
 func (r *Runner) Start(ctx context.Context) {
 	if r.store.Settings().ProbeEnabled {
 		r.CheckAll()
+	} else if ip, _ := r.ServerIP(); ip == "" {
+		r.checkDirectIP()
 	}
 	for {
 		interval := time.Duration(r.store.Settings().ProbeIntervalSec) * time.Second
@@ -166,6 +168,28 @@ func (r *Runner) Start(ctx context.Context) {
 			if r.store.Settings().ProbeEnabled {
 				r.CheckAll()
 			}
+		}
+	}
+}
+
+func (r *Runner) checkDirectIP() {
+	st := r.store.Settings()
+	timeout := time.Duration(st.ProbeTimeoutSec) * time.Second
+	if timeout <= 0 {
+		timeout = 8 * time.Second
+	}
+	target := st.ProbeTarget
+	if target == "" {
+		target = "api.ipify.org"
+	}
+	if res := Check(nil, target, timeout); res.OK {
+		now := time.Now()
+		r.mu.Lock()
+		r.serverIP = res.ExitIP
+		r.lastDirect = now
+		r.mu.Unlock()
+		if r.store != nil {
+			_ = r.store.SaveServerProbe(res.ExitIP, now)
 		}
 	}
 }

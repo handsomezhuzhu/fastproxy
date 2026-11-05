@@ -137,6 +137,7 @@ type Settings struct {
 	ProbeTimeoutSec  int    `json:"probe_timeout_sec"`
 	ProbeConcurrency int    `json:"probe_concurrency"`
 	ProbeTarget      string `json:"probe_target"`
+	PublicHost       string `json:"public_host"`
 }
 
 // DefaultSettings returns the built-in defaults.
@@ -392,6 +393,41 @@ func (s *Store) Settings() Settings {
 	return s.settings
 }
 
+func normalizePublicHosts(raw string) (string, error) {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\r' || r == '\n'
+	})
+	seen := make(map[string]bool, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		for _, prefix := range []string{"https://", "http://", "socks5://", "socks5h://"} {
+			if strings.HasPrefix(strings.ToLower(p), prefix) {
+				p = p[len(prefix):]
+				break
+			}
+		}
+		if idx := strings.IndexByte(p, '/'); idx >= 0 {
+			p = p[:idx]
+		}
+		if h, _, err := net.SplitHostPort(p); err == nil && h != "" {
+			p = h
+		}
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.ContainsAny(p, "@?#\\\"'<>") {
+			return "", fmt.Errorf("接入主机/域名格式无效: %q", p)
+		}
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, ", "), nil
+}
+
 // UpdateSettings validates and persists the global settings.
 func (s *Store) UpdateSettings(in Settings) (Settings, error) {
 	switch strings.ToLower(strings.TrimSpace(in.LogLevel)) {
@@ -430,6 +466,11 @@ func (s *Store) UpdateSettings(in Settings) (Settings, error) {
 	if in.ProbeTarget == "" || strings.ContainsAny(in.ProbeTarget, "/: ") {
 		return Settings{}, errors.New("探测目标应为纯域名，如 api.ipify.org")
 	}
+	pubHost, err := normalizePublicHosts(in.PublicHost)
+	if err != nil {
+		return Settings{}, err
+	}
+	in.PublicHost = pubHost
 	b, err := json.Marshal(in)
 	if err != nil {
 		return Settings{}, err

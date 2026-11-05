@@ -3,7 +3,7 @@ import { Check, Copy, Ellipsis, Network, Pencil, Plus, Trash2 } from "lucide-rea
 import { Checkbox } from "@/components/ui/checkbox";
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
-import { api, DEFAULT_PORT_RANGE, type Account, type Data, type Port, type PortRange } from "@/api";
+import { api, DEFAULT_PORT_RANGE, resolveAccessHosts, type Account, type Data, type Port, type PortRange } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -73,6 +73,7 @@ export function PortsPage({
 }) {
   const { t } = useI18n();
   const range: PortRange = data.port_range ?? DEFAULT_PORT_RANGE;
+  const { defaultHost } = React.useMemo(() => resolveAccessHosts(data), [data]);
   const [open, setOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<Port | null>(null);
   const [form, setForm] = React.useState({ port: "", remark: "" });
@@ -187,7 +188,7 @@ export function PortsPage({
   async function copyAccount() {
     if (!created) return;
     const text = t("ports.copy.desc", {
-      host: window.location.hostname,
+      host: defaultHost,
       port: created.port,
       user: created.account.username,
       pass: created.account.password,
@@ -346,7 +347,7 @@ export function PortsPage({
                     <TableCell>
                       <div className="font-medium tabular-nums">{p.port}</div>
                       <div className="font-mono text-xs text-muted-foreground">
-                        {window.location.hostname}:{p.port}
+                        {defaultHost}:{p.port}
                       </div>
                     </TableCell>
                     <TableCell>

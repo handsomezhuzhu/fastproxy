@@ -90,6 +90,7 @@ export const zh: Record<string, string> = {
   "shell.lang.zh": "中",
   "shell.lang.en": "EN",
   "shell.lang.switch": "切换语言（当前：{lang}）",
+  "shell.github": "GitHub 仓库",
   "shell.renderError": "页面渲染出错",
   "shell.renderErrorDesc":
     "这是前端运行时错误，不是网络问题。请点击下方按钮重新加载；若持续出现，请把下面这段信息发给维护者。",

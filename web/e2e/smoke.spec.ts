@@ -207,6 +207,7 @@ test("登录页：管理密码标签足够大，卡片内不再有闪电图标",
   // 登录卡片里只保留文字标题，不允许再出现品牌图标（主题/语言按钮在卡片外）。
   const card = page.locator('form[novalidate], form').first().locator("xpath=..");
   await expect(card.locator("svg")).toHaveCount(0);
+  await expect(page.locator('header a[href="https://github.com/handsomezhuzhu/fastproxy"]')).toBeVisible();
 });
 
 test("侧栏：仅品牌/版本/退出，导航字号可读", async ({ page }) => {
@@ -242,6 +243,7 @@ test("正确密码登录后进入仪表盘", async ({ page }) => {
   await expect(page.getByText(/端口线路|Ports/).first()).toBeVisible();
   await expect(page.getByText(/上游健康|Upstream health/)).toBeVisible();
   await expect(page.locator("aside nav")).toBeVisible();
+  await expect(page.locator('header a[href="https://github.com/handsomezhuzhu/fastproxy"]')).toBeVisible();
   await expectNoCrash(page, failures);
 });
 

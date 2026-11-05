@@ -5,6 +5,7 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/c
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { AuthLanguageToggle } from "@/components/LanguageSwitch";
+import { GithubLink } from "@/components/GithubLink";
 import { LoginTopology } from "@/components/LoginTopology";
 import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { useI18n } from "@/i18n";
@@ -71,6 +72,7 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
         <header className="flex items-center justify-end gap-2">
           <ThemeSwitch />
           <AuthLanguageToggle />
+          <GithubLink />
         </header>
 
         <main className="flex flex-1 items-center justify-center py-10">

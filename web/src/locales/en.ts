@@ -85,6 +85,7 @@ export const en = {
   "shell.lang.zh": "中",
   "shell.lang.en": "EN",
   "shell.lang.switch": "Switch language (current: {lang})",
+  "shell.github": "GitHub repository",
   "shell.renderError": "Something went wrong while rendering",
   "shell.renderErrorDesc":
     "This is a front-end runtime error, not a network problem. Reload with the button below; if it keeps happening, send the details below to the maintainer.",

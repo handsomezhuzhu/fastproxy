@@ -30,6 +30,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { I18nProvider, useI18n } from "@/i18n";
 import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { AuthLanguageToggle } from "@/components/LanguageSwitch";
+import { GithubLink } from "@/components/GithubLink";
 import { ThemeProvider, useTheme } from "@/lib/theme-context";
 import { LoginPage } from "@/pages/Login";
 import { DashboardPage } from "@/pages/Dashboard";
@@ -208,6 +209,7 @@ function AppShell() {
               <Separator orientation="vertical" className="mx-1 hidden data-[orientation=vertical]:h-4 md:block" />
               <ThemeSwitch />
               <AuthLanguageToggle />
+              <GithubLink />
             </div>
           </header>
 
